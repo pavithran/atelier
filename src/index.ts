@@ -3501,6 +3501,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
       return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
     }
+    // The cause of a blocking finding, corrected (t536). Owner only, like a
+    // verdict on a finding; the cause is the caller's word, never read from
+    // the review, and the review's own record is not edited.
+    case "finding-cause": {
+      requireOwner(env, actor);
+      return json({ id, ...await L.setFindingCause(id, actor, body.head === undefined ? null : String(body.head), Number(body.index), String(body.cause ?? ""), { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null), ...(c.acting ? { acting: c.acting } : {}) }, 201);
+    }
+    // The cause of a failed required check (t536), set by the orchestrator.
+    case "check-cause": {
+      requireOwner(env, actor);
+      return json({ id, ...await L.setCheckCause(id, actor, Number(body.failure), String(body.cause ?? ""), c.acting ?? null), ...(c.acting ? { acting: c.acting } : {}) }, 201);
+    }
     // Criteria review (t438, src/review/criteria.ts): the owner asks for a
     // review of the task's acceptance criteria, naming the reviewer or
     // letting the pool pick one of another family than every model author.

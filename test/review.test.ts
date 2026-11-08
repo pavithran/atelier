@@ -161,7 +161,7 @@ test("reviewNeeded: a rejection at this head waits for rework, and an item's nee
 test("reviewNeeded: a rejection whose every blocking finding the owner refuted is reviewed again at that head, not reworked", () => {
   const GPT = "codex/gpt-6-astra";
   const findings: Finding[] = [
-    { file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." },
+    { file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried.", cause: "unknown" },
     { file: "README.md", line: null, severity: "follow-up", text: "Mention it." },
     { file: "src/rules.ts", line: 5, severity: "blocking", text: "Drops a row." },
   ];
@@ -461,7 +461,7 @@ const refusedWith = (reply: unknown, re: RegExp, criteria = 0) => {
   assert.equal(v.ok, false, `expected a refusal for ${JSON.stringify(reply).slice(0, 120)}`);
   if (!v.ok) assert.match(v.error, re);
 };
-const blocker: Finding = { file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." };
+const blocker: Finding = { file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried.", cause: "unknown" };
 
 test("parseVerdict: the format the brief asks for, exactly as REPLY_FORMAT shows it", () => {
   const example = REPLY_FORMAT.split("\n").filter((line) => /^(VERDICT|SUMMARY|FINDING):/.test(line)).join("\n");
@@ -613,7 +613,7 @@ test("parseVerdict: reads verdicts wrapped in prose, markdown, code fences and J
   assert.equal(ok("**Verdict:** APPROVE\n\nThe ledger still rejects a stale head, and addReview refuses self-review, so I approve of the change.").verdict, "approve");
 
   // 4. Bare JSON in the brief's field names.
-  const json = ok(JSON.stringify({ verdict: "REJECT", summary: "One bug.", findings: [{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." }] }));
+  const json = ok(JSON.stringify({ verdict: "REJECT", summary: "One bug.", findings: [{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried.", cause: "unknown" }] }));
   assert.deepEqual([json.verdict, json.findings], ["reject", [blocker]]);
 
   // 5. JSON in a json fence, prose before and after, pretty-printed.
@@ -1307,7 +1307,7 @@ test("parseVerdict: settled findings make a rejection with nothing left to block
   const reply = ["VERDICT: REJECT", "SUMMARY: One bug.", "FINDING: blocking src/a.ts:9 A lapsed claim is never retried.", "CRITERION 1: met — Ran the clone's tests; test 1 fails without the change."].join("\n");
   const original = parseVerdict(reply, 1);
   assert.ok(original.ok && original.verdict === "reject");
-  const demoted: Finding[] = [{ file: "src/a.ts", line: 9, severity: "follow-up", label: "unverified", text: "A lapsed claim is never retried." }];
+  const demoted: Finding[] = [{ file: "src/a.ts", line: 9, severity: "follow-up", label: "unverified", text: "A lapsed claim is never retried.", cause: "unknown" }];
   const settled = parseVerdict(reply, 1, { settled: demoted });
   assert.ok(settled.ok);
   assert.equal(settled.verdict, "approve");

@@ -10,7 +10,7 @@ import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
 import { dayInZone } from "./time.ts";
-import { fitRevertBrief, parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
+import { fitRevertBrief, parsePostMerge, reservePostMerge, preparePostMerge, currentStep, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
@@ -92,7 +92,8 @@ import { assertPrivateModel, privateRefusal } from "./dispatch/private.ts";
 import { contextOf, reviewBrief, type ReviewEvidence } from "./review/brief.ts";
 import { reviewScopeGap, scopeGapText } from "./review/scope-gap.ts";
 import { proseStandardLine } from "./prose-standard.ts";
-import { VERDICT_LIMITS } from "./review/verdict.ts";
+import { VERDICT_LIMITS, FINDING_CAUSES, isKnownCause, type Finding as TaggedFinding, type FindingCause } from "./review/verdict.ts";
+import { failingTests } from "./check-failure.ts";
 import { modeLineWithOwed } from "./review/owed.ts";
 import { dropTasks, rememberedTask, type ProviderPause } from "./runners/memory.ts";
 import { exitSignatureOf, parseStop, stopAfter, stopReasonOf, stopped as reviewStopped, stopText, type ReviewStop } from "./review/stopped.ts";
@@ -526,6 +527,9 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "r
   // step's own output, the files a merge stopped on, the check that failed,
   // and how many times main moved between the checks and the push (G2).
   fast: "boolean", tail: "tail", files: "strings", failedCheck: "string", rounds: "count",
+  // The names of the tests a failed checks step read from the whole output of
+  // the check (t536), which the tail may have cut.
+  failingTests: "strings",
   // The checks step reused the builder's passing checks instead of running
   // them on the merged tree (t520); the evidence they were read from is in
   // statuses, and base is the merge base they were measured from.
@@ -6799,7 +6803,14 @@ export class Ledger extends DurableObject<Env> {
     const at = new Date().toISOString();
     if (input.action === "start") startAttempt(run, crypto.randomUUID(), at);
     else if (input.action === "command") recordCommand(run, input.attempt ?? "", input.passed === true, input.publication);
-    else if (input.action === "finish") finishAttempt(run, input.attempt ?? "", input.passed === true, input.output, at, deployment, input.commandOutcome);
+    else if (input.action === "finish") {
+      const step = currentStep(run), spec = step ? run.policy.steps.find((s) => s.name === step.name) : undefined;
+      finishAttempt(run, input.attempt ?? "", input.passed === true, input.output, at, deployment, input.commandOutcome);
+      // A check step that failed on main after a merge records the names of its failing tests against each task the run merged (t536).
+      if (input.passed !== true && spec?.class === "check" && typeof input.output === "string") {
+        this.recordCheckFailure(run.members, actor, "main", spec.command, failingTests(input.output)?.names ?? [], { step: spec.name, run: run.id, after: run.after }, at);
+      }
+    }
     else recoverPostMerge(run, input.action, input.reason, actor, at, input.resolution, deployment);
     this.savePostMerge(run, actor, input.action); return run;
   }
@@ -6834,6 +6845,11 @@ export class Ledger extends DurableObject<Env> {
     }
     this.log(id, actor, `land.${step}`, { ms: Math.round(ms), ...clean }, at, proved);
     this.noteLandingStep(id, step, clean, at);
+    // A required check that failed on the merged tree records the names of its failing tests against the task (t536).
+    if (step === "checks" && clean.failed === true) {
+      const named = Array.isArray(clean.failingTests) ? clean.failingTests as string[] : null;
+      this.recordCheckFailure([id], actor, "landing", typeof clean.failedCheck === "string" ? clean.failedCheck : null, named ?? (typeof clean.tail === "string" ? failingTests(clean.tail)?.names ?? [] : []), { ...(typeof clean.mergeCommit === "string" ? { mergeCommit: clean.mergeCommit } : {}), ...(typeof clean.attempt === "number" ? { attempt: clean.attempt } : {}) }, at);
+    }
     return this.item(id);
   }
 
@@ -7068,41 +7084,130 @@ export class Ledger extends DurableObject<Env> {
     if (reviewer !== undefined && (typeof reviewer !== "string" || !validActor(reviewer))) throw new RuleError("bad_finding", "--reviewer must be the reviewer as harness/model", 400);
     this.item(id);
     const at = head;
-    const reviews = this.reviewEventsAt(id, at);
-    if (!reviews.length) throw new RuleError("no_review", `${id} has no review at ${at.slice(0, 8)}; a finding is indexed within one`, 409, `run atelier show ${id} --reviews`);
-    const listed = (rs: typeof reviews) => rs.map((r) => `${r.seq} by ${r.by} (${r.findings.length} ${r.findings.length === 1 ? "finding" : "findings"})`).join("; ");
-    const all = `the reviews of ${id} at ${at.slice(0, 8)} are ${listed(reviews)}`;
-    let review: (typeof reviews)[number];
-    if (reviewSeq !== undefined) {
-      const found = reviews.find((r) => r.seq === reviewSeq);
-      if (!found) throw new RuleError("no_review", `${id} has no review ${reviewSeq} at ${at.slice(0, 8)}; ${all}`, 409, `run atelier show ${id} --reviews`);
-      review = found;
-    } else if (reviewer !== undefined) {
-      const theirs = reviews.filter((r) => sameActor(r.by, reviewer as string));
-      if (!theirs.length) throw new RuleError("no_review", `${reviewer} has no review of ${id} at ${at.slice(0, 8)}; ${all}`, 409, `run atelier show ${id} --reviews`);
-      if (theirs.length > 1) throw new RuleError("ambiguous_review", `${reviewer} reviewed ${id} at ${at.slice(0, 8)} more than once: ${listed(theirs)}; name one with --review-seq`, 409, "run atelier finding with --review-seq N");
-      review = theirs[0];
-    } else {
-      const withFindings = reviews.filter((r) => r.findings.length);
-      if (withFindings.length > 1) throw new RuleError("ambiguous_review", `more than one review of ${id} at ${at.slice(0, 8)} has findings: ${listed(withFindings)}; name one with --review-seq or --reviewer`, 409, "run atelier finding with --review-seq N or --reviewer H/M");
-      review = reviews[reviews.length - 1];
-    }
-    const findings = review.findings;
-    if (index > findings.length) {
-      const others = reviews.length > 1 ? `; ${all}, and --review-seq names one` : "";
-      throw new RuleError("no_finding", `${id}'s review ${review.seq} by ${review.by} at ${at.slice(0, 8)} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it${others}`, 409, "run atelier show ID --reviews for the findings");
-    }
+    const { review, findings } = this.selectReview(id, at, { reviewSeq, reviewer }, index);
     const finding = findings[index - 1];
     this.log(id, actor, "review.finding", { head: at, index, verdict, note, by: review.by, review: review.seq, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text }, ...(acting ? { acting } : {}) }, new Date().toISOString());
     const event = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'review.finding'`, id).one().seq as number;
     return { review: review.seq, by: review.by, event };
   }
 
+  // The cause of a blocking finding, corrected by the developer or the
+  // orchestrator acting for them (t536): `atelier finding ID --index N
+  // --cause CAUSE`. The review is named as for a verdict, by `select`, with
+  // `head` optional. The event records the review, the finding, the cause it
+  // was and the cause it is, and who changed it (`acting`, else the actor);
+  // the reviewer's own record is not edited. A cause that already stands
+  // records nothing. Returns the cause it was ("unknown" for a finding
+  // recorded without one) and the event's sequence, null when none was made.
+  setFindingCause(id: string, actor: string, head: string | null, index: number, cause: string, select: { reviewSeq?: unknown; reviewer?: unknown } = {}, acting: string | null = null): { review: number; by: string; from: FindingCause; cause: FindingCause; event: number | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer corrects the cause of a finding", 403, `only the developer can: atelier finding ${id} --index N --cause ${FINDING_CAUSES.join("|")}`);
+    if (!isKnownCause(cause)) throw new RuleError("bad_cause", `a cause is one of ${FINDING_CAUSES.join(", ")}`, 400, `run atelier finding ID --cause ${FINDING_CAUSES.join("|")}`);
+    if (head !== null && (typeof head !== "string" || !/^[a-f0-9]{40,64}$/.test(head))) throw new RuleError("bad_finding", "--head must be the full revision the review was made at", 400);
+    if (!Number.isInteger(index) || index < 1) throw new RuleError("bad_finding", "--index must be the finding's position in the review, one based", 400);
+    const { reviewSeq, reviewer } = select;
+    if (reviewSeq !== undefined && reviewer !== undefined) throw new RuleError("bad_finding", "name the review by --review-seq or by --reviewer, not both", 400);
+    if (reviewSeq !== undefined && (typeof reviewSeq !== "number" || !Number.isInteger(reviewSeq) || reviewSeq < 1)) throw new RuleError("bad_finding", "--review-seq must be a review's sequence, a positive integer", 400);
+    if (reviewer !== undefined && (typeof reviewer !== "string" || !validActor(reviewer))) throw new RuleError("bad_finding", "--reviewer must be the reviewer as harness/model", 400);
+    this.item(id);
+    const { review, findings } = this.selectReview(id, head, select, index);
+    const finding = findings[index - 1];
+    if (finding.severity !== "blocking") throw new RuleError("not_blocking", `finding ${index} of ${id}'s review ${review.seq} is a follow-up; only a blocking finding has a cause`, 409, "run atelier show ID --reviews for the findings");
+    const from = this.findingCauseNow(id, review.seq, index, finding);
+    if (from === cause) return { review: review.seq, by: review.by, from, cause, event: null };
+    this.log(id, actor, "review.finding_cause", { review: review.seq, index, cause, from, by: review.by, finding: { file: finding.file, line: finding.line, severity: finding.severity, text: finding.text }, ...(acting ? { acting } : {}) }, new Date().toISOString());
+    const event = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'review.finding_cause'`, id).one().seq as number;
+    return { review: review.seq, by: review.by, from, cause, event };
+  }
+
+  // A finding's cause as it stands: the latest correction, else what the
+  // reviewer's reply gave, else unknown (a finding recorded before causes).
+  private findingCauseNow(id: string, review: number, index: number, finding: Finding & { cause?: unknown }): FindingCause {
+    const rows = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'review.finding_cause' ORDER BY seq DESC`, id).toArray();
+    for (const r of rows) {
+      const d = JSON.parse(r.data as string) as { review?: number; index?: number; cause?: string };
+      if (d.review === review && d.index === index && isKnownCause(d.cause)) return d.cause;
+    }
+    return isKnownCause(finding.cause) ? finding.cause : "unknown";
+  }
+
+  // A required check that failed at landing or on main after a merge, with
+  // the names of its failing tests, recorded against each task it concerns
+  // (t536). Its cause starts unknown; the orchestrator sets it with
+  // setCheckCause. `names` empty means none could be read from the output,
+  // which the event says (`namesRead: false`) rather than leave it silent.
+  private recordCheckFailure(ids: readonly string[], actor: string, where: "landing" | "main", check: string | null, names: readonly string[], extra: Record<string, unknown>, at: string): void {
+    for (const id of ids) {
+      this.log(id, actor, "check.failed_tests", { where, check, tests: names.slice(0, 200).map((n) => n.slice(0, 300)), namesRead: names.length > 0, cause: "unknown", ...extra }, at);
+    }
+  }
+
+  // The orchestrator's cause for a failed required check (t536): `atelier
+  // finding ID --failure N --cause CAUSE`, N the sequence of the task's
+  // check.failed_tests event. The event records the failure, the cause it
+  // was and the cause it is, and who set it (`acting`, else the actor).
+  // Refuses a sequence that is no failed-check record of this task, and a
+  // cause outside the list, and writes nothing then.
+  setCheckCause(id: string, actor: string, failure: number, cause: string, acting: string | null = null): { failure: number; from: FindingCause; cause: FindingCause; event: number | null } {
+    if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer, or the orchestrator acting for them, sets the cause of a failed check", 403, `only the developer can: atelier finding ${id} --failure N --cause ${FINDING_CAUSES.join("|")}`);
+    if (!isKnownCause(cause)) throw new RuleError("bad_cause", `a cause is one of ${FINDING_CAUSES.join(", ")}`, 400, `run atelier finding ID --cause ${FINDING_CAUSES.join("|")}`);
+    if (!Number.isInteger(failure) || failure < 1) throw new RuleError("bad_failure", "--failure must be the sequence of a failed-check record, a positive integer", 400, `run atelier events ${id} for the check.failed_tests records`);
+    this.item(id);
+    const row = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'check.failed_tests' AND seq = ?`, id, failure).toArray()[0];
+    if (!row) {
+      const known = this.sql.exec(`SELECT seq FROM events WHERE item_id = ? AND kind = 'check.failed_tests' ORDER BY seq`, id).toArray().map((r) => r.seq as number);
+      throw new RuleError("no_failure", `${id} has no failed-check record ${failure}${known.length ? `; its records are ${known.join(", ")}` : "; it has none"}`, 409, `run atelier events ${id} for the check.failed_tests records`);
+    }
+    let from: FindingCause = isKnownCause((JSON.parse(row.data as string) as { cause?: string }).cause) ? (JSON.parse(row.data as string) as { cause: FindingCause }).cause : "unknown";
+    for (const r of this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'check.cause' ORDER BY seq DESC`, id).toArray()) {
+      const d = JSON.parse(r.data as string) as { failure?: number; cause?: string };
+      if (d.failure === failure && isKnownCause(d.cause)) { from = d.cause; break; }
+    }
+    if (from === cause) return { failure, from, cause, event: null };
+    this.log(id, actor, "check.cause", { failure, cause, from, ...(acting ? { acting } : {}) }, new Date().toISOString());
+    const event = this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'check.cause'`, id).one().seq as number;
+    return { failure, from, cause, event };
+  }
+
+  // The review a finding is indexed within (t486): this task's review at
+  // `head` (any head when it is null, for a cause correction, which names
+  // the review by its sequence or reviewer), chosen by `select`, else the
+  // newest while at most one review there has findings. Refuses an ambiguous
+  // or empty choice with the reviews listed, and an index outside it.
+  private selectReview(id: string, head: string | null, select: { reviewSeq?: unknown; reviewer?: unknown }, index: number): { review: { seq: number; by: string; findings: Finding[] }; findings: Finding[] } {
+    const { reviewSeq, reviewer } = select;
+    const where = head ? ` at ${head.slice(0, 8)}` : "";
+    const reviews = this.reviewEventsAt(id, head);
+    if (!reviews.length) throw new RuleError("no_review", `${id} has no review${where}; a finding is indexed within one`, 409, `run atelier show ${id} --reviews`);
+    const listed = (rs: typeof reviews) => rs.map((r) => `${r.seq} by ${r.by} (${r.findings.length} ${r.findings.length === 1 ? "finding" : "findings"})`).join("; ");
+    const all = `the reviews of ${id}${where} are ${listed(reviews)}`;
+    let review: (typeof reviews)[number];
+    if (reviewSeq !== undefined) {
+      const found = reviews.find((r) => r.seq === reviewSeq);
+      if (!found) throw new RuleError("no_review", `${id} has no review ${reviewSeq}${where}; ${all}`, 409, `run atelier show ${id} --reviews`);
+      review = found;
+    } else if (reviewer !== undefined) {
+      const theirs = reviews.filter((r) => sameActor(r.by, reviewer as string));
+      if (!theirs.length) throw new RuleError("no_review", `${reviewer} has no review of ${id}${where}; ${all}`, 409, `run atelier show ${id} --reviews`);
+      if (theirs.length > 1) throw new RuleError("ambiguous_review", `${reviewer} reviewed ${id}${where} more than once: ${listed(theirs)}; name one with --review-seq`, 409, "run atelier finding with --review-seq N");
+      review = theirs[0];
+    } else {
+      const withFindings = reviews.filter((r) => r.findings.length);
+      if (withFindings.length > 1) throw new RuleError("ambiguous_review", `more than one review of ${id}${where} has findings: ${listed(withFindings)}; name one with --review-seq or --reviewer`, 409, "run atelier finding with --review-seq N or --reviewer H/M");
+      review = reviews[reviews.length - 1];
+    }
+    const findings = review.findings;
+    if (index > findings.length) {
+      const others = reviews.length > 1 ? `; ${all}, and --review-seq names one` : "";
+      throw new RuleError("no_finding", `${id}'s review ${review.seq} by ${review.by}${where} has ${findings.length} ${findings.length === 1 ? "finding" : "findings"}; --index ${index} is outside it${others}`, 409, "run atelier show ID --reviews for the findings");
+    }
+    return { review, findings };
+  }
+
   // This task's review events at a head, oldest first: each one's sequence,
   // reviewer and findings, as `atelier finding` selects among them.
-  private reviewEventsAt(id: string, head: string): { seq: number; by: string; findings: Finding[] }[] {
+  private reviewEventsAt(id: string, head: string | null): { seq: number; by: string; findings: Finding[] }[] {
     return this.sql.exec(`SELECT * FROM events WHERE item_id = ? AND kind IN ('review.approved', 'review.rejected') ORDER BY seq`, id).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq))
-      .filter((e) => e.data.head === head)
+      .filter((e) => head === null || e.data.head === head)
       .map((e) => ({ seq: e.seq, by: e.actor, findings: Array.isArray(e.data.findings) ? e.data.findings as Finding[] : [] }));
   }
 
@@ -12230,13 +12335,16 @@ function toCriteriaReview(r: Row): CriteriaReview {
 
 // Whether a findings list is the shape parseVerdict produces, so a review the
 // Ledger stores carries only findings the brief and the rework can read.
-function validFindings(findings: Finding[]): boolean {
+function validFindings(findings: TaggedFinding[]): boolean {
   return Array.isArray(findings) && findings.every((f) => f !== null && typeof f === "object"
     && typeof f.file === "string" && (f.line === null || Number.isInteger(f.line))
     && (f.severity === "blocking" || f.severity === "follow-up") && typeof f.text === "string"
     // A label says why a finding the reviewer called blocking does not block
     // (t717), so a labelled finding is never itself blocking.
-    && (f.label === undefined || (FINDING_LABELS.includes(f.label) && f.severity === "follow-up")));
+    && (f.label === undefined || (FINDING_LABELS.includes(f.label) && f.severity === "follow-up"))
+    // The tags of a blocking finding (t536): a criterion number or null, and a cause from the list or unknown.
+    && (f.criterion === undefined || f.criterion === null || (Number.isInteger(f.criterion) && f.criterion >= 1))
+    && (f.cause === undefined || f.cause === "unknown" || isKnownCause(f.cause)));
 }
 
 // Whether a checks list is the shape parseVerdict produces for a criteria
