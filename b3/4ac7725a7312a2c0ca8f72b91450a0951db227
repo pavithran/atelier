@@ -1,0 +1,68 @@
+atelier atelier/t547 "The signal-ends-a-queued-landing test is granted a lease under load"
+accepted head f54e2a5c6cfc1b3babf6124aab9b203b3302d2bc
+CROSS-FAMILY MODE at acceptance: a protected change needed approval from a model of another company than every contributor
+CONTRIBUTOR claude-code/sonnet-5.5 (anthropic)
+CONTRIBUTOR claude-code/opus-5.5 (anthropic)
+OBSERVED pass npm run typecheck — claude-code/opus-5.5 2026-11-08T00:04:07.199Z
+OBSERVED pass npm run test:static — claude-code/opus-5.5 2026-11-08T00:04:19.302Z
+OBSERVED pass npm test — claude-code/opus-5.5 2026-11-08T00:17:13.224Z
+REVIEW approve by codex/gpt-6-astra at f54e2a5c6cfc1b3babf6124aab9b203b3302d2bc, recorded by codex/gpt-6-astra
+CHECKED TREE 3f56abafc1f280b7b495595bec750de947492a5d: the merge produced exactly the tree these checks passed on (npm run typecheck, npm run test:static, npm test), so a deploy gate may accept them instead of running them again
+2026-11-07T20:26:49.622Z pavi item.created
+2026-11-07T20:26:49.622Z claude-code/opus-5.5 criteria.revised
+2026-11-07T20:26:53.933Z pavi criteria_review.requested
+2026-11-07T20:27:04.482Z codex/gpt-6-astra criteria_review.claimed
+2026-11-07T20:27:14.571Z codex/gpt-6-astra criteria_review.approved
+2026-11-07T20:37:17.141Z pavi item.dispatched
+2026-11-07T20:44:48.152Z claude-code/sonnet-5.5 item.claimed
+2026-11-07T20:44:48.183Z claude-code/sonnet-5.5 workspace.created
+2026-11-07T20:52:51.510Z claude-code/sonnet-5.5 push.observed
+2026-11-07T20:52:55.557Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T20:53:05.995Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T21:04:37.098Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T21:04:37.981Z claude-code/sonnet-5.5 item.submitted
+2026-11-07T21:15:50.763Z pavi land.start
+2026-11-07T21:15:52.020Z pavi review.requested
+2026-11-07T21:15:52.337Z pavi land.review
+2026-11-07T21:15:52.428Z pavi land.requested
+2026-11-07T21:16:08.869Z codex/gpt-6-astra review.claimed
+2026-11-07T21:18:08.687Z codex/gpt-6-astra review.rejected
+2026-11-07T21:18:08.687Z atelier/orchestrator goal.notes
+2026-11-07T21:26:44.864Z pavi review.finding
+2026-11-07T21:26:45.363Z pavi item.released
+2026-11-07T21:26:45.363Z pavi item.dispatched
+2026-11-07T21:26:45.694Z claude-code/sonnet-5.5 item.claimed
+2026-11-07T21:41:13.381Z claude-code/sonnet-5.5 push.observed
+2026-11-07T21:41:17.496Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T21:41:27.315Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T21:52:57.112Z claude-code/sonnet-5.5 evidence.observed
+2026-11-07T21:52:58.090Z claude-code/sonnet-5.5 item.submitted
+2026-11-07T21:57:21.707Z pavi land.start
+2026-11-07T21:57:22.914Z pavi review.requested
+2026-11-07T21:57:23.156Z pavi land.review
+2026-11-07T21:57:26.051Z codex/gpt-6-astra review.claimed
+2026-11-07T21:59:02.697Z codex/gpt-6-astra review.rejected
+2026-11-07T21:59:02.697Z atelier/orchestrator goal.notes
+2026-11-07T22:08:35.185Z pavi item.released
+2026-11-07T22:08:35.185Z pavi item.dispatched
+2026-11-07T22:08:36.278Z claude-code/sonnet-5.5 item.claimed
+2026-11-07T22:09:53.519Z claude-code/sonnet-5.5 item.submitted
+2026-11-07T22:19:27.976Z pavi land.start
+2026-11-07T22:19:28.739Z pavi land.review
+2026-11-07T23:14:35.420Z pavi item.handoff
+2026-11-07T23:15:28.677Z claude-code/opus-5.5 push.observed
+2026-11-07T23:52:42.182Z claude-code/opus-5.5 push.observed
+2026-11-08T00:03:23.825Z claude-code/opus-5.5 item.submitted
+2026-11-08T00:04:07.213Z claude-code/opus-5.5 evidence.observed
+2026-11-08T00:04:19.326Z claude-code/opus-5.5 evidence.observed
+2026-11-08T00:17:13.255Z claude-code/opus-5.5 evidence.observed
+2026-11-08T00:17:15.210Z pavi review.requested
+2026-11-08T00:17:31.437Z codex/gpt-6-astra review.claimed
+2026-11-08T00:18:27.675Z codex/gpt-6-astra review.approved
+2026-11-08T00:26:47.131Z pavi land.start
+2026-11-08T00:26:48.443Z pavi land.review
+2026-11-08T00:26:48.698Z pavi landing.leased
+2026-11-08T00:26:48.775Z pavi land.lease
+2026-11-08T00:26:49.745Z pavi item.accepted
+2026-11-08T00:26:49.869Z pavi land.accept
+2026-11-08T00:26:50.561Z pavi checkout.leased
