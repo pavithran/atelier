@@ -3978,24 +3978,32 @@ export class Ledger extends DurableObject<Env> {
   private dispatchingOnCriteria = false;
 
   // The reviewer a dispatch on approval names for its land intent: the one
-  // the review-on-checked mapping gives the builder's company (fast mode),
-  // else the model that approved the criteria, when it is of another company
-  // than the builder. None leaves the dispatch without land intent.
-  private landReviewer(id: string, builder: string): string | null {
+  // the review-on-checked mapping gives the builder's company, else the first
+  // model of another company than the builder that the review gate would let
+  // review the builder's work (reviewerCandidates, with the builder as its
+  // contributor). With none, the dispatch is refused, so no task is built
+  // whose submit asks no review; under single-family mode only a mapping can
+  // name one.
+  private landReviewer(id: string, builder: string): string {
     const mapped = this.submissionDispatchInput({ agent: builder.split("/")[0], model: builder.split("/")[1], land: true }).reviewer;
     if (typeof mapped === "string") return mapped;
-    const approver = this.criteriaReviewsFor(id).filter(r => r.state === "approved").at(-1)?.reviewer;
-    return approver && actorFamily(approver) !== actorFamily(builder) && !privateRefusal(this.project().name, approver) ? approver : null;
+    const project = this.project().name, single = singleFamily(this.project().policy);
+    const chosen = this.reviewerCandidates({ ...this.item(id), owner: builder }, this.poolStanding(), undefined, undefined, "review", true, () => "home")
+      .find(c => !c.refusal && actorFamily(c.actor) !== actorFamily(builder) && !privateRefusal(project, c.actor));
+    if (chosen) return chosen.actor;
+    throw new RuleError("no_land_reviewer", `no reviewer of another company than ${builder} may review ${id}${single ? `, as the project runs on ${single} models alone` : ""}, and no review-on-checked mapping names one`, 409, `record a review-on-checked mapping for ${actorFamily(builder)}, or dispatch ${id} by hand`);
   }
 
   // A task filed with criteria in a project whose standing decision
   // dispatches on criteria (t522): its criteria review is asked at once, of
   // the first eligible model that is not the builder, so the approval can
-  // dispatch it with no session between. When none is eligible the task
-  // waits for the developer's own request.
+  // dispatch it with no session between. It is asked whatever
+  // requireCriteriaReview or fast mode say, since the approval is what
+  // dispatches the task. When none is eligible the task waits for the
+  // developer's own request.
   private askCriteriaReviewAtFiling(id: string, at: string): void {
     const builder = this.standing().get("dispatch-on-criteria");
-    if (!builder || builder === "off" || !this.project().policy.requireCriteriaReview || this.mode().mode === "fast") return;
+    if (!builder || builder === "off") return;
     const policy = this.project().policy, pool = this.poolStanding();
     const fit = criteriaReviewerCandidates({ authors: authorsOf(this.criteriaRevisions(id)), pool, policy, owner: this.owner, allowPaid: false })
       .filter(c => !c.refusal && !privateRefusal(this.project().name, c.actor));
@@ -4018,15 +4026,17 @@ export class Ledger extends DurableObject<Env> {
         // With land intent (t522): the submit asks the review and the
         // landing, so no session is needed between approval and landing.
         dispatch: (id, agent, model, reason) => this.ctx.storage.transactionSync(() => {
-          const reviewer = this.landReviewer(id, `${agent}/${model}`);
-          this.dispatch(id, this.owner, { to: "home", agent, model, ...(reviewer ? { land: true, reviewer } : {}) }, undefined, reason);
+          this.dispatch(id, this.owner, { to: "home", agent, model, land: true, reviewer: this.landReviewer(id, `${agent}/${model}`) }, undefined, reason);
         }),
-        // A private project's task waits on the developer, blocked with the
-        // reason, so atelier status says why it was not dispatched.
+        // A private project's task named to another company's model, or one
+        // no reviewer can be named for, waits on the developer, blocked with
+        // the reason, so atelier status says why it was not dispatched.
         refused: (item, error) => {
-          if (error.code !== "private_project") return;
+          if (error.code !== "private_project" && error.code !== "no_land_reviewer") return;
           const at = new Date().toISOString();
-          const reason = `${error.detail}; the standing dispatch-on-criteria decision names that model, so ${item.id} was not dispatched. Dispatch it to an Anthropic, OpenAI or Google model, or record another builder`;
+          const reason = error.code === "private_project"
+            ? `${error.detail}; the standing dispatch-on-criteria decision names that model, so ${item.id} was not dispatched. Dispatch it to an Anthropic, OpenAI or Google model, or record another builder`
+            : `${item.id} was not dispatched on its criteria approval: ${error.detail}. Record a review-on-checked mapping for the builder's company, or dispatch it by hand`;
           const record: Block = { reason: reason.length > REASON_MAX ? `${reason.slice(0, REASON_MAX - 1)}…` : reason, by: ORCHESTRATOR, at, from: item.state };
           this.ctx.storage.transactionSync(() => {
             this.update(item.id, { state: "blocked", blocked: JSON.stringify(record) }, at);

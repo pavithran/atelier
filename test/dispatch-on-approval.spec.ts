@@ -15,23 +15,23 @@ const TOKEN = "dispatch-on-approval-token";
 const testEnv = { ...env, ATELIER_TOKEN: TOKEN } as typeof env;
 // The developer's acting model writes the criteria, so it is their author.
 const ACTING = "codex/gpt-6-astra";
-const BUILDER = "codex/gpt-6.1-sol", OPUS = "claude-code/opus-5.5", GLM = "zcode/glm-5.3";
+const BUILDER = "codex/gpt-6.1-sol", OPUS = "claude-code/opus-5.5", SONNET = "claude-code/sonnet-5.5", GLM = "zcode/glm-5.3";
 const RUNNER = { runner: "home:rev", kind: "home" } as const;
 const AT = "2026-11-08T12:00:00.000Z";
 const entry = (id: string, harness: ModelEntry["harness"]): ModelEntry => ({ id, harness, where: "home", provider: "subscription", aliases: [], family: familyOf(id), note: "", addedBy: "owner", addedAt: AT });
-const POOL = [entry("opus-5.5", "claude-code"), entry("gpt-6.1-sol", "codex"), entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode")];
+const POOL = [entry("opus-5.5", "claude-code"), entry("sonnet-5.5", "claude-code"), entry("gpt-6.1-sol", "codex"), entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode")];
 const ledger = (key: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${key}`));
 
-function call(method: string, path: string, actor: string | null, body?: unknown, token = TOKEN, headers: Record<string, string> = {}) {
+function call(method: string, path: string, actor: string | null, body?: unknown, token = TOKEN, headers: Record<string, string> = {}, acting = ACTING) {
   return worker.fetch(new Request(`https://atelier.test/api${path}`, {
     method,
-    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(actor === "owner" && token === TOKEN ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json", ...headers },
+    headers: { authorization: `Bearer ${token}`, ...(actor ? { "x-atelier-actor": actor } : {}), ...(actor === "owner" && token === TOKEN ? { "x-atelier-acting": acting } : {}), "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), testEnv);
 }
 
-async function setup(name: string, builder: string | null = BUILDER) {
-  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], requireCriteriaReview: true }, createdAt: new Date().toISOString() };
+async function setup(name: string, builder: string | null = BUILDER, policy: Record<string, unknown> = { requireCriteriaReview: true }) {
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], ...policy }, createdAt: new Date().toISOString() };
   const L = ledger(name);
   await L.setProject(record, "owner");
   const index = env.LEDGER.get(env.LEDGER.idFromName("__index"));
@@ -43,8 +43,8 @@ async function setup(name: string, builder: string | null = BUILDER) {
 }
 type L = Awaited<ReturnType<typeof setup>>["L"];
 
-async function file(P: string, accept?: string[]) {
-  const res = await call("POST", `${P}/items`, "owner", { title: "Faster search", scope: ["src/search/**"], ...(accept ? { accept } : {}) });
+async function file(P: string, accept?: string[], acting = ACTING) {
+  const res = await call("POST", `${P}/items`, "owner", { title: "Faster search", scope: ["src/search/**"], ...(accept ? { accept } : {}) }, TOKEN, {}, acting);
   expect(res.status, await res.clone().text()).toBe(201);
   return (await res.json()) as { id: string };
 }
@@ -195,4 +195,77 @@ it("a crash inside the approval's dispatch leaves the task undispatched and unbl
   expect((await L.item(id)).dispatch).toMatchObject({ agent: "codex", model: "gpt-6.1-sol", land: true });
   await L.stageTick(new Date());
   expect(await dispatches(L, id)).toHaveLength(1);
+});
+
+it("criterion 8: with no review-on-checked mapping and an approver of the builder's company, the reviewer is the first eligible model of another company", async () => {
+  const { L, P } = await setup("approval-same-company", OPUS);
+  const { id } = await file(P, ["Search answers within 200 ms"]);
+  // The developer names Sonnet, of the builder's company, for the criteria review.
+  expect((await call("POST", `${P}/items/${id}/criteria-review-request`, "owner", { reviewer: SONNET })).status).toBe(200);
+  expect((await openReview(L, id)).map(r => r.reviewer)).toEqual([SONNET]);
+  await verdict(P, id, SONNET, true);
+  const d = (await L.item(id)).dispatch;
+  expect(d).toMatchObject({ agent: "claude-code", model: "opus-5.5", land: true });
+  expect(POOL.map(e => `${e.harness}/${e.id}`)).toContain(d?.reviewer);
+  expect(familyOf(d!.reviewer!.split("/")[1])).not.toBe("anthropic");
+});
+
+it("criterion 8: the review-on-checked mapping names the reviewer when it has one for the builder's company", async () => {
+  const { L, P } = await setup("approval-mapped", BUILDER, {});
+  await L.setMode("owner", "fast", "Test the reviewer mapping", ACTING, "Use fast mode to test the reviewer mapping");
+  await L.recordDecision({ standing: { key: "review-on-checked", value: `openai=${OPUS}` }, quote: "Opus reviews OpenAI builds" }, "owner");
+  const { id } = await file(P, ["Search answers within 200 ms"]);
+  const [asked] = await openReview(L, id);
+  await verdict(P, id, asked.reviewer, true);
+  expect((await L.item(id)).dispatch).toMatchObject({ agent: "codex", model: "gpt-6.1-sol", land: true, reviewer: OPUS });
+});
+
+it("criterion 8: a single-family project with no mapping and no reviewer of another company is not dispatched, and status says why", async () => {
+  const name = "approval-single";
+  const { L, P } = await setup(name, OPUS, { requireCriteriaReview: true, familyMode: { single: "anthropic", by: "owner", at: AT } });
+  const { id } = await file(P, ["Search answers within 200 ms"], SONNET);
+  const [asked] = await openReview(L, id);
+  expect(asked.reviewer).not.toBe(SONNET);
+  await verdict(P, id, asked.reviewer, true);
+  const item = await L.item(id);
+  expect(item.dispatch).toBeNull();
+  expect(await dispatches(L, id)).toHaveLength(0);
+  expect(item.state).toBe("blocked");
+  expect(item.blocked?.reason).toMatch(/no reviewer of another company than claude-code\/opus-5\.5/);
+  const text = formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]);
+  expect(text).toContain(id);
+  expect(text).toMatch(/no reviewer of another company/);
+});
+
+it("criterion 8: a single-family project with a mapping dispatches with the mapped reviewer", async () => {
+  const { L, P } = await setup("approval-single-mapped", OPUS, { familyMode: { single: "anthropic", by: "owner", at: AT } });
+  await L.setMode("owner", "fast", "Test the reviewer mapping", SONNET, "Use fast mode to test the reviewer mapping");
+  await L.recordDecision({ standing: { key: "review-on-checked", value: `anthropic=${SONNET}` }, quote: "Sonnet reviews Anthropic builds" }, "owner");
+  const { id } = await file(P, ["Search answers within 200 ms"], SONNET);
+  const [asked] = await openReview(L, id);
+  await verdict(P, id, asked.reviewer, true);
+  expect((await L.item(id)).dispatch).toMatchObject({ agent: "claude-code", model: "opus-5.5", land: true, reviewer: SONNET });
+});
+
+it("criterion 9: the review at filing is asked with requireCriteriaReview unset, and its approval dispatches", async () => {
+  const { L, P } = await setup("approval-unrequired", BUILDER, {});
+  const { id } = await file(P, ["Search answers within 200 ms"]);
+  const asked = await openReview(L, id);
+  expect(asked).toHaveLength(1);
+  expect((await L.item(id)).dispatch).toBeNull();
+  await verdict(P, id, asked[0].reviewer, true);
+  expect((await L.item(id)).dispatch).toMatchObject({ agent: "codex", model: "gpt-6.1-sol", land: true });
+  expect((await L.item(id)).dispatch?.reviewer).toBeTruthy();
+});
+
+it("criterion 9: the review at filing is asked in fast mode, and its approval dispatches", async () => {
+  const { L, P } = await setup("approval-fast");
+  await L.setMode("owner", "fast", "Test the review at filing", ACTING, "Use fast mode to test the review at filing");
+  const { id } = await file(P, ["Search answers within 200 ms"]);
+  const asked = await openReview(L, id);
+  expect(asked).toHaveLength(1);
+  expect((await L.item(id)).dispatch).toBeNull();
+  await verdict(P, id, asked[0].reviewer, true);
+  expect((await L.item(id)).dispatch).toMatchObject({ agent: "codex", model: "gpt-6.1-sol", land: true });
+  expect((await L.item(id)).dispatch?.reviewer).toBeTruthy();
 });
