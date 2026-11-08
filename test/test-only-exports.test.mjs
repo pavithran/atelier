@@ -123,6 +123,55 @@ test("an entry for a function that no longer exists, or that gained a caller, fa
   assert.match(lines, /line 3: src\/a\.ts:kept: no longer test-only/);
 });
 
+test("default, async and generic exports are found", () => {
+  const dir = repo({
+    "src/d.ts": "export default function orphanDefault() {}\n",
+    "src/e.ts": "export default async function orphanAsyncDefault() {}\n",
+    "src/f.ts": "export async function orphanAsync() {}\n",
+    "src/g.ts": "export const orphanGeneric = <T>(x: T) => x;\n",
+    "src/h.ts": "export const orphanAsyncGeneric = async <T,>(x: T): Promise<T> => x;\n",
+    "test/a.test.mjs": "import a from '../src/d.ts'; import b from '../src/e.ts';\nimport { orphanAsync } from '../src/f.ts'; import { orphanGeneric } from '../src/g.ts'; import { orphanAsyncGeneric } from '../src/h.ts';\norphanDefault(); orphanAsyncDefault(); orphanAsync(); orphanGeneric(1); orphanAsyncGeneric(1);\n",
+  });
+  assert.deepEqual(names(dir), ["src/d.ts:orphanDefault", "src/e.ts:orphanAsyncDefault", "src/f.ts:orphanAsync", "src/g.ts:orphanGeneric", "src/h.ts:orphanAsyncGeneric"]);
+});
+
+test("a default export imported under another name by production passes", () => {
+  const dir = repo({
+    "cli/commands/ev.mjs": "export default async function evCommand() {}\n",
+    "cli/commands/index.mjs": "import command_ev from \"./ev.mjs\";\nexport const H = [command_ev];\n",
+    "test/a.test.mjs": "import evCommand from '../cli/commands/ev.mjs'; evCommand();\n",
+  });
+  assert.deepEqual(names(dir), []);
+});
+
+test("a name inside a string, template literal or comment is not a production reference", () => {
+  const dir = repo({
+    "src/a.ts": "export function orphan() { return \"orphan\"; }\n",
+    "src/b.ts": "export const label = 'orphan';\nexport const t = `orphan ${1}`;\nexport const c = 1; // orphan\n",
+    "test/a.test.mjs": "import { orphan } from '../src/a.ts'; orphan();\n",
+  });
+  assert.deepEqual(names(dir), ["src/a.ts:orphan"]);
+});
+
+test("a name inside a template expression is a reference", () => {
+  const dir = repo({
+    "src/a.ts": "export function viaTemplate() { return 1; }\n",
+    "src/b.ts": "import { viaTemplate } from './a.ts';\nexport const t = `value ${viaTemplate()}`;\n",
+    "test/a.test.mjs": "import { viaTemplate } from '../src/a.ts'; viaTemplate();\n",
+  });
+  assert.deepEqual(names(dir), []);
+});
+
+test("a same-named declaration in another file is not a reference", () => {
+  const dir = repo({
+    "src/a.ts": "export function run() {}\n",
+    "src/b.ts": "function run() { return 2; }\nrun();\nexport const go = () => run();\n",
+    "src/c.ts": "export const run2 = 1;\n",
+    "test/a.test.mjs": "import { run } from '../src/a.ts'; run();\n",
+  });
+  assert.deepEqual(names(dir), ["src/a.ts:run"]);
+});
+
 test("this repository holds no test-only function outside the baseline", () => {
   const lines = checkTestOnlyExports(root, readFileSync(new URL("./test-only-exports.txt", import.meta.url), "utf8"));
   assert.deepEqual(lines, []);
