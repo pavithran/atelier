@@ -1,0 +1,122 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A · Today · Atelier</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="base.css">
+<style>
+.bar { position: sticky; top: 0; z-index: 10; background: rgba(var(--surface-rgb), .92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.bar-in { max-width: 1040px; margin: 0 auto; padding: 0 24px; height: 56px; display: flex; align-items: center; gap: 28px; }
+.brand { font: 800 19px/1 var(--font-display); }
+.nav { display: flex; gap: 4px; }
+.nav a { padding: 8px 12px; border-radius: 8px; color: var(--text-muted); font-weight: 500; }
+.nav a[aria-current] { color: var(--text); background: var(--inset); }
+.nav .soon { border: 1px dashed var(--line-bright); }
+.who { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 13px; }
+.live { display: inline-flex; align-items: center; gap: 6px; } .live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); animation: breathe 2.4s infinite; }
+main { max-width: 1040px; margin: 0 auto; padding: 40px 24px 80px; }
+.date { color: var(--text-muted); font-size: 14px; margin-bottom: 6px; }
+h1 { font-size: 44px; font-weight: 800; line-height: 1.05; }
+h1 em { font-style: normal; color: var(--signal); }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 28px 0 44px; }
+.tile { background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-medium); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; transition: border-color .2s; }
+.tile:hover { border-color: var(--line-bright); }
+.tile .n { font: 800 34px/1 var(--font-display); }
+.tile .l { font-size: 13px; color: var(--text-muted); }
+.tile.you { border-color: var(--wire); background: rgba(var(--signal-rgb), .07); } .tile.you .n { color: var(--signal); }
+.dots { display: flex; gap: 4px; flex-wrap: wrap; height: 10px; } .dots i { width: 10px; height: 10px; border-radius: 3px; background: var(--fam); }
+.spark { display: flex; align-items: end; gap: 3px; height: 22px; } .spark i { flex: 1; background: var(--ok); border-radius: 2px; opacity: .8; }
+.ships { display: flex; gap: 6px; } .ships i { width: 22px; height: 10px; border-radius: 3px; background: var(--ok); } .ships i.off { background: rgba(var(--text-rgb), .12); }
+section { margin-bottom: 44px; }
+.sh { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.sh h2 { font-size: 22px; font-weight: 700; } .sh .c { color: var(--text-muted); font: 500 14px var(--font-mono); } .sh a { margin-left: auto; font-size: 13px; color: var(--text-muted); }
+.ask { display: grid; grid-template-columns: 1fr auto; gap: 6px 20px; padding: 18px 20px; border: 1px solid var(--line); border-left: 3px solid var(--signal); border-radius: var(--radius-medium); background: var(--surface-raised); margin-bottom: 10px; align-items: center; }
+.ask .t { font-weight: 600; font-size: 16px; } .ask .meta { font-size: 13px; color: var(--text-muted); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.ask .why { grid-column: 1; font-size: 14px; color: var(--text-muted); }
+.ask .acts { grid-row: 1 / span 3; grid-column: 2; display: flex; gap: 8px; }
+.lane { display: grid; grid-template-columns: 22px 1fr 220px 90px; gap: 16px; align-items: center; padding: 14px 4px; border-bottom: 1px solid var(--line); }
+.lane .t { font-weight: 500; } .lane .sub { font-size: 13px; color: var(--text-muted); }
+.lane .st { font-size: 12px; color: var(--text-muted); margin-top: 6px; display: flex; justify-content: space-between; }
+.lane .el { text-align: right; font: 13px var(--font-mono); color: var(--text-muted); }
+.lane.stuck .el { color: var(--warn); }
+.landed { position: relative; padding-left: 26px; }
+.landed::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px; background: var(--line-bright); }
+.ev { position: relative; padding: 8px 0 14px; display: flex; gap: 14px; align-items: baseline; }
+.ev::before { content: ""; position: absolute; left: -25px; top: 13px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--fam, var(--ok)); }
+.ev.deploy::before { background: var(--ok); border-color: var(--ok); border-radius: 3px; }
+.ev .tm { font: 13px var(--font-mono); color: var(--text-muted); width: 52px; flex: none; }
+.ev .t { font-weight: 500; } .ev .sub { font-size: 13px; color: var(--text-muted); }
+.projects { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.proj { border: 1px solid var(--line); border-radius: var(--radius-medium); padding: 16px; background: var(--surface-raised); }
+.proj h3 { font-size: 18px; } .proj .k { font-size: 13px; color: var(--text-muted); margin: 4px 0 12px; }
+.bars { display: flex; align-items: end; gap: 3px; height: 34px; } .bars i { flex: 1; border-radius: 2px; background: var(--fam); }
+@media (max-width: 760px) {
+  .bar-in { padding: 0 16px; gap: 12px; } .nav a { padding: 8px 8px; font-size: 14px; } .nav .hide-s, .who .hide-s { display: none; }
+  main { padding: 24px 16px 60px; } h1 { font-size: 32px; }
+  .tiles { grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 20px 0 32px; } .tile .n { font-size: 28px; }
+  .ask { grid-template-columns: 1fr; } .ask .acts { grid-row: auto; grid-column: 1; margin-top: 8px; }
+  .lane { grid-template-columns: 14px 1fr 70px; } .lane .trk { grid-column: 2 / span 2; }
+  .projects { grid-template-columns: 1fr; }
+}
+</style></head><body>
+<header class="bar"><div class="bar-in">
+  <a class="brand" href="#">Atelier</a>
+  <nav class="nav"><a aria-current="page">Today</a><a>Projects</a><a class="soon" title="Designed separately">Flow</a><a class="hide-s">History</a></nav>
+  <div class="who"><span class="live">Live</span><span class="hide-s">PAVI ▾</span></div>
+</div></header>
+<main>
+  <div class="date">Sunday 8 November · 10:42 EST</div>
+  <h1><em>3 things</em> wait for you.<br>5 agents are building.</h1>
+
+  <div class="tiles">
+    <a class="tile you"><span class="n">3</span><span class="l">Need you</span><div class="dots"><i class="f-you"></i><i class="f-you"></i><i class="f-you"></i></div></a>
+    <a class="tile"><span class="n">5</span><span class="l">Running now</span><div class="dots"><i class="f-anthropic"></i><i class="f-anthropic"></i><i class="f-openai"></i><i class="f-zai"></i><i class="f-google"></i></div></a>
+    <a class="tile"><span class="n">7</span><span class="l">Merged today</span><div class="spark"><i style="height:30%"></i><i style="height:55%"></i><i style="height:20%"></i><i style="height:70%"></i><i style="height:45%"></i><i style="height:90%"></i><i style="height:60%"></i></div></a>
+    <a class="tile"><span class="n">2</span><span class="l">Deploys today · main green</span><div class="ships"><i></i><i></i><i class="off"></i></div></a>
+  </div>
+
+  <section>
+    <div class="sh"><h2>Needs you</h2><span class="c">3</span><a href="#">All decisions →</a></div>
+    <div class="ask"><div class="t">Report's help states its length limit</div>
+      <div class="meta"><span class="mono">atelier · t553</span><span class="chip ok">Ready to land</span><span class="f-anthropic"><span class="fam-dot"></span> opus-5.5</span></div>
+      <div class="why">2 of 2 checks passed on a runner; reviewed by gpt-6. Main has not moved.</div>
+      <div class="acts"><a class="btn primary">Land</a><a class="btn">Diff</a></div></div>
+    <div class="ask"><div class="t">Tasks naming one design note wait for each other</div>
+      <div class="meta"><span class="mono">atelier · t538</span><span class="chip warn">Blocked</span><span class="f-openai"><span class="fam-dot"></span> gpt-6-astra</span></div>
+      <div class="why">“The baseline's fixture for sessions is missing; which login flow is current?”</div>
+      <div class="acts"><a class="btn primary">Answer</a><a class="btn">Open</a></div></div>
+    <div class="ask"><div class="t">Offline sync of notes</div>
+      <div class="meta"><span class="mono">field-notes · t70</span><span class="chip bad">Needs a reviewer</span><span class="f-zai"><span class="fam-dot"></span> glm-5.3</span></div>
+      <div class="why">Touches a protected path; no reviewer of another family is online.</div>
+      <div class="acts"><a class="btn primary">Allow override</a><a class="btn">Open</a></div></div>
+  </section>
+
+  <section>
+    <div class="sh"><h2>Running</h2><span class="c">5</span><a href="#">Flow →</a></div>
+    <div class="lane f-anthropic"><span class="fam-dot"></span><div><div class="t">A review mentioning ‘too long’ is not a size refusal</div><div class="sub"><span class="mono">atelier · t554</span> · opus-5.5</div></div><div class="trk"><div class="track"><i class="done"></i><i class="done"></i><i class="now"></i><i></i><i></i></div><div class="st"><span>Prove · checks running</span></div></div><div class="el">12 min</div></div>
+    <div class="lane f-openai"><span class="fam-dot"></span><div><div class="t">Show the design hold on the task page</div><div class="sub"><span class="mono">atelier · t556</span> · gpt-6-astra</div></div><div class="trk"><div class="track"><i class="done"></i><i class="done"></i><i class="done"></i><i class="now"></i><i></i></div><div class="st"><span>Review · by opus-5.5</span></div></div><div class="el">4 min</div></div>
+    <div class="lane f-zai"><span class="fam-dot"></span><div><div class="t">Search across notebooks</div><div class="sub"><span class="mono">field-notes · t72</span> · glm-5.3</div></div><div class="trk"><div class="track"><i class="done"></i><i class="now"></i><i></i><i></i><i></i></div><div class="st"><span>Branch · building</span></div></div><div class="el">38 min</div></div>
+    <div class="lane f-google stuck"><span class="fam-dot"></span><div><div class="t">Refactor paging on the log</div><div class="sub"><span class="mono">ledger-core · t193</span> · gemini-3.1-pro</div></div><div class="trk"><div class="track"><i class="done"></i><i class="now"></i><i></i><i></i><i></i></div><div class="st"><span>Branch · no push for 2 h</span></div></div><div class="el">2 h · stuck</div></div>
+    <div class="lane f-anthropic"><span class="fam-dot"></span><div><div class="t">Share sheet keeps the last folder</div><div class="sub"><span class="mono">field-notes · t74</span> · sonnet-5.5</div></div><div class="trk"><div class="track"><i class="now"></i><i></i><i></i><i></i><i></i></div><div class="st"><span>Claim · queued for a runner</span></div></div><div class="el">1 min</div></div>
+  </section>
+
+  <section>
+    <div class="sh"><h2>Merged and deployed today</h2><span class="c">7 · 2 deploys</span><a href="#">History →</a></div>
+    <div class="landed">
+      <div class="ev deploy"><span class="tm">10:20</span><div><div class="t">Deployed atelier at 23b951bd</div><div class="sub">3 merges shipped · post-merge checks green</div></div></div>
+      <div class="ev f-anthropic"><span class="tm">10:05</span><div><div class="t">t551 Review notices name the finding they answer</div><div class="sub">atelier · opus-5.5 · reviewed by gpt-6</div></div></div>
+      <div class="ev f-openai"><span class="tm">09:41</span><div><div class="t">t549 Design hold applies with no core files</div><div class="sub">atelier · gpt-6-astra · 2 findings fixed</div></div></div>
+      <div class="ev f-zai"><span class="tm">08:12</span><div><div class="t">t69 Keychain crash on first launch</div><div class="sub">field-notes · glm-5.3</div></div></div>
+      <div class="ev deploy"><span class="tm">07:30</span><div><div class="t">Deployed field-notes at 4be01c7</div><div class="sub">2 merges shipped</div></div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sh"><h2>Projects</h2><span class="c">3 active</span><a href="#">All →</a></div>
+    <div class="projects">
+      <a class="proj f-anthropic"><h3>atelier</h3><div class="k">2 need you · 3 running · last merge 37 min</div><div class="bars"><i style="height:40%"></i><i style="height:65%"></i><i style="height:30%"></i><i style="height:80%"></i><i style="height:55%"></i><i style="height:90%"></i><i style="height:70%"></i><i style="height:45%"></i><i style="height:60%"></i><i style="height:100%"></i><i style="height:75%"></i><i style="height:50%"></i><i style="height:85%"></i><i style="height:65%"></i></div></a>
+      <a class="proj f-zai"><h3>field-notes</h3><div class="k">1 needs you · 2 running · last merge 2 h</div><div class="bars"><i style="height:20%"></i><i style="height:35%"></i><i style="height:50%"></i><i style="height:25%"></i><i style="height:40%"></i><i style="height:30%"></i><i style="height:55%"></i><i style="height:60%"></i><i style="height:20%"></i><i style="height:45%"></i><i style="height:35%"></i><i style="height:70%"></i><i style="height:40%"></i><i style="height:50%"></i></div></a>
+      <a class="proj f-google"><h3>ledger-core</h3><div class="k">1 stuck · last merge 1 d</div><div class="bars"><i style="height:30%"></i><i style="height:20%"></i><i style="height:45%"></i><i style="height:15%"></i><i style="height:10%"></i><i style="height:25%"></i><i style="height:5%"></i><i style="height:10%"></i><i style="height:5%"></i><i style="height:20%"></i><i style="height:8%"></i><i style="height:4%"></i><i style="height:12%"></i><i style="height:6%"></i></div></a>
+    </div>
+  </section>
+</main>
+<div class="mock-note">Direction A · Today · mockup data</div>
+</body></html>

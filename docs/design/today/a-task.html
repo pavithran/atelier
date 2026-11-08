@@ -1,0 +1,74 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A · t553 · Atelier</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="base.css">
+<style>
+.bar { border-bottom: 1px solid var(--line); }
+.bar-in { max-width: 860px; margin: 0 auto; padding: 0 24px; height: 56px; display: flex; align-items: center; gap: 28px; }
+.brand { font: 800 19px/1 var(--font-display); }
+.nav { display: flex; gap: 4px; } .nav a { padding: 8px 12px; border-radius: 8px; color: var(--text-muted); font-weight: 500; }
+.nav a[aria-current] { color: var(--text); background: var(--inset); } .nav .soon { border: 1px dashed var(--line-bright); }
+main { max-width: 860px; margin: 0 auto; padding: 28px 24px 80px; }
+.crumb { font-size: 14px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; }
+h1 { font-size: 38px; font-weight: 800; line-height: 1.1; margin: 10px 0 14px; }
+.who { display: flex; gap: 14px; align-items: center; font-size: 14px; color: var(--text-muted); flex-wrap: wrap; }
+.verdict { margin: 28px 0 32px; border: 1px solid var(--observed-line); background: rgba(var(--observed-rgb), .06); border-radius: var(--radius-large); padding: 22px 24px; display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; }
+.verdict h2 { font-size: 22px; } .verdict p { margin: 6px 0 0; color: var(--text-muted); }
+.verdict .acts { display: flex; gap: 8px; }
+.stages { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; margin-bottom: 36px; }
+.stg { padding-top: 10px; border-top: 4px solid var(--m-anthropic); font-size: 13px; }
+.stg b { display: block; font-weight: 600; font-size: 14px; } .stg span { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+.stg.now { border-color: var(--signal); } .stg.next { border-color: rgba(var(--text-rgb), .14); color: var(--text-muted); }
+h3 { font-size: 18px; font-weight: 700; margin: 0 0 12px; }
+.evidence { list-style: none; padding: 0; margin: 0 0 36px; border: 1px solid var(--line); border-radius: var(--radius-medium); overflow: hidden; }
+.evidence li { display: grid; grid-template-columns: 26px 1fr auto; gap: 12px; padding: 13px 16px; border-bottom: 1px solid var(--line); align-items: center; background: var(--surface-raised); }
+.evidence li:last-child { border-bottom: 0; }
+.ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: rgba(var(--observed-rgb), .15); color: var(--ok); }
+.ic svg { width: 13px; height: 13px; }
+.evidence .w { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+blockquote { margin: 0 0 36px; padding: 16px 20px; border-left: 3px solid var(--m-anthropic); background: var(--surface-raised); border-radius: 0 var(--radius-medium) var(--radius-medium) 0; font-size: 16px; }
+blockquote small { display: block; margin-top: 8px; color: var(--text-muted); font-size: 13px; }
+.diff { border: 1px solid var(--line); border-radius: var(--radius-medium); overflow: hidden; font: 13px/1.6 var(--font-mono); margin-bottom: 36px; }
+.diff .fh { display: flex; justify-content: space-between; padding: 10px 14px; background: var(--surface-raised); border-bottom: 1px solid var(--line); }
+.diff pre { margin: 0; padding: 10px 0; overflow-x: auto; } .diff .l { padding: 0 14px; display: block; white-space: pre; }
+.diff .a { background: rgba(var(--observed-rgb), .12); } .diff .d { background: rgba(var(--fault-rgb), .1); }
+details { border-top: 1px solid var(--line); padding: 14px 0; } summary { font-weight: 600; cursor: pointer; }
+@media (max-width: 760px) {
+  .bar-in, main { padding-left: 16px; padding-right: 16px; } .bar-in { gap: 12px; } .nav a { padding: 8px; }
+  h1 { font-size: 28px; } .verdict { grid-template-columns: 1fr; padding: 18px; } .stages { grid-template-columns: repeat(5, 1fr); }
+  .stg span { display: none; } .stg b { font-size: 12px; }
+}
+</style></head><body>
+<header class="bar"><div class="bar-in"><a class="brand">Atelier</a><nav class="nav"><a>Today</a><a aria-current="page">Projects</a><a class="soon">Flow</a></nav></div></header>
+<main>
+  <div class="crumb"><a>atelier</a> / <span class="mono">t553</span></div>
+  <h1>atelier report's help states its length limit</h1>
+  <div class="who"><span class="chip ok">Ready to land</span><span class="f-anthropic"><span class="fam-dot"></span> built by claude-code/opus-5.5</span><span class="f-openai"><span class="fam-dot"></span> reviewed by codex/gpt-6</span><span class="mono">head 7e41c2a</span></div>
+
+  <div class="verdict"><div><h2>Ready for you to land</h2><p>2 of 2 checks passed on a runner at this head, the review approved it, and main has not moved since it branched.</p></div>
+    <div class="acts"><a class="btn primary">Land t553</a><a class="btn">Request changes</a></div></div>
+
+  <div class="stages">
+    <div class="stg"><b>Claim</b><span>09:12</span></div><div class="stg"><b>Branch</b><span>09:14</span></div><div class="stg"><b>Prove</b><span>09:31</span></div><div class="stg"><b>Review</b><span>09:52</span></div><div class="stg now"><b>Land</b><span>waits for you</span></div>
+  </div>
+
+  <h3>Evidence</h3>
+  <ul class="evidence">
+    <li><span class="ic"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 8.5l3 3 7-7"/></svg></span><span><span class="mono">npm test</span> passed</span><span class="w">runner · clean clone · 41 s</span></li>
+    <li><span class="ic"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 8.5l3 3 7-7"/></svg></span><span><span class="mono">npm run typecheck</span> passed</span><span class="w">runner · clean clone · 18 s</span></li>
+    <li><span class="ic"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 8.5l3 3 7-7"/></svg></span><span>Approved by gpt-6, another family</span><span class="w">1 finding, fixed</span></li>
+    <li><span class="ic"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 8.5l3 3 7-7"/></svg></span><span>Within its scope · no protected path</span><span class="w">2 files · +14 −3</span></li>
+  </ul>
+
+  <h3>What the agent says</h3>
+  <blockquote>“The help for atelier report now states the 4,000-character limit and what happens past it; a test reads the help text.”<small>opus-5.5's summary, not verified</small></blockquote>
+
+  <h3>Changes</h3>
+  <div class="diff"><div class="fh"><span>cli/report.mjs</span><span class="muted">+9 −2</span></div><pre><span class="l muted">@@ -18,7 +18,14 @@</span><span class="l">  const usage = [</span><span class="l d">-   "atelier report TASK TEXT",</span><span class="l a">+   "atelier report TASK TEXT   (at most 4,000 characters;",</span><span class="l a">+   "                            longer text is refused, not cut)",</span><span class="l">  ];</span></pre></div>
+
+  <details><summary>Thread and history · 14 events</summary></details>
+  <details><summary>Submission rounds · 2</summary></details>
+  <details><summary>Technical details and handoff</summary></details>
+</main>
+<div class="mock-note">Direction A · task page</div>
+</body></html>
