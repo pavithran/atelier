@@ -1,0 +1,776 @@
+{
+ "week": {
+  "phases": {
+   "criteriaReview": {
+    "n": 31,
+    "median": 1.7336666666666667,
+    "p90": 5.532866666666667,
+    "total": 148.67068333333333,
+    "share": 0.0063044394265085275
+   },
+   "runnerWait": {
+    "n": 85,
+    "median": 42.29356666666666,
+    "p90": 625.8474533333335,
+    "total": 12970.224933333333,
+    "share": 0.5500075442382595
+   },
+   "build": {
+    "n": 90,
+    "median": 22.116841666666666,
+    "p90": 83.38981500000044,
+    "total": 5695.3215666666665,
+    "share": 0.24151237504594986
+   },
+   "checks": {
+    "n": 89,
+    "median": 0.6429833333333334,
+    "p90": 86.88217000000004,
+    "total": 2601.91665,
+    "share": 0.11033530986045549
+   },
+   "reviewWait": {
+    "n": 88,
+    "median": 5.271058333333333,
+    "p90": 37.06281499999999,
+    "total": 1293.4081666666666,
+    "share": 0.05484748746475423
+   },
+   "accept": {
+    "n": 84,
+    "median": 0.07815833333333333,
+    "p90": 1.0508950000000021,
+    "total": 128.5868,
+    "share": 0.005452774369987762
+   },
+   "waitToLand": {
+    "n": 84,
+    "median": 0.3339333333333333,
+    "p90": 17.42533833333334,
+    "total": 739.5081333333334,
+    "share": 0.031359136364210734
+   },
+   "merge": {
+    "n": 83,
+    "median": 0.048,
+    "p90": 0.05674,
+    "total": 4.26675,
+    "share": 0.00018093322987386952
+   }
+  },
+  "loops": {
+   "tasks": 134,
+   "submitted": 89,
+   "merged": 83,
+   "rejected_tasks": 24,
+   "rejections": 61,
+   "blocked3": 10,
+   "checkfail_tasks": 15,
+   "checkfails": 39,
+   "conflict_tasks": 1,
+   "conflicts": 1,
+   "rounds_median": 1.0,
+   "rounds_mean": 1.6741573033707866,
+   "rounds_hist": {
+    "1": 61,
+    "2": 11,
+    "3": 8,
+    "4": 4,
+    "5": 4,
+    "6": 1,
+    "7": 0
+   },
+   "ttm_median": 139.9516,
+   "ttm_p90": 1005.0526299999999,
+   "criteria_entered": 31,
+   "runner_entered": 85
+  }
+ },
+ "prior23d": {
+  "phases": {
+   "criteriaReview": {
+    "n": 78,
+    "median": 1.6117583333333334,
+    "p90": 8.031289999999998,
+    "total": 335.8392333333333,
+    "share": 0.003229325489145604
+   },
+   "runnerWait": {
+    "n": 93,
+    "median": 38.27203333333333,
+    "p90": 222.2914666666666,
+    "total": 8712.830866666667,
+    "share": 0.08377986848372368
+   },
+   "build": {
+    "n": 111,
+    "median": 37.790866666666666,
+    "p90": 253.23961666666668,
+    "total": 67495.70501666666,
+    "share": 0.6490176816293386
+   },
+   "checks": {
+    "n": 92,
+    "median": 20.233416666666667,
+    "p90": 117.20492333333334,
+    "total": 5135.9962,
+    "share": 0.04938614013673893
+   },
+   "reviewWait": {
+    "n": 93,
+    "median": 68.00653333333334,
+    "p90": 315.49490999999995,
+    "total": 16862.491666666665,
+    "share": 0.16214446897460563
+   },
+   "accept": {
+    "n": 86,
+    "median": 10.774841666666667,
+    "p90": 125.62624166666667,
+    "total": 4025.59015,
+    "share": 0.03870882133459832
+   },
+   "waitToLand": {
+    "n": 86,
+    "median": 0.3136916666666667,
+    "p90": 0.5366500000000001,
+    "total": 1427.7413666666666,
+    "share": 0.013728716390642805
+   },
+   "merge": {
+    "n": 15,
+    "median": 0.038,
+    "p90": 0.05222333333333333,
+    "total": 0.51765,
+    "share": 4.977561206486662e-06
+   }
+  },
+  "loops": {
+   "tasks": 396,
+   "submitted": 94,
+   "merged": 113,
+   "rejected_tasks": 45,
+   "rejections": 74,
+   "blocked3": 5,
+   "checkfail_tasks": 39,
+   "checkfails": 344,
+   "conflict_tasks": 2,
+   "conflicts": 2,
+   "rounds_median": 4.0,
+   "rounds_mean": 4.457446808510638,
+   "rounds_hist": {
+    "1": 7,
+    "2": 25,
+    "3": 14,
+    "4": 11,
+    "5": 11,
+    "6": 10,
+    "7": 3
+   },
+   "ttm_median": 592.3950333333333,
+   "ttm_p90": 3258.7582266666664,
+   "criteria_entered": 78,
+   "runner_entered": 93
+  }
+ },
+ "d30": {
+  "phases": {
+   "criteriaReview": {
+    "n": 109,
+    "median": 1.6566166666666666,
+    "p90": 7.787646666666667,
+    "total": 484.50991666666664,
+    "share": 0.003797721607748753
+   },
+   "runnerWait": {
+    "n": 178,
+    "median": 38.780766666666665,
+    "p90": 454.0594633333334,
+    "total": 21683.218233333333,
+    "share": 0.16995901131764604
+   },
+   "build": {
+    "n": 201,
+    "median": 28.19355,
+    "p90": 200.60728333333333,
+    "total": 73191.35145,
+    "share": 0.5736938860081771
+   },
+   "checks": {
+    "n": 181,
+    "median": 11.15965,
+    "p90": 105.71025,
+    "total": 7737.91285,
+    "share": 0.060651883105911804
+   },
+   "reviewWait": {
+    "n": 181,
+    "median": 21.6466,
+    "p90": 213.98745,
+    "total": 18155.899833333333,
+    "share": 0.1423109223017389
+   },
+   "accept": {
+    "n": 170,
+    "median": 0.1122,
+    "p90": 61.64809833333332,
+    "total": 4154.17695,
+    "share": 0.03256157825203126
+   },
+   "waitToLand": {
+    "n": 170,
+    "median": 0.31669166666666665,
+    "p90": 12.606881666666665,
+    "total": 2167.2495,
+    "share": 0.016987495967384254
+   },
+   "merge": {
+    "n": 98,
+    "median": 0.04754166666666666,
+    "p90": 0.05562333333333333,
+    "total": 4.7844,
+    "share": 3.7501439361897754e-05
+   }
+  },
+  "loops": {
+   "tasks": 530,
+   "submitted": 183,
+   "merged": 196,
+   "rejected_tasks": 69,
+   "rejections": 135,
+   "blocked3": 15,
+   "checkfail_tasks": 54,
+   "checkfails": 383,
+   "conflict_tasks": 3,
+   "conflicts": 3,
+   "rounds_median": 2.0,
+   "rounds_mean": 3.1038251366120218,
+   "rounds_hist": {
+    "1": 68,
+    "2": 36,
+    "3": 22,
+    "4": 15,
+    "5": 15,
+    "6": 11,
+    "7": 3
+   },
+   "ttm_median": 302.723475,
+   "ttm_p90": 2927.834875,
+   "criteria_entered": 109,
+   "runner_entered": 178
+  }
+ },
+ "reported": {
+  "project": "atelier",
+  "since": "2026-11-01T12:36:15.582Z",
+  "observedAt": "2026-11-08T12:36:15.582Z",
+  "medianMinutesToMerge": 139.9516,
+  "medianReviewRounds": 1,
+  "phaseShares": {
+   "criteriaReview": 0.0063044394265085275,
+   "runnerWait": 0.5500075442382595,
+   "build": 0.24151237504594988,
+   "checks": 0.11033530986045549,
+   "reviewWait": 0.054847487464754235,
+   "accept": 0.005452774369987762,
+   "waitToLand": 0.031359136364210734,
+   "merge": 0.00018093322987386952
+  },
+  "totals": {
+   "criteriaReview": {
+    "ms": 8920241,
+    "unknownTasks": 0,
+    "openTasks": 0
+   },
+   "runnerWait": {
+    "ms": 778213496,
+    "unknownTasks": 0,
+    "openTasks": 1
+   },
+   "build": {
+    "ms": 341719294,
+    "unknownTasks": 0,
+    "openTasks": 2
+   },
+   "checks": {
+    "ms": 156114999,
+    "unknownTasks": 0,
+    "openTasks": 0
+   },
+   "reviewWait": {
+    "ms": 77604490,
+    "unknownTasks": 1,
+    "openTasks": 0
+   },
+   "accept": {
+    "ms": 7715208,
+    "unknownTasks": 0,
+    "openTasks": 0
+   },
+   "waitToLand": {
+    "ms": 44370488,
+    "unknownTasks": 0,
+    "openTasks": 0
+   },
+   "merge": {
+    "ms": 256005,
+    "unknownTasks": 0,
+    "openTasks": 0
+   }
+  },
+  "counted": 134,
+  "measured": 105,
+  "merged": 83,
+  "attemptsPerMerge": 1.5542168674698795,
+  "conflictRate": 0.007462686567164179,
+  "rejectionRate": 0.1791044776119403,
+  "checkFailureRate": 0.11194029850746269
+ },
+ "weeks": [
+  {
+   "days": 7,
+   "phases": {
+    "criteriaReview": {
+     "n": 31,
+     "median": 1.7336666666666667,
+     "p90": 5.532866666666667,
+     "total": 148.67068333333333,
+     "share": 0.0063044394265085275
+    },
+    "runnerWait": {
+     "n": 85,
+     "median": 42.29356666666666,
+     "p90": 625.8474533333335,
+     "total": 12970.224933333333,
+     "share": 0.5500075442382595
+    },
+    "build": {
+     "n": 90,
+     "median": 22.116841666666666,
+     "p90": 83.38981500000044,
+     "total": 5695.3215666666665,
+     "share": 0.24151237504594986
+    },
+    "checks": {
+     "n": 89,
+     "median": 0.6429833333333334,
+     "p90": 86.88217000000004,
+     "total": 2601.91665,
+     "share": 0.11033530986045549
+    },
+    "reviewWait": {
+     "n": 88,
+     "median": 5.271058333333333,
+     "p90": 37.06281499999999,
+     "total": 1293.4081666666666,
+     "share": 0.05484748746475423
+    },
+    "accept": {
+     "n": 84,
+     "median": 0.07815833333333333,
+     "p90": 1.0508950000000021,
+     "total": 128.5868,
+     "share": 0.005452774369987762
+    },
+    "waitToLand": {
+     "n": 84,
+     "median": 0.3339333333333333,
+     "p90": 17.42533833333334,
+     "total": 739.5081333333334,
+     "share": 0.031359136364210734
+    },
+    "merge": {
+     "n": 83,
+     "median": 0.048,
+     "p90": 0.05674,
+     "total": 4.26675,
+     "share": 0.00018093322987386952
+    }
+   },
+   "loops": {
+    "tasks": 134,
+    "submitted": 89,
+    "merged": 83,
+    "rejected_tasks": 24,
+    "rejections": 61,
+    "blocked3": 10,
+    "checkfail_tasks": 15,
+    "checkfails": 39,
+    "conflict_tasks": 1,
+    "conflicts": 1,
+    "rounds_median": 1.0,
+    "rounds_mean": 1.6741573033707866,
+    "rounds_hist": {
+     "1": 61,
+     "2": 11,
+     "3": 8,
+     "4": 4,
+     "5": 4,
+     "6": 1,
+     "7": 0
+    },
+    "ttm_median": 139.9516,
+    "ttm_p90": 1005.0526299999999,
+    "criteria_entered": 31,
+    "runner_entered": 85
+   },
+   "n": 134
+  },
+  {
+   "days": 14,
+   "phases": {
+    "criteriaReview": {
+     "n": 30,
+     "median": 1.50245,
+     "p90": 4.051335,
+     "total": 63.844166666666666,
+     "share": 0.0016830567545801727
+    },
+    "runnerWait": {
+     "n": 40,
+     "median": 55.635266666666666,
+     "p90": 460.30328666666685,
+     "total": 6064.135466666667,
+     "share": 0.15986243835165084
+    },
+    "build": {
+     "n": 50,
+     "median": 35.604124999999996,
+     "p90": 202.5743216666667,
+     "total": 15757.372633333332,
+     "share": 0.41539507569162043
+    },
+    "checks": {
+     "n": 42,
+     "median": 12.314216666666667,
+     "p90": 114.296055,
+     "total": 2727.2469833333334,
+     "share": 0.07189554968541997
+    },
+    "reviewWait": {
+     "n": 42,
+     "median": 58.897758333333336,
+     "p90": 299.3333383333333,
+     "total": 9867.8521,
+     "share": 0.26013582755046494
+    },
+    "accept": {
+     "n": 40,
+     "median": 29.343674999999998,
+     "p90": 143.91121333333334,
+     "total": 2041.5182,
+     "share": 0.05381840151580054
+    },
+    "waitToLand": {
+     "n": 37,
+     "median": 0.3502,
+     "p90": 0.79192,
+     "total": 1410.97315,
+     "share": 0.037196004186841866
+    },
+    "merge": {
+     "n": 15,
+     "median": 0.038,
+     "p90": 0.05222333333333333,
+     "total": 0.51765,
+     "share": 1.3646263621188465e-05
+    }
+   },
+   "loops": {
+    "tasks": 134,
+    "submitted": 42,
+    "merged": 37,
+    "rejected_tasks": 15,
+    "rejections": 28,
+    "blocked3": 2,
+    "checkfail_tasks": 12,
+    "checkfails": 96,
+    "conflict_tasks": 2,
+    "conflicts": 2,
+    "rounds_median": 3.0,
+    "rounds_mean": 3.642857142857143,
+    "rounds_hist": {
+     "1": 2,
+     "2": 18,
+     "3": 8,
+     "4": 4,
+     "5": 3,
+     "6": 1,
+     "7": 1
+    },
+    "ttm_median": 427.7852,
+    "ttm_p90": 2630.2154333333333,
+    "criteria_entered": 30,
+    "runner_entered": 40
+   },
+   "n": 152
+  },
+  {
+   "days": 21,
+   "phases": {
+    "criteriaReview": {
+     "n": 48,
+     "median": 1.8647666666666667,
+     "p90": 8.753928333333338,
+     "total": 271.9950666666667,
+     "share": 0.00411719161948166
+    },
+    "runnerWait": {
+     "n": 53,
+     "median": 0.6172666666666666,
+     "p90": 114.70615333333338,
+     "total": 2648.6954,
+     "share": 0.0400933246219648
+    },
+    "build": {
+     "n": 61,
+     "median": 47.672016666666664,
+     "p90": 345.13011666666665,
+     "total": 51738.332383333334,
+     "share": 0.783163573902872
+    },
+    "checks": {
+     "n": 50,
+     "median": 20.668,
+     "p90": 128.8882866666667,
+     "total": 2408.7492166666666,
+     "share": 0.0364612572199582
+    },
+    "reviewWait": {
+     "n": 51,
+     "median": 76.44201666666666,
+     "p90": 319.3926833333333,
+     "total": 6994.639566666667,
+     "share": 0.1058779181479327
+    },
+    "accept": {
+     "n": 46,
+     "median": 9.482858333333333,
+     "p90": 68.38845833333333,
+     "total": 1984.07195,
+     "share": 0.030032913850601584
+    },
+    "waitToLand": {
+     "n": 49,
+     "median": 0.30528333333333335,
+     "p90": 0.46756333333333344,
+     "total": 16.768216666666667,
+     "share": 0.00025382063718920155
+    },
+    "merge": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0.0
+    }
+   },
+   "loops": {
+    "tasks": 262,
+    "submitted": 52,
+    "merged": 76,
+    "rejected_tasks": 30,
+    "rejections": 46,
+    "blocked3": 3,
+    "checkfail_tasks": 27,
+    "checkfails": 248,
+    "conflict_tasks": 0,
+    "conflicts": 0,
+    "rounds_median": 5.0,
+    "rounds_mean": 5.115384615384615,
+    "rounds_hist": {
+     "1": 5,
+     "2": 7,
+     "3": 6,
+     "4": 7,
+     "5": 8,
+     "6": 9,
+     "7": 2
+    },
+    "ttm_median": 632.3732916666667,
+    "ttm_p90": 3258.941225,
+    "criteria_entered": 48,
+    "runner_entered": 53
+   },
+   "n": 271
+  },
+  {
+   "days": 28,
+   "phases": {
+    "criteriaReview": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "runnerWait": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "build": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "checks": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "reviewWait": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "accept": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "waitToLand": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "merge": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    }
+   },
+   "loops": {
+    "tasks": 0,
+    "submitted": 0,
+    "merged": 0,
+    "rejected_tasks": 0,
+    "rejections": 0,
+    "blocked3": 0,
+    "checkfail_tasks": 0,
+    "checkfails": 0,
+    "conflict_tasks": 0,
+    "conflicts": 0,
+    "rounds_median": null,
+    "rounds_mean": null,
+    "rounds_hist": {
+     "1": 0,
+     "2": 0,
+     "3": 0,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0
+    },
+    "ttm_median": null,
+    "ttm_p90": null,
+    "criteria_entered": 0,
+    "runner_entered": 0
+   },
+   "n": 0
+  },
+  {
+   "days": 30,
+   "phases": {
+    "criteriaReview": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "runnerWait": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "build": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "checks": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "reviewWait": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "accept": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "waitToLand": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    },
+    "merge": {
+     "n": 0,
+     "median": null,
+     "p90": null,
+     "total": 0.0,
+     "share": 0
+    }
+   },
+   "loops": {
+    "tasks": 0,
+    "submitted": 0,
+    "merged": 0,
+    "rejected_tasks": 0,
+    "rejections": 0,
+    "blocked3": 0,
+    "checkfail_tasks": 0,
+    "checkfails": 0,
+    "conflict_tasks": 0,
+    "conflicts": 0,
+    "rounds_median": null,
+    "rounds_mean": null,
+    "rounds_hist": {
+     "1": 0,
+     "2": 0,
+     "3": 0,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0
+    },
+    "ttm_median": null,
+    "ttm_p90": null,
+    "criteria_entered": 0,
+    "runner_entered": 0
+   },
+   "n": 0
+  }
+ ]
+}
