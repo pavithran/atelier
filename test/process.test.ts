@@ -189,11 +189,32 @@ test("criterion 9: the footer names each figure's source, and says runner wait i
 test("a read of the ledger stops once a page reaches back past the previous window", async () => {
   const sorted = [...FIXTURE].sort((a, b) => b.seq - a.seq);
   const calls: (number | undefined)[] = [];
-  const got = await readProcessEvents(async (before) => { calls.push(before); return sorted.filter((e) => before === undefined || e.seq < before).slice(0, 5); }, 5, NOW, "7d");
+  const got = await readProcessEvents(async (before) => { calls.push(before); return sorted.filter((e) => before === undefined || e.seq < before).slice(0, 5); }, async () => [], 5, NOW, "7d");
   assert.ok(calls.length > 1, "more than one page");
   assert.ok(got.length <= sorted.length);
   assert.deepEqual(got.map((e) => e.seq), [...got.map((e) => e.seq)].sort((a, b) => a - b), "oldest first");
   assert.equal(buildProcess("demo", got, NOW, "7d").report.tasks.length, 4);
+});
+
+test("a task filed before the read stops, merged and deployed in the window, keeps its filing and its deploy figure", async () => {
+  const at = (d: number, m = 0) => new Date(NOW - d * DAY + m * 60_000).toISOString();
+  const old: BarEvent[] = [
+    { seq: 1, at: at(20), itemId: "old", kind: "item.created", data: {} },
+    { seq: 2, at: at(1), itemId: "old", kind: "item.merged", data: {} },
+    { seq: 3, at: at(0, -300), itemId: null, kind: "action.ran", data: { ship: "s1", step: "deploy", passed: true } },
+    { seq: 4, at: at(0, -299), itemId: null, kind: "action.ran", data: { ship: "s1", step: "verify", passed: true } },
+    { seq: 5, at: at(0, -298), itemId: null, kind: "ship.recorded", data: { ship: "s1", result: "shipped" } },
+  ];
+  const filler: BarEvent[] = [6, 7, 8, 9, 10, 11].map((seq) => ({ seq, at: at(1, seq), itemId: "f" + seq, kind: "item.created", data: {} }));
+  const all = [...old, ...filler];
+  const desc = [...all].sort((a, b) => b.seq - a.seq);
+  const page = async (before: number | undefined) => desc.filter((e) => before === undefined || e.seq < before).slice(0, 2);
+  const taskPage = async (id: string) => all.filter((e) => e.itemId === id);
+  // Without the filing, the task has no filed-to-deployed time.
+  const got = await readProcessEvents(page, taskPage, 2, NOW, "7d");
+  const expected = computeBars([{ name: "demo", events: all }], NOW, undefined, 7).scopes[0].bars.find((b) => b.id === "deployMedian")!.value;
+  assert.ok(expected !== null && expected > 0, "the CLI counts the task");
+  assert.equal(buildProcess("demo", got, NOW, "7d").cards.deployMedian.value, expected);
 });
 
 test("criterion 10 and 11: the docs hold the flowchart and flow.md links to it", () => {

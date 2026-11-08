@@ -5,8 +5,7 @@ Flow. It draws the whole task flow as a flowchart, with the time tasks spend in
 each block and how often each loop runs. `src/process.ts` builds it and
 `src/process.css` styles it; the approved mockup is
 `docs/design/process-map/a-process-map.html`, with its renders at 1280 and 390
-wide, light and dark, and the renders of the built page, `built-*.png`, beside
-them.
+wide, light and dark.
 
 The page computes nothing the flow report does not. Its phases, shares and
 rates are `computeFlow` in `src/flow.ts` (defined in [flow.md](flow.md)) for the
@@ -40,9 +39,10 @@ statistic each block leads with; the other is on its second line. Any other
 value is the default. Both are plain links, so the page needs no JavaScript.
 "Previous" in the headline cards is the same length of time before the window.
 
-The page reads the project's events from the start of the previous window, so a
-task filed before that and merged in the window has no filing record and is not
-timed from filing; the card's deploy source counts those as the bars do.
+The page reads the project's events back to the start of the previous window,
+then reads on its own each task seen there whose filing is older. A task filed
+20 days ago and deployed today is therefore timed from filing, as
+`atelier flow --bars` times it, in the 7-day page too.
 
 ## Blocks
 

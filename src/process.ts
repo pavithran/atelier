@@ -130,11 +130,27 @@ export function buildProcess(project: string, events: readonly BarEvent[], now: 
   };
 }
 
-// Every event the page needs, oldest first: back to the start of the window
-// before the one shown, so the tasks of the comparison are whole too.
-export async function readProcessEvents<E extends BarEvent>(page: (before: number | undefined) => Promise<E[]>, size: number, now: number, windowId: WindowId): Promise<E[]> {
+// Every event the page needs, oldest first. The read of the project ledger
+// stops at the start of the window before the one shown, so the tasks of the
+// comparison are whole too; that keeps a long ledger fast. A task seen in that
+// read whose filing lies further back is then read by itself, so its filed-to-
+// deployed time is the one `atelier flow --bars` reports. The bound is the
+// tasks in the window, never the age of an event.
+export async function readProcessEvents<E extends BarEvent>(
+  page: (before: number | undefined) => Promise<E[]>,
+  task: (itemId: string) => Promise<E[]>,
+  size: number, now: number, windowId: WindowId,
+): Promise<E[]> {
   const from = now - 2 * WINDOW_DAYS[windowId] * DAY_MS;
-  return (await readEvents(page, size, (last) => Date.parse(last.at) < from)).reverse();
+  const bySeq = new Map<number, E>();
+  for (const e of await readEvents(page, size, (last) => Date.parse(last.at) < from)) bySeq.set(e.seq, e);
+  const filed = new Set<string>(), seen = new Set<string>();
+  for (const e of bySeq.values()) if (e.itemId) { seen.add(e.itemId); if (e.kind === "item.created") filed.add(e.itemId); }
+  for (const id of seen) {
+    if (filed.has(id)) continue;
+    for (const e of await task(id)) bySeq.set(e.seq, e);
+  }
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
 // ── words and numbers ──────────────────────────────────────────────────────

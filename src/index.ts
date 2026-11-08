@@ -4687,7 +4687,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
         // The developer's page, like the rest of the area. ?since and ?stat
         // choose the window and the statistic; any other value is the default.
         const windowId = parseWindow(c.url.searchParams.get("since")), now = Date.now();
-        const events = await readProcessEvents((before) => L.events(undefined, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE, now, windowId);
+        const events = await readProcessEvents((before) => L.events(undefined, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, (id) => readEvents((before) => L.events(id, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE), EVENTS_PAGE, now, windowId);
         const model = buildProcess(p.name, events, now, windowId);
         return html(renderProjectProcess(p, renderProcess(model, parseStat(c.url.searchParams.get("stat")), `/p/${encodeURIComponent(p.name)}/process`), PROCESS_CSS, ownerName(env)), 200, nonce);
       }
