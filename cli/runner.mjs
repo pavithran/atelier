@@ -16,7 +16,7 @@ import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pip
 import { SLOT_WRAPPER } from "./load.mjs";
 import { pairedProjectCommit } from "./fresh.mjs";
 import { runLandJob } from "./land-queue.mjs";
-import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS } from "./runner-failure.mjs";
+import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS, runKeyOf, runResultHolds } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { REVIEW_RENEW_MS, VALIDATION_BLOCKED as BLOCKED_NOTE, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
@@ -1807,7 +1807,7 @@ export async function runTask(assignment, config, name, io) {
   if (!assignment) { io.log("nothing claimed"); advance({ type: "claim", empty: true }); return state; }
   const { project, item, agent, model, actor } = assignment;
   const taskKey = taskRevisionKey(item);
-  let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, unblocked = false, exitOutcome = null, failedRun = null;
+  let workspace, before, claimed = false, released = false, claimAttempted = false, taskFailure = false, brief, mergedMain, already = null, preparation = null, resumed = false, unblocked = false, exitOutcome = null, failedRun = null, skippedBuilder = null;
   // The build harness's environment, which a validation_blocked run's work
   // in progress is committed with (t557); whether the head the run started
   // from is such work in progress; and the head the harness of such a run
@@ -2169,52 +2169,74 @@ export async function runTask(assignment, config, name, io) {
       // against the commit this build starts from (`before`; for a task not
       // yet pushed, the commit its workspace was made at).
       const fetched = await briefContext();
-      // The server's latestVerdict is "reject" when the latest review at the
-      // task's head rejected it (t548); a later approval at that head clears
-      // it. A build that adds no commit on a rejected head did not do the round.
-      if (item.kind !== "part" && fetched?.latestVerdict === "reject" && item.head) rejectedHead = item.head;
-      const context = item.kind === "part" ? fetched : await withHistory({ git: (a, o = {}) => io.git(a, { cwd: workspace, ...o }), log: io.log }, fetched, before);
-      const serverBrief = item.kind === "part" ? context : null;
-      const reworked = item.kind === "part" ? null : context;
-      const local = briefFor({ ...item, owner: actor }, project, fetched?.checkLimits ?? null);
-      // A merge-main task's brief (t243) is the local one with the job's own
-      // instructions (mergeMainSection) and the conflicts after it.
-      const body = serverBrief
-        ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text)
-        : merging
-          ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
-          : reworked?.text ? `${local}\n${reworked.text}\n` : local;
-      const progress = continuing ? `\n${workInProgressSection(before, actor)}\n` : "";
-      brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${progress}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
-      const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
-      for (const name of withheld) io.log(`${name} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
-      // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
-      // is removed when the harness ends, however it ends, before anything else.
-      const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-      try {
-        // The builder commits with the identity Git resolves in exactly the
-        // environment it gets (t451): the policy the claim wrote must allow
-        // its author and committer, or it does not start. A refusal is the
-        // runner's setup, not the model's work, and names the setting to fix.
-        runEnv = harnessRunEnv(env, dataHome, item.id, "build", name, project, actor);
-        const refused = await io.identityRefusals(workspace, runEnv, project);
-        if (refused.length) throw Object.assign(new Error(`commit identity refused before the builder started: ${refused.join("; ")}`), { infrastructure: true });
-        advance({ type: "start" });
-        taskFailure = true;
-        // The task's progress line (G21): the claude-code adapter writes the
-        // builder's stream-json log beside the workspace, which the tracker
-        // reads with the branch and the harness's processes for each poll.
-        const progressLog = io.progress ? `${workspace}.progress.jsonl` : null;
-        if (progressLog) {
-          rmSync(progressLog, { force: true });
-          io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog, harness: agent });
+      // The builder is not started when the fork already holds its result
+      // (t335): the workspace is at the task's pushed head, ahead of its base,
+      // an earlier run of this actor left a marker for that head and for this
+      // run key (the task, its dispatch and its criteria reviews as they are
+      // now), and the server's job is a plain build, so no review, pre-review
+      // or scope gap asks for more. Everything that runs a harness for another
+      // reason (an obligation, a validation block, work in progress, a merge
+      // job, a part) never skips. The head goes to finish() as it is, which
+      // merges main through prepareSubmission like any other.
+      if (!merging && !mergingPlan && !continuing && !failedRun && !unblocked && !priorBlock && item.kind !== "part" && fetched?.job === "build" &&
+          (await alreadyComplete(item, before, merges, (base, h) => io.isAncestor(workspace, base, h)).catch(() => null))?.complete) {
+        let marker = null;
+        try { marker = await io.readRunResult?.(workspace) ?? null; } catch (readError) { io.log(`the run-result marker could not be read: ${readError.message}`); }
+        const key = runKeyOf(taskKey, item);
+        if (runResultHolds(marker, { actor, head: before, key })) {
+          skippedBuilder = { head: before, key };
+          io.log(`skipped the builder: the workspace head ${String(before).slice(0, 8)} is the task's pushed head, committed by an earlier run, and nothing in the task has changed since (run key ${key.slice(0, 12)}); that head is submitted`);
+          advance({ type: "start" });
         }
-        try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
-        finally { io.progress?.end(); }
-      } finally {
-        if (dataHome) {
-          try { await io.removeDataHome(dataHome); }
-          catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+      }
+      if (!skippedBuilder) {
+        // The server's latestVerdict is "reject" when the latest review at the
+        // task's head rejected it (t548); a later approval at that head clears
+        // it. A build that adds no commit on a rejected head did not do the round.
+        if (item.kind !== "part" && fetched?.latestVerdict === "reject" && item.head) rejectedHead = item.head;
+        const context = item.kind === "part" ? fetched : await withHistory({ git: (a, o = {}) => io.git(a, { cwd: workspace, ...o }), log: io.log }, fetched, before);
+        const serverBrief = item.kind === "part" ? context : null;
+        const reworked = item.kind === "part" ? null : context;
+        const local = briefFor({ ...item, owner: actor }, project, fetched?.checkLimits ?? null);
+        // A merge-main task's brief (t243) is the local one with the job's own
+        // instructions (mergeMainSection) and the conflicts after it.
+        const body = serverBrief
+          ? (merges.length ? `${serverBrief.text}\n\n${conflictsSection(...merges)}\n` : serverBrief.text)
+          : merging
+            ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
+            : reworked?.text ? `${local}\n${reworked.text}\n` : local;
+        const progress = continuing ? `\n${workInProgressSection(before, actor)}\n` : "";
+        brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${progress}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
+        const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
+        for (const name of withheld) io.log(`${name} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
+        // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
+        // is removed when the harness ends, however it ends, before anything else.
+        const dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
+        try {
+          // The builder commits with the identity Git resolves in exactly the
+          // environment it gets (t451): the policy the claim wrote must allow
+          // its author and committer, or it does not start. A refusal is the
+          // runner's setup, not the model's work, and names the setting to fix.
+          runEnv = harnessRunEnv(env, dataHome, item.id, "build", name, project, actor);
+          const refused = await io.identityRefusals(workspace, runEnv, project);
+          if (refused.length) throw Object.assign(new Error(`commit identity refused before the builder started: ${refused.join("; ")}`), { infrastructure: true });
+          advance({ type: "start" });
+          taskFailure = true;
+          // The task's progress line (G21): the claude-code adapter writes the
+          // builder's stream-json log beside the workspace, which the tracker
+          // reads with the branch and the harness's processes for each poll.
+          const progressLog = io.progress ? `${workspace}.progress.jsonl` : null;
+          if (progressLog) {
+            rmSync(progressLog, { force: true });
+            io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog, harness: agent });
+          }
+          try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
+          finally { io.progress?.end(); }
+        } finally {
+          if (dataHome) {
+            try { await io.removeDataHome(dataHome); }
+            catch (error) { io.log(`could not remove ${dataHome.dir}: ${error.message}`); }
+          }
         }
       }
     }
@@ -2290,7 +2312,7 @@ export async function runTask(assignment, config, name, io) {
     exitOutcome = harnessOutcome({
       ran: !!result, marker: rejectedUnchanged ? null : failedRun, head, before: from, itemHead: item.head, itemBase: item.base, kind: item.kind, resumed,
       code: result ? result.code : 0, timedOut: result?.timedOut,
-      pushedComplete: !!(already?.complete || failedOnPushed?.complete),
+      pushedComplete: !!(already?.complete || failedOnPushed?.complete || skippedBuilder),
       mergesBlock: merges.some((m) => m.state === "conflicts" || m.state === "skipped"),
     });
     advance(io.stopped() && !result?.timedOut ? { error: "interrupted" } : { type: "exit", code: result ? result.code : 0, timedOut: result?.timedOut, before: exitOutcome.from, head });
@@ -2318,6 +2340,16 @@ export async function runTask(assignment, config, name, io) {
       throw Object.assign(new Error(`could not clear the failure marker after the harness passed: ${clearError.message}`), { infrastructure: true });
     }
     unsavedFailures.delete(obligationKey());
+    // The marker that lets a later run skip the builder (t335) is written only
+    // now: the harness exited 0 and moved the head, nothing was left
+    // uncommitted, and every check above passed. It comes before finish() so a
+    // finish that fails still leaves the committed result recorded; a crash
+    // before this line leaves no marker. A marker that cannot be written costs
+    // only the saving.
+    if (result && !resumed && !merging && !mergingPlan && !harnessExit && !result.timedOut && result.code === 0 && head !== from && !leftovers.length) {
+      try { await io.writeRunResult?.(workspace, { actor, head, key: runKeyOf(taskKey, item) }); }
+      catch (writeError) { io.log(`the run-result marker could not be written: ${writeError.message}`); }
+    }
     // The cleared obligation is over: a failure from here on (the finish-time
     // resolver) starts a new one at reruns 0.
     failedRun = null;
@@ -4920,6 +4952,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (!saved) throw new Error(errors.join("; "));
     },
     clearHarnessFailure: async (cwd) => { for (const file of harnessFailureFiles(cwd)) rmSync(file, { force: true }); },
+    // The committed result of a build run (t335): { actor, head, key }. A
+    // marker that does not parse vouches for nothing.
+    readRunResult: async (cwd) => {
+      const file = join(cwd, ".git", "atelier-run-result");
+      try { return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null; } catch { return null; }
+    },
+    writeRunResult: async (cwd, result) => writeFileSync(join(cwd, ".git", "atelier-run-result"), JSON.stringify(result), { mode: 0o600 }),
     writeValidationBlock: async (cwd, block) => writeFileSync(join(cwd, ".git", "atelier-validation-blocked"), JSON.stringify(block), { mode: 0o600 }),
     env: process.env, ownerTokens: () => [...ownerTokens(process.env), credential].filter(Boolean),
     // A brief that names the project's prose standard (t675) is written with
