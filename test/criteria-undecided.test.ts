@@ -1,13 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { criteriaReviewBrief, CRITERIA_FAILURE_RULE, CRITERIA_SHARP_RULE } from "../src/review/criteria.ts";
-import { parseVerdict } from "../src/review/verdict.ts";
 
 // t535: the criteria brief makes the reviewer ask what a task does on a crash
 // part-way, a retry, a repeated or concurrent call and a timeout, and reject
 // absolutes, unsourced numbers and behaviours with no production entry point.
 // The reviewer is a model, so these tests check what the brief it reads says
-// and that a reply rejecting a fixture set with the named finding is accepted.
+// and that the brief built from a fixture set tells it to reject with a named finding.
 
 const briefFor = (title: string, accept: string[], brief = "") =>
   criteriaReviewBrief({ item: { id: "t9", title, brief, scope: ["src/**"], accept }, rev: 1, authors: ["owner"], plan: null, previous: [], resolutions: [], round: 1 });
@@ -31,21 +30,19 @@ test("criterion 1: the brief asks a state-writing, sending, retrying or multi-pr
 
 test("criterion 2: a set leaving one of the four undecided is rejected with a blocking finding naming it", () => {
   const brief = briefFor("Notify on submit", NOTIFY_UNDECIDED);
-  // The rule tells the reviewer to reject and to name which behaviour.
-  assert.match(CRITERIA_FAILURE_RULE, /leaves one of them undecided and unexplained, reject it with a blocking finding that names which/);
-  // The fixture set decides retry, repeat and timeout; the crash is the gap.
-  assert.ok(brief.includes(NOTIFY_UNDECIDED[0]));
+  // The brief the criteria-review job sends carries the fixture set, numbered
+  // as a finding names it, and the "Rules for blocking" section holding the rule.
+  assert.ok(brief.includes("1. " + NOTIFY_UNDECIDED[0]));
+  assert.ok(brief.includes("3. " + NOTIFY_UNDECIDED[2]));
+  const rules = brief.slice(brief.indexOf("## Rules for blocking"), brief.indexOf("## Reply format"));
+  assert.ok(rules.includes(CRITERIA_FAILURE_RULE));
+  // The fixture decides retry, repeat and timeout; the crash is the gap, and
+  // the rule tells the reviewer to reject with a blocking finding naming it.
   assert.ok(!/crash/i.test(NOTIFY_UNDECIDED.join(" ")));
-  // The reply the brief asks for rejects with a blocking finding that names the crash.
-  const reply = "VERDICT: REJECT\nSUMMARY: The notification task leaves a crash part-way undecided.\nBLOCKING: 1\nFINDING: blocking criteria:1 The set does not say what happens on a crash between sending and recording the notification: lost or doubled.";
-  const read = parseVerdict(reply, 3);
-  assert.ok(read.ok);
-  if (read.ok) {
-    assert.equal(read.verdict, "reject");
-    const blocking = read.findings.filter((f) => f.severity === "blocking");
-    assert.equal(blocking.length, 1);
-    assert.match(blocking[0].text, /crash/);
-  }
+  assert.match(rules, /undecided and unexplained, reject it with a blocking finding that names which behaviour \(crash, retry, repeat or concurrent call, or timeout\) is left open/);
+  // Such a finding is a blocking one in the reply format, not a follow-up.
+  assert.match(rules, /A blocking finding names the criterion \(criterion-N in the file slot, or criteria for the set as a whole\)/);
+  assert.match(brief, /Reject only when there is at least one blocking finding/);
 });
 
 test("criterion 3: a task with none of those traits is not asked for them", () => {
