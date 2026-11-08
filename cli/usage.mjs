@@ -465,22 +465,6 @@ export function describeSpeed(view, safe) {
 // per tool, as before.
 const ACTING_REFUSAL = /a write with the developer token names the harness\/model acting/;
 
-// POST /api/model-slate/propose on the server named by ATELIER_SERVER, with the
-// token in ATELIER_TOKEN; any answer but 2xx, or none, is an error naming the server.
-async function proposeSlate(io, runner, as) {
-  const server = String(io.env.ATELIER_SERVER).replace(/\/+$/, "");
-  const acting = (as ?? io.env.ATELIER_ACTING)?.trim();
-  let res;
-  try {
-    res = await (io.http ?? fetch)(`${server}/api/model-slate/propose`, {
-      method: "POST", signal: AbortSignal.timeout(30_000),
-      headers: { authorization: `Bearer ${io.env.ATELIER_TOKEN ?? ""}`, "x-atelier-runner": runner, ...(acting ? { "x-atelier-acting": acting } : {}), "content-type": "application/json" },
-      body: "{}",
-    });
-  } catch { throw new Error(`could not reach the server ${server}`); }
-  if (!res.ok) throw new Error(`the server ${server} answered HTTP ${res.status} to the slate proposal`);
-}
-
 export function usageOptions(args, host = hostname()) {
   if (args._.length !== 1 || Object.keys(args.multi).some((k) => !["usage", "name", "dry-run", "config", "claude-status-file", "claude-capture", "as"].includes(k) || args.multi[k].length !== 1)) throw new Error(USAGE);
   for (const flag of ["usage", "dry-run"]) if (args[flag] !== undefined && args[flag] !== true) throw new Error(USAGE);
@@ -578,9 +562,10 @@ export async function runUsage(args, given = {}) {
   // Once the reports are in, the server is asked to propose the day's slate.
   // Nothing is kept here: a rerun sends every report and the request again.
   let proposeError = null;
-  const propose = io.propose ?? (io.env?.ATELIER_SERVER ? () => proposeSlate(io, opts.name, typeof args.as === "string" ? args.as : undefined) : null);
-  if (!opts.dryRun && propose && !failed.length && !noActing) {
-    try { await propose(); } catch (error) { proposeError = error; }
+  // The CLI supplies io.propose, so the request goes to the same server and
+  // credential as the reports.
+  if (!opts.dryRun && io.propose && !failed.length && !noActing) {
+    try { await io.propose(opts.name); } catch (error) { proposeError = error; }
   }
   out.push("", opts.dryRun ? "Dry run: nothing was reported to Atelier." : `Reported ${reported} usage summar${reported === 1 ? "y" : "ies"} to Atelier.`);
   if (alerts.length) out.push(`Alerts: ${alerts.join("; ")}.`);

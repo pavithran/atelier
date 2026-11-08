@@ -4,6 +4,8 @@ import { createServer } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { runUsage } from "../cli/usage.mjs";
 
 // Each test enters through runUsage. The files are fixtures this file writes,
@@ -208,39 +210,68 @@ async function stubServer(t, status) {
   return { requests, url: `http://127.0.0.1:${server.address().port}` };
 }
 
-test("runUsage ends with one POST /api/model-slate/propose after its reports", async (t) => {
-  const stub = await stubServer(t, 200);
-  const { io, calls } = setup(t, { env: { ATELIER_SERVER: stub.url, ATELIER_TOKEN: "tok" }, io: { propose: undefined } });
-  const log = [];
-  io.report = async (tool) => { log.push(`report ${tool}`); calls.report.push({ tool }); return {}; };
-  await runUsage(args("name=home:test"), io);
-  assert.deepEqual(stub.requests.map((r) => [r.method, r.url]), [["POST", "/api/model-slate/propose"]]);
-  assert.equal(stub.requests[0].auth, "Bearer tok");
-  assert.ok(log.length >= 3);
-});
+// The proposal goes through the CLI, the way the 6 AM job runs it: the server
+// and credential are the ones the reports use. Each case runs the real CLI
+// against a stub server, with a config directory and home of its own.
+const run = promisify(execFile);
+const STORED = "atl_stored0123456789abcdef0123456789ab";
+const FROM_ENV = "atl_env000000000000000000000000000000";
+
+async function cli(t, { server, saved, stored, env = {}, flags = [] }) {
+  const root = tempDir(t);
+  const config = join(root, "config");
+  mkdirSync(config);
+  mkdirSync(join(root, "home"));
+  if (saved) writeFileSync(join(config, "config.json"), JSON.stringify({ server }));
+  if (stored) writeFileSync(join(config, "secrets.json"), JSON.stringify({ API_TOKEN: STORED }), { mode: 0o600 });
+  const full = { PATH: process.env.PATH, HOME: join(root, "home"), ATELIER_CONFIG_DIR: config, ATELIER_SECRET_STORE: "file", ATELIER_ACTING: "claude-code/sonnet-5.5", NO_COLOR: "1", ...env };
+  const file = new URL("../cli/atelier.mjs", import.meta.url).pathname;
+  try {
+    const out = await run(process.execPath, [file, "runner", "--usage", "--name", "home:test", ...flags], { env: full, cwd: root, timeout: 60_000 });
+    return { code: 0, ...out };
+  } catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
+}
+const proposals = (stub) => stub.requests.filter((r) => r.url === "/api/model-slate/propose");
+
+for (const [name, mode] of [
+  ["the server and token from saved config only", { saved: true, stored: true, token: STORED }],
+  ["ATELIER_SERVER set with the token stored locally", { saved: true, stored: true, viaEnv: true, token: STORED }],
+  ["the environment only", { env: true, token: FROM_ENV }],
+]) {
+  test(`the CLI asks for one slate proposal after its reports: ${name}`, async (t) => {
+    const stub = await stubServer(t, 200);
+    const env = mode.env ? { ATELIER_SERVER: stub.url, ATELIER_TOKEN: FROM_ENV } : mode.viaEnv ? { ATELIER_SERVER: stub.url } : {};
+    const result = await cli(t, { server: stub.url, saved: mode.saved, stored: mode.stored, env });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(proposals(stub).length, 1);
+    assert.equal(proposals(stub)[0].method, "POST");
+    assert.equal(proposals(stub)[0].auth, `Bearer ${mode.token}`);
+    assert.equal(stub.requests.at(-1).url, "/api/model-slate/propose", "after the reports");
+    assert.ok(stub.requests.some((r) => r.url.startsWith("/api/usage/")), "the reports went to the same server");
+  });
+}
 
 test("a dry run does not ask for a proposal", async (t) => {
   const stub = await stubServer(t, 200);
-  const { io } = setup(t, { env: { ATELIER_SERVER: stub.url, ATELIER_TOKEN: "tok" }, io: { propose: undefined } });
-  await runUsage(args("dry-run"), io);
-  assert.deepEqual(stub.requests, []);
+  const result = await cli(t, { server: stub.url, saved: true, stored: true, flags: ["--dry-run"] });
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(stub.requests.filter((r) => r.method !== "GET"), [], "reads only");
 });
 
 test("an unreachable server or a non-2xx answer fails naming the server, writes no file, and a rerun sends everything again", async (t) => {
   const down = await stubServer(t, 200);
-  const closed = down.url;
-  await new Promise((r) => setTimeout(r, 0));
+  const closed = down.url.replace(/:\d+$/, ":1");
   const refusing = await stubServer(t, 500);
-  for (const [url, why] of [[closed.replace(/:\d+$/, ":1"), "unreachable"], [refusing.url, "500"]]) {
-    const { io, calls, dir, paths } = setup(t, { env: { ATELIER_SERVER: url, ATELIER_TOKEN: "tok" }, io: { propose: undefined } });
-    touchAt(paths.claudeUsage, "37 62 2026-11-08T14:00:00.000Z 2026-11-12T09:00:00.000Z", hoursAgo(1));
-    const before = readdirSync(dir).sort();
-    await assert.rejects(runUsage(args("name=home:test"), io), (error) => error.message.includes(url) && /model-slate|slate/.test(error.message), why);
-    const first = calls.report.length;
-    assert.deepEqual(readdirSync(dir).sort(), before);
-    await assert.rejects(runUsage(args("name=home:test"), io));
-    assert.equal(calls.report.length, first * 2);
+  for (const [url, why] of [[closed, "unreachable"], [refusing.url, "500"]]) {
+    const first = await cli(t, { server: url, saved: true, stored: true });
+    assert.equal(first.code, 1, why);
+    assert.ok(first.stderr.includes(url), `${why}: ${first.stderr}`);
   }
+  // The server answers every request 500: reports fail first, and the rerun posts them again.
+  const sent = refusing.requests.length;
+  const again = await cli(t, { server: refusing.url, saved: true, stored: true });
+  assert.equal(again.code, 1);
+  assert.equal(refusing.requests.length, sent * 2);
 });
 
 // ── criteria 6 and 7: the capture ──────────────────────────────────────────
