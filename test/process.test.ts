@@ -200,18 +200,23 @@ test("a task filed before the read stops, merged and deployed in the window, kee
   const at = (d: number, m = 0) => new Date(NOW - d * DAY + m * 60_000).toISOString();
   const old: BarEvent[] = [
     { seq: 1, at: at(20), itemId: "old", kind: "item.created", data: {} },
-    { seq: 2, at: at(1), itemId: "old", kind: "item.merged", data: {} },
-    { seq: 3, at: at(0, -300), itemId: null, kind: "action.ran", data: { ship: "s1", step: "deploy", passed: true } },
-    { seq: 4, at: at(0, -299), itemId: null, kind: "action.ran", data: { ship: "s1", step: "verify", passed: true } },
-    { seq: 5, at: at(0, -298), itemId: null, kind: "ship.recorded", data: { ship: "s1", result: "shipped" } },
+    // Another task filed 20 days ago sits between the old filing and the rest, so the read stops at it, before seq 1.
+    { seq: 2, at: at(20), itemId: "other", kind: "item.created", data: {} },
+    { seq: 3, at: at(1), itemId: "old", kind: "item.merged", data: {} },
+    { seq: 4, at: at(0, -300), itemId: null, kind: "action.ran", data: { ship: "s1", step: "deploy", passed: true } },
+    { seq: 5, at: at(0, -299), itemId: null, kind: "action.ran", data: { ship: "s1", step: "verify", passed: true } },
+    { seq: 6, at: at(0, -298), itemId: null, kind: "ship.recorded", data: { ship: "s1", result: "shipped" } },
   ];
-  const filler: BarEvent[] = [6, 7, 8, 9, 10, 11].map((seq) => ({ seq, at: at(1, seq), itemId: "f" + seq, kind: "item.created", data: {} }));
+  const filler: BarEvent[] = [7, 8, 9, 10, 11, 12, 13].map((seq) => ({ seq, at: at(1, seq), itemId: "f" + seq, kind: "item.created", data: {} }));
   const all = [...old, ...filler];
   const desc = [...all].sort((a, b) => b.seq - a.seq);
   const page = async (before: number | undefined) => desc.filter((e) => before === undefined || e.seq < before).slice(0, 2);
-  const taskPage = async (id: string) => all.filter((e) => e.itemId === id);
-  // Without the filing, the task has no filed-to-deployed time.
+  const taskCalls: string[] = [];
+  const taskPage = async (id: string) => { taskCalls.push(id); return all.filter((e) => e.itemId === id); };
+  // The project read stops at seq 2, so without the recovery the task has no filing and no filed-to-deployed time.
   const got = await readProcessEvents(page, taskPage, 2, NOW, "7d");
+  assert.ok(taskCalls.includes("old"), "the old task's own history was read");
+  assert.ok(got.some((e) => e.seq === 1), "the old filing came back with it");
   const expected = computeBars([{ name: "demo", events: all }], NOW, undefined, 7).scopes[0].bars.find((b) => b.id === "deployMedian")!.value;
   assert.ok(expected !== null && expected > 0, "the CLI counts the task");
   assert.equal(buildProcess("demo", got, NOW, "7d").cards.deployMedian.value, expected);
