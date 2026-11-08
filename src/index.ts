@@ -1851,9 +1851,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       catch { unreadable.push(p.name); return []; }
     }));
     const read = Date.now();
-    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // A runner's own held jobs lead, then the waiting work by dispatch age,
+    // a fix round (a task claimed before) ahead of never-built work (t539):
     // the claim a dead run left behind is settled before new work starts.
+    const fixRound = (item: object) => Number((item as { everClaimed?: boolean }).everClaimed === true);
     const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      fixRound(b.item) - fixRound(a.item) ||
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
