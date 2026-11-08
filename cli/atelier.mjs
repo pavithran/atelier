@@ -909,6 +909,11 @@ export function fieldsArg(cmd) {
     if (typeof gate !== "string" || (!gate.trim() && cmd !== "edit")) die(FLAGS[cmd]["next-gate"]);
     out.nextGate = gate.trim() || null;
   }
+  const design = args.design;
+  if (design !== undefined) {
+    if (typeof design !== "string" || (!design.trim() && cmd !== "edit")) die(FLAGS[cmd].design);
+    out.design = design.trim() || null;
+  }
   return out;
 }
 
@@ -1725,6 +1730,7 @@ export function formatFields(fields) {
     fields.nonGoals?.length ? `Non-goals: ${fields.nonGoals.map(flat).join("; ")}` : null,
     fields.stopWhen?.length ? `Stop when: ${fields.stopWhen.map(flat).join("; ")}` : null,
     fields.nextGate ? `Next gate: ${flat(fields.nextGate)}` : null,
+    fields.design ? `Design: ${flat(fields.design)}` : null,
   ].filter(Boolean);
 }
 

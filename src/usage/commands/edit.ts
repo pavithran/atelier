@@ -8,7 +8,7 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Items", line: 1, slot: 20,
-      form: "edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--context TEXT] [--add-accept TEXT]... [--add-brief TEXT] [--restore EVENT] [--blocked-by tA,tB]",
+      form: "edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--design NAME] [--context TEXT] [--add-accept TEXT]... [--add-brief TEXT] [--restore EVENT] [--blocked-by tA,tB]",
       about: "The developer changes a task's title, brief, scope, acceptance criteria, non-goals, stop conditions next gate or context for the reviewers (the decisions a reviewer must not overrule, which every review brief carries). A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared. A new scope is recorded in the task's history and counts at once for a project that refuses overlapping claims, which refuses a claim whose scope overlaps a claimed, submitted or accepted task's alike (a cancelled merge leaves a task accepted); an unscoped task overlaps every one. Changing the acceptance criteria (their text, order or entries) withdraws every review and open or claimed review request of the old ones, an acceptance (the task goes back to claimed) and an override of the review, and says so: a fresh review of the new criteria is needed. The same list again changes nothing. `--add-accept` appends criteria after the stored ones and `--add-brief` appends text to the brief, leaving what is there untouched; an added criterion asks for a criteria review of the added ones only where the project requires criteria reviews. A replacement of the criteria, the brief or the scope prints what it dropped and the number of the edit event that keeps the old values; `--restore EVENT` puts them back. The criteria of an integrated part, or of a task being landed, cannot change. `--blocked-by tA,tB` replaces the tasks it waits on (\"\" clears them): no runner is offered it, no claim takes it and no landing accepts it until every one is merged; an abandoned blocker keeps it waiting and listed, and a cycle is refused.",
     },
   ],
@@ -20,6 +20,7 @@ const spec: CommandSpec = {
     "non-goal": '--non-goal needs text: atelier edit ID --non-goal "TEXT", once per entry, or --non-goal "" alone to clear',
     "stop-when": '--stop-when needs text: atelier edit ID --stop-when "TEXT", once per entry, or --stop-when "" alone to clear',
     "next-gate": '--next-gate needs text: atelier edit ID --next-gate "TEXT", or --next-gate "" to clear',
+    design: '--design needs a short name: atelier edit ID --design NAME, or --design "" to clear',
     "add-accept": '--add-accept needs text: atelier edit ID --add-accept "TEXT", once per criterion to append, at most 300 characters each',
     "add-brief": '--add-brief needs text: atelier edit ID --add-brief "TEXT", appended to the stored brief',
     restore: "--restore needs the number of an edit event: atelier edit ID --restore EVENT, as the edit that replaced the values printed it",
@@ -38,6 +39,7 @@ const spec: CommandSpec = {
       "--non-goal TEXT": "replaces the task's non-goals; once per entry, or --non-goal \"\" alone to clear them",
       "--stop-when TEXT": 'replaces what tells the holder to stop and ask; once per entry, or --stop-when "" alone to clear it',
       "--next-gate TEXT": 'replaces the gate the task goes to next; --next-gate "" clears it',
+      "--design NAME": 'replaces the design note name; tasks naming one design wait for each other until the first claimed merges or is abandoned. --design "" clears it and lifts the hold on the next poll',
       "--context TEXT": 'replaces the context every reviewer\'s brief carries, at most 2000 characters; --context "" clears it',
       "--blocked-by tA,tB": 'replaces the tasks this one waits on, comma-separated; --blocked-by "" clears them. The task is not offered, claimed or accepted until each is merged',
     },

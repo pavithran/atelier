@@ -345,14 +345,17 @@ export function endedRun(o: Pick<Item, "id" | "state" | "runner" | "owner" | "he
 type Overlap = CoreBlocker & { item: Item; landing: boolean };
 function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now: number): Overlap[] {
   const d = item.dispatch;
-  if (!d || d.overlapOk || !coreFiles?.length || item.kind === "plan") return [];
+  if (!d || d.overlapOk || item.kind === "plan") return [];
   if (d.job !== undefined && d.job !== "merge-main") return [];
   return items.flatMap((o) => {
     if (o.id === item.id || samePlan(item, o)) return [];
     const landing = lease?.item === o.id && !landingLeaseLapsed(lease, now) && o.state !== "merged" && o.state !== "abandoned";
     if (!holdsCore(o) && !landing) return [];
     if (o.kind === "plan" && !landing) return [];
-    const core = scopesOverlapWithin(item.scope, o.scope, [...coreFiles]);
+    // Two live tasks naming one design note overlap with no shared file; the
+    // hold has the life of a core-file hold (holdsCore above).
+    const core = (coreFiles?.length ? scopesOverlapWithin(item.scope, o.scope, [...coreFiles]) : null)
+      ?? (item.design && o.design === item.design ? `design ${item.design}` : null);
     const doing = landing ? "landing" : o.state === "claimed" && o.runner ? `running on ${o.runner}` : null;
     return core ? [{ id: o.id, owner: o.owner, state: o.state, title: o.title, core, ...(doing ? { doing } : {}), item: o, landing }] : [];
   });
