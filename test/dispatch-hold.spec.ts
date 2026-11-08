@@ -55,7 +55,7 @@ it("persists hold starts, preserves them across blockers, warns at exactly 30 mi
   expect(initial.since).toBeDefined();
   await L.newItem("Another blocker", ["src/**"], "owner");
   await L.claim("t3", A);
-  await L.release("t1", A, "finished building");
+  await L.abandon("t1", "owner", "not needed");
   const changed = (await L.waiting())[0].held!;
   expect(changed.since).toBe(initial.since);
   expect(changed.blockers?.map((b) => b.id)).toEqual(["t3"]);
@@ -74,12 +74,13 @@ it("persists hold starts, preserves them across blockers, warns at exactly 30 mi
       expect(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'core-holds'").one().value).toContain(initial.since!);
     } finally { Date.now = clock; }
   });
-  await L.release("t3", A, "clear");
-  await L.claim("t1", A);
+  await L.abandon("t3", "owner", "clear");
+  await L.newItem("Next blocker", ["src/**"], "owner");
+  await L.claim("t4", A);
   expect((await L.waiting())[0].held?.since).not.toBe(initial.since);
 });
 
-it("real authenticated queue routes offer submitted/accepted work unless landing, and report claim refusal separately", async () => {
+it("real authenticated queue routes offer no work while a submitted, accepted or landing holder stands, and report claim refusal separately", async () => {
   const name = "dispatch-hold-route", L = await setup(name);
   const api = (path: string, method = "GET", body?: unknown, token = TOKEN) => worker.fetch(new Request(`https://atelier.test/api${path}`, { method, headers: { authorization: `Bearer ${token}`, "x-atelier-actor": token === TOKEN ? "owner" : A, ...(token === TOKEN ? { "x-atelier-acting": "claude-code/opus-5.5" } : {}), "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
   const minted = await api("/tokens", "POST", { actor: A, projects: [name] });
@@ -94,19 +95,21 @@ it("real authenticated queue routes offer submitted/accepted work unless landing
   await L.recordPush("t1", A, "a".repeat(40), "a".repeat(40));
   await L.addEvidence({ itemId: "t1", claim: "git status", grade: "observed", head: "a".repeat(40), passed: true, by: "owner", at, changedPaths: ["src/a.ts"] });
   await L.submit("t1", A);
-  expect(await offered()).toContain("t2");
+  expect(await offered()).not.toContain("t2");
   await L.addReview({ itemId: "t1", head: "a".repeat(40), criteria: await L.criteria("t1"), by: "zcode/glm-5.3", approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
   await L.accept("t1", "owner");
-  expect(await offered()).toContain("t2");
+  expect(await offered()).not.toContain("t2");
   await L.beginProjectLanding("t1", "owner");
   expect(await offered()).not.toContain("t2");
   await runInDurableObject(L, async (_instance, state) => {
     state.storage.sql.exec("UPDATE meta SET value = ? WHERE key = 'landing-lease'", JSON.stringify({ item: "t1", holder: "owner", at: new Date(Date.now() - LANDING_LEASE_EXPIRY_MS).toISOString() }));
   });
-  expect(await offered()).toContain("t2");
+  // An expired lease lifts nothing: the accepted holder holds until it merges (t537).
+  expect(await offered()).not.toContain("t2");
   // t2's dispatch names a builder (G17), and the one that holds t1 is exempt
-  // from the overlap refusal, so t2 goes to another builder before it is set.
-  await L.dispatch("t2", "owner", { agent: "opencode", model: "glm-5.3" });
+  // from the overlap refusal, so t2 goes to another builder before it is set;
+  // the owner's override lifts the core hold and leaves the refusal.
+  await L.dispatch("t2", "owner", { agent: "opencode", model: "glm-5.3", overlapOk: true });
   const record = await L.project();
   await L.setProject({ ...record, policy: { ...record.policy, refuseOverlap: true } }, "owner");
   const queued = (await L.waiting())[0];
@@ -146,7 +149,7 @@ it("real dependency paths through all blockers report blocked chains and only ac
   ]);
 });
 
-it("lease renewal preserves a continuous hold; expiration and policy clearing reset it", async () => {
+it("lease renewal and expiration keep a continuous hold; policy clearing resets it", async () => {
   const L = await setup("dispatch-hold-renew");
   await runInDurableObject(L, (instance, state) => {
     state.storage.sql.exec("UPDATE items SET state = 'submitted' WHERE id = 't1'");
@@ -157,8 +160,8 @@ it("lease renewal preserves a continuous hold; expiration and policy clearing re
     expect(instance.waiting()[0].held!.since).toBe(since);
     const expired = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS).toISOString();
     state.storage.sql.exec("UPDATE meta SET value = ? WHERE key = 'landing-lease'", JSON.stringify({ item: "t1", holder: "owner", at: expired }));
-    expect(instance.waiting()[0].held).toBeUndefined();
-    expect(JSON.parse(state.storage.sql.exec("SELECT value FROM meta WHERE key = 'core-holds'").one().value as string)).toEqual({});
+    // The submitted holder holds after its lease lapses, and its hold's age goes on (t537).
+    expect(instance.waiting()[0].held!.since).toBe(since);
     instance.beginProjectLanding("t1", "owner");
     expect(instance.waiting()[0].held).toBeDefined();
     const record = instance.project();
@@ -197,7 +200,7 @@ it("loads queued dependencies even when the core blocker has no dependencies", a
   });
 });
 
-it("an expired lease followed by a new blocker between polls starts a fresh hold", async () => {
+it("an expired lease between polls leaves the holder's hold and its age unbroken", async () => {
   const L = await setup("dispatch-hold-expiry-gap");
   await runInDurableObject(L, (instance, state) => {
     state.storage.sql.exec("UPDATE items SET state = 'submitted' WHERE id = 't1'");
@@ -210,9 +213,8 @@ it("an expired lease followed by a new blocker between polls starts a fresh hold
       // No waiting() poll observes the gap before claimed work takes over.
       state.storage.sql.exec("UPDATE items SET state = 'claimed' WHERE id = 't1'");
       const held = instance.waiting()[0].held!;
-      expect(Date.parse(held.since!)).toBe(Date.now());
-      expect(held.elapsedMs).toBe(0);
-      expect(held.warning).toBe(false);
+      expect(held.since).toBe(original);
+      expect(held.elapsedMs).toBe(LANDING_LEASE_EXPIRY_MS + 1);
     } finally { Date.now = clock; }
   });
 });

@@ -72,11 +72,13 @@ export interface ProgressRecord {
   last: { name: string; summary: string | null; at: string; error: boolean } | null;
   childAlive: boolean | null;
   commits: number; changedFiles: number; logBytes: number;
-  tokens: number | null; costUsd: number | null;
+  tokens: number | null; costUsd: number | null; parts?: TokenParts;
   receivedAt: string; changedAt: string;
-  runs: { actor: string; startedAt: string; costUsd: number | null; tokens: number | null }[];
+  runs: { actor: string; startedAt: string; costUsd: number | null; tokens: number | null; parts?: TokenParts }[];
 }
 
+// A run's tokens by kind, as the weights need them.
+export interface TokenParts { input: number; cacheWrite: number; cacheRead: number; output: number }
 const RUNS_KEPT = 20;
 // Apart from the bounded log path, no free text a runner reports is kept: the actor must be a harness/model
 // name, a tool a bare tool name, a command its program's name; anything
@@ -91,6 +93,13 @@ const program = (v: unknown): string | null => typeof v === "string" && /^[A-Za-
 const time = (v: unknown): string | null => typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
 const count = (v: unknown): number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v < 1e9 ? v : 0;
 const amount = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1e6 ? v : null;
+
+// The runner's four usage counts, each bounded like count(); absent unless it sent them as an object.
+const partsOf = (v: unknown): TokenParts | undefined => {
+  if (!v || typeof v !== "object") return undefined;
+  const p = v as Record<string, unknown>;
+  return { input: count(p.input_tokens), cacheWrite: count(p.cache_creation_input_tokens), cacheRead: count(p.cache_read_input_tokens), output: count(p.output_tokens) };
+};
 
 // One report from a runner's poll, checked and bounded, or null when it is not
 // one: a task id, an actor and a start time are required.
@@ -107,7 +116,7 @@ export function parseProgress(raw: unknown): Omit<ProgressRecord, "runner" | "re
     last: last && typeof last === "object" && tool(last.name) ? { name: tool(last.name)!, summary: program(last.summary), at: time(last.at) ?? startedAt, error: last.error === true } : null,
     childAlive: typeof r.childAlive === "boolean" ? r.childAlive : null,
     commits: count(r.commits), changedFiles: count(r.changedFiles), logBytes: count(r.logBytes),
-    tokens: amount(r.tokens), costUsd: amount(r.costUsd),
+    tokens: amount(r.tokens), costUsd: amount(r.costUsd), ...(partsOf(r.parts) ? { parts: partsOf(r.parts) } : {}),
   };
 }
 
@@ -116,7 +125,7 @@ export function parseProgress(raw: unknown): Omit<ProgressRecord, "runner" | "re
 export function nextProgress(prev: ProgressRecord | null, report: NonNullable<ReturnType<typeof parseProgress>>, runner: string, now: string): ProgressRecord {
   const sig = (p: Pick<ProgressRecord, "commands" | "commits" | "changedFiles" | "logBytes" | "current" | "endedAt">) => JSON.stringify([p.commands, p.commits, p.changedFiles, p.logBytes, p.current?.name ?? null, p.current?.since ?? null, p.endedAt]);
   const same = !!prev && prev.startedAt === report.startedAt && sig(prev) === sig(report);
-  const runs = [...(prev?.runs ?? []).filter((x) => x.startedAt !== report.startedAt), { actor: report.actor, startedAt: report.startedAt, costUsd: report.costUsd, tokens: report.tokens }]
+  const runs = [...(prev?.runs ?? []).filter((x) => x.startedAt !== report.startedAt), { actor: report.actor, startedAt: report.startedAt, costUsd: report.costUsd, tokens: report.tokens, ...(report.parts ? { parts: report.parts } : {}) }]
     .sort((a, b) => a.startedAt.localeCompare(b.startedAt)).slice(-RUNS_KEPT);
   const attempt = prev ? (prev.attempt ?? prev.runs.length) + (prev.startedAt === report.startedAt ? 0 : 1) : 1;
   return { ...report, runner, attempt, receivedAt: now, changedAt: same ? prev!.changedAt : now, runs };

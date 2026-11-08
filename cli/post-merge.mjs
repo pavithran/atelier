@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentStep, failingTestOf, failureKey, hash, newRevertState, redactedOutput } from "../src/post-merge.ts";
@@ -117,10 +119,62 @@ export async function runStep({ request, name, run, step, env, print, group, sou
   return { passed, output, publication, commandOutcome };
 }
 
-export async function executePostMerge({ request, name, id, env = process.env, print = console.log, group = runGroup, recover = recoverFailedLanding }) {
+// The standing instruction deploy-on-landing (src/standing.ts), read the way
+// atelier decisions reads it: the newest recorded value that has not been
+// withdrawn. A server that cannot be read says off, never on.
+async function deployOnLandingIsOn(request, name) {
+  const { decisions } = await request("GET", `/projects/${encodeURIComponent(name)}/decisions`);
+  const values = (Array.isArray(decisions) ? decisions : []).filter(d => d.status === "standing" && d.standing?.key === "deploy-on-landing").map(d => d.standing.value);
+  return values.at(-1) === "on";
+}
+
+// Starts the deploy of a landed head in a process of its own, which outlives
+// this one: the merge still holds the checkout, and a ship waits for it.
+// `atelier ship` with ATELIER_AUTO_DEPLOY set is that process
+// (cli/commands/ship.mjs); it writes its progress to auto-deploy.log beside
+// the state it shares with the next one, not to a terminal that is gone.
+function startAutoDeploy({ name, head, since, cwd, env }) {
+  const cli = fileURLToPath(new URL("./atelier.mjs", import.meta.url));
+  const child = spawn(process.execPath, [cli, "ship", "--project", name], {
+    cwd, detached: true, stdio: "ignore", env: { ...env, ATELIER_AUTO_DEPLOY: JSON.stringify({ head, since: since ?? null }) },
+  });
+  child.on("error", () => {});
+  child.unref();
+}
+
+// After a merge whose landing checks passed: when the project's standing
+// instruction says so, a deploy of the new head starts, with no command from a
+// session. It never fails the landing: whatever goes wrong is said and left.
+export async function deployOnLanding({ request, name, env = process.env, cwd = process.cwd(), print = console.log, start = startAutoDeploy }) {
+  try {
+    if (!await deployOnLandingIsOn(request, name)) return "off";
+    const base = `/projects/${encodeURIComponent(name)}`;
+    const { head } = await request("GET", `${base}/baseline-head`);
+    if (!hash(head)) throw new Error("the baseline has no head to deploy");
+    let since = null;
+    try { since = (await request("GET", `${base}/deploys`)).deploys?.find(d => d.result === "shipped")?.head ?? null; } catch { /* the deploy then waits: nothing to compare with */ }
+    start({ name, head, since, cwd, env });
+    print(`Deploy on landing: deploying ${head.slice(0, 8)} in the background; its record is the deploy list in atelier show.`);
+    return "started";
+  } catch (error) {
+    print(`Deploy on landing was not started: ${error.message}. Run atelier ship to deploy by hand.`);
+    return "unavailable";
+  }
+}
+
+// What follows a landing's merge. A project with a post-merge policy runs its
+// run, which ends in the deploy; one with none has nothing to run, and its
+// landing deploys here all the same (cli/commands/merge.mjs calls this for both).
+export async function finishLanding({ hasPostMerge, request, name, id, env = process.env, print = console.log, cwd, deploy = deployOnLanding, group }) {
+  if (hasPostMerge) return executePostMerge({ request, name, id, env, print, cwd, deploy, ...(group ? { group } : {}) });
+  if (await deploy({ request, name, env, print, cwd }) !== "started") print("The project branch was not pushed to its own remotes. Nothing was deployed.");
+  return null;
+}
+
+export async function executePostMerge({ request, name, id, env = process.env, print = console.log, group = runGroup, cwd, deploy = deployOnLanding, recover = recoverFailedLanding }) {
   const path = `/projects/${encodeURIComponent(name)}/post-merge/${encodeURIComponent(id)}`;
   let { run } = await request("GET", path);
-  if (!run || run.state === "complete") return run;
+  if (!run || run.state === "complete") { await deploy({ request, name, env, print, cwd }); return run; }
   if (run.paths === null) ({ run } = await request("POST", path, { run: run.id, action: "prepare" }));
   // A failed check is put right with no session. Finish records the run failed
   // before any of that is done, so an executor that starts on a failed run is a
@@ -162,6 +216,7 @@ export async function executePostMerge({ request, name, id, env = process.env, p
     if (run.state === "failed") await failedStep(run, step, failedOutput);
   }
   print(`Post-merge run ${run.id} complete at ${run.after}.`);
+  await deploy({ request, name, env, print, cwd });
   return run;
 }
 

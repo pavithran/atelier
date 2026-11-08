@@ -91,7 +91,21 @@ test("show says the hold from an older server's queue", (t) => {
   ]);
   const r = run();
   assert.equal(r.status, 0, r.stderr);
-  assert.ok(r.stdout.includes("\nHeld: waits on t9 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t9 submits or is released, or at once with atelier dispatch t1 --overlap-ok."), r.stdout);
+  assert.ok(r.stdout.includes("\nHeld: waits on t9 (claimed by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned, or at once with atelier dispatch t1 --overlap-ok."), r.stdout);
+});
+
+// t537: a hold lasts until the holder merges, so show names the holder and
+// the stage it is in, and says when the hold lifts.
+test("show names a submitted holder and its stage, and says the hold lifts when it merges or is abandoned", (t) => {
+  for (const state of ["submitted", "accepted", "blocked", "open"]) {
+    const held = { id: "t9", owner: "codex/gpt-6", state, title: "Live", core: "src/ledger.ts" };
+    const run = fixture(t, 404, "not_found", "no such route", [
+      { project: "proj", item: { id: "t1", dispatch: { to: "home", agent: null, model: null }, held } },
+    ]);
+    const r = run();
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes(`\nHeld: waits on t9 (${state} by codex/gpt-6): both scopes reach core file src/ledger.ts; offered once t9 merges or is abandoned, or at once with atelier dispatch t1 --overlap-ok.`), r.stdout);
+  }
 });
 
 // Pre-review findings of t524's own review. show took the queue's pre-review

@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const ENTRIES = ["ui", "pulse", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view"];
+const ENTRIES = ["ui", "pulse", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view", "now"];
 // The bundles are loaded once, then their folder is removed (t658: it was
 // left in the temp folder on every run).
 const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
@@ -27,6 +27,7 @@ const { projectShowcase } = load("pulse");
 const { buildFloor } = load("floor");
 const { renderHow } = load("how");
 const { attentionFor } = load("attention");
+const { buildNow } = load("now");
 const { buildStory, addTally, emptyTally } = load("graph");
 const { renderActions } = load("actions-page");
 const { buildRecord } = load("models/record");
@@ -265,6 +266,7 @@ export function route(url) {
     // /projects is Home now; the server redirects it there.
     "/home": () => ui.renderHome(empty ? [] : [{ project, items, events, waiting: attention }], "PAVI", now, OWNER),
     "/projects": () => pages["/home"](),
+    "/now": () => ui.renderNow(buildNow([], now), "PAVI"),
     "/studio": () => ui.renderStudio(empty ? { benches: [], from: floor.from, to: floor.to } : floor, "PAVI", now),
     "/flow": () => ui.renderFlow(empty ? [] : [story], empty ? emptyTally() : addTally(emptyTally(), story.tally), OWNER, "PAVI"),
     "/history": () => ui.renderHistory([{ project, items: [merged] }], "PAVI"),

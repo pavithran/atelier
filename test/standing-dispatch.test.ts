@@ -136,7 +136,7 @@ it("open questions hold approval until the developer unblocks the task", async (
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
 });
 
-it("a live core-file hold delays dispatch until the holder releases it", async () => {
+it("a live core-file hold delays dispatch until the holder merges or is abandoned", async () => {
   const { L } = await setup("core");
   const holder = await made(L);
   await approve(L, holder.id);
@@ -146,6 +146,10 @@ it("a live core-file hold delays dispatch until the holder releases it", async (
   await approve(L, id);
   expect((await L.item(id)).dispatch).toBeNull();
   await L.release(holder.id, "codex/gpt-6.1-sol", "Done with core files");
+  await L.stageTick(new Date());
+  // A release alone leaves the holder holding (t537); abandoning it lifts the hold.
+  expect((await L.item(id)).dispatch).toBeNull();
+  await L.abandon(holder.id, "owner", "Done with core files");
   await L.stageTick(new Date());
   expect((await L.item(id)).dispatch).toMatchObject(BUILD);
   await L.waiting();

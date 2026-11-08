@@ -90,3 +90,24 @@ for text and JSON. No generated page consumes this report.
 
 The rates count the tasks whose record reaches back to their creation. The
 report says how many that is.
+
+## The redesign's bars
+
+`atelier flow --bars [--project P] [--tokens FILE] [--json]` reports the last
+seven days for each project (or the one named) and overall. Each bar prints its
+value, its target, PASS or FAIL and the events it came from; a figure with no
+merges to count prints "no merges in the last 7 days" and is not scored.
+
+| Bar | Target | Source |
+| --- | --- | --- |
+| weighted tokens per sound merge | under 0.7M | soundness from `item.merged`, `item.fix_of` and post-merge `evidence.*`; tokens from `--tokens FILE`, a JSON object of item id (or `project/id`) to weighted tokens, because the ledger records none (unmeasured without it) |
+| filed to deployed, median / p90 | 60 min / 3 h | `item.created` to the last `action.ran` with step `deploy` of a ship at or after `item.merged`, when that record passed and the ship got past deploy: a later step of the ship recorded an `action.ran`, or its `ship.recorded` is shipped or names a failed step after deploy. Ship records a step's results only once the step ends, so a ship that stopped part-way through recording is not counted; merged tasks not yet deployed are named, not counted |
+| merges that turned main red | 0 | an `evidence.*` event on the merge (`merged`, `passed: false`) after `item.merged` and within 7 days of it |
+| shadow-review escapes | at most 1 in 10 | merges in the window with an `item.fix_of` recorded after `item.merged` |
+| live rows with no named wait | 0 | each unfinished item whose latest state event does not name a wait (dispatch, claim, handoff, submit, approval, accept, block, criteria review, landing) |
+| repairs without a fix_of link | 0 | tasks created in the window titled Fix or Repair with no `item.fix_of`, `item.reverts` or `item.defect_of` (a title match, so a repair titled otherwise is missed) |
+| session-written records per merge | under 3 | `session.wrapped`, `decision.recorded` and `assignment.recorded` in the window, over merges |
+
+A sound merge has no `item.fix_of` linked to it and no red main it caused
+within seven days. The figures come from this ledger's events; the Nov 1-6
+measurements and the plan are not read by the command.
