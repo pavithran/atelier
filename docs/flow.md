@@ -139,8 +139,10 @@ verdict) and records who changed it and from what; the reviewer's record is not 
 
 A required check that fails at landing, or on main after a merge, records the
 names of its failing tests against the task as a `check.failed_tests` event,
-with cause `unknown`. A landing reads the names from the whole output of the
-check; a post-merge check step from the output it reports. Output that no test
+with cause `unknown`. The CLI reads the names from the whole output of the
+check, for a landing and for a post-merge check step alike, before any cut of
+the text it sends. The event keeps at most 200 names, the total the output named
+and, beyond 200, `and N more`. Output that no test
 reporter format fits records no names and says so (`namesRead: false`). The
 orchestrator sets the cause with `atelier finding ID --failure N --cause
 CAUSE`, N the event's sequence; a `check.cause` event records the cause it was,

@@ -505,7 +505,7 @@ export interface LandingRecord {
 // cut to its first entries by the ledger itself, which adds the count of the
 // whole list beside it (`fromMainCount`, cutLandLists below), so no caller
 // sends those counts.
-const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "regenerated" | "ms" | "tail" | "count" | "attempt"> = {
+const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "regenerated" | "ms" | "tail" | "count" | "total" | "attempt"> = {
   head: "string", mergeCommit: "string", fromMain: "strings", conflicts: "strings",
   // A merge's main head, and the route levels where main and the task each
   // raised it (t248: base, main, task, what the merge left, what was set).
@@ -527,9 +527,10 @@ const LAND_DATA: Record<string, "string" | "boolean" | "strings" | "levels" | "r
   // step's own output, the files a merge stopped on, the check that failed,
   // and how many times main moved between the checks and the push (G2).
   fast: "boolean", tail: "tail", files: "strings", failedCheck: "string", rounds: "count",
-  // The names of the tests a failed checks step read from the whole output of
-  // the check (t536), which the tail may have cut.
-  failingTests: "strings",
+  // How many failing tests a failed checks step named in the whole output of
+  // the check (t536). The names themselves (at most 200) are not in this list:
+  // a record is cut at LAND_JSON_MAX, so landEvent takes them apart first.
+  failedTotal: "total",
   // The checks step reused the builder's passing checks instead of running
   // them on the merged tree (t520); the evidence they were read from is in
   // statuses, and base is the merge base they were measured from.
@@ -559,8 +560,20 @@ const LAND_KIND_TEXT: Record<string, string> = {
   ms: "a duration in milliseconds, thirty days at most",
   tail: `text, cut to its last ${2000} characters`,
   count: "a whole number from 0 to 100",
+  total: "a whole number from 0 to 1000000",
   attempt: "a whole number from 1",
 };
+// The failing test names a failed check's record holds (t536): those the
+// caller read from the check's whole output (at most 200, with the total it
+// counted), else those read from the text the server has, which may be cut.
+function namesOf(sent: unknown, total: unknown, text: unknown): { names: string[]; total: number } {
+  if (Array.isArray(sent) && sent.every((s) => typeof s === "string")) {
+    const names = (sent as string[]).slice(0, 200);
+    return { names, total: Number.isInteger(total) && (total as number) >= names.length && (total as number) <= 1_000_000 ? total as number : names.length };
+  }
+  const names = typeof text === "string" ? failingTests(text)?.names ?? [] : [];
+  return { names, total: names.length };
+}
 const ROUTE_LEVEL_KEYS = ["base", "main", "task", "was", "set"];
 const MATCHES = new Set(["ours", "theirs", "neither side"]);
 
@@ -598,6 +611,7 @@ function cleanLandData(data: Record<string, unknown>): Record<string, unknown> {
     if (kind === "string" && typeof value === "string") out[key] = value.slice(0, 500);
     else if (kind === "tail" && typeof value === "string") out[key] = value.slice(-LAND_TAIL_MAX);
     else if (kind === "count" && Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 100) out[key] = value;
+    else if (kind === "total" && Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 1_000_000) out[key] = value;
     else if (kind === "attempt" && Number.isInteger(value) && (value as number) >= 1) out[key] = value;
     else if (kind === "boolean" && typeof value === "boolean") out[key] = value;
     else if (kind === "strings" && Array.isArray(value) && value.length <= 200 && value.every((s) => typeof s === "string")) out[key] = value.slice(0, 200).map((s) => s.slice(0, 200));
@@ -6796,7 +6810,7 @@ export class Ledger extends DurableObject<Env> {
     preparePostMerge(run, paths); this.savePostMerge(run, actor, "prepared"); return run;
   }
 
-  postMergeAction(item: string, actor: string, input: { run: string; action: string; attempt?: string; passed?: boolean; output?: unknown; commandOutcome?: Attempt["commandOutcome"]; publication?: Attempt["publication"]; reason?: unknown; resolution?: unknown }, deployment?: Attempt["deployment"]): PostMergeRun {
+  postMergeAction(item: string, actor: string, input: { run: string; action: string; attempt?: string; passed?: boolean; output?: unknown; failingTests?: unknown; failedTotal?: unknown; commandOutcome?: Attempt["commandOutcome"]; publication?: Attempt["publication"]; reason?: unknown; resolution?: unknown }, deployment?: Attempt["deployment"]): PostMergeRun {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer executes or reconciles post-merge work", 403, `only the developer can: atelier land ${item} --post-merge reconcile`);
     const run = this.postMergeRun(item);
     if (!run || run.id !== input.run) throw new RuleError("stale_run", "post-merge run changed", 409, `run atelier land ${item} --post-merge status`);
@@ -6808,7 +6822,7 @@ export class Ledger extends DurableObject<Env> {
       finishAttempt(run, input.attempt ?? "", input.passed === true, input.output, at, deployment, input.commandOutcome);
       // A check step that failed on main after a merge records the names of its failing tests against each task the run merged (t536).
       if (input.passed !== true && spec?.class === "check" && typeof input.output === "string") {
-        this.recordCheckFailure(run.members, actor, "main", spec.command, failingTests(input.output)?.names ?? [], { step: spec.name, run: run.id, after: run.after }, at);
+        this.recordCheckFailure(run.members, actor, "main", spec.command, namesOf(input.failingTests, input.failedTotal, input.output), { step: spec.name, run: run.id, after: run.after }, at);
       }
     }
     else recoverPostMerge(run, input.action, input.reason, actor, at, input.resolution, deployment);
@@ -6822,7 +6836,9 @@ export class Ledger extends DurableObject<Env> {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records a landing's steps", 403, `only the developer can: atelier land ${id}`);
     if (!LAND_STEPS.has(step)) throw new RuleError("bad_step", `"${step}" is not a step of a landing; one of ${[...LAND_STEPS].join(", ")}`, 400);
     if (!Number.isFinite(ms) || ms < 0 || ms > 86_400_000) throw new RuleError("bad_ms", "ms must be the step's duration in milliseconds, a day at most", 400);
-    const clean = cleanLandData(data);
+    const { failingTests: sentNames, ...rest } = data ?? {};
+    if (sentNames !== undefined && !(Array.isArray(sentNames) && sentNames.length <= 200 && sentNames.every((n) => typeof n === "string"))) throw new RuleError("bad_field", "failingTests must be a list of at most 200 test names", 400);
+    const clean = cleanLandData(rest);
     const at = new Date().toISOString();
     // A failure of a step under the lease (the merge, its checks, the push,
     // the record) stops the task's land job and rewrites its record, so only
@@ -6847,8 +6863,8 @@ export class Ledger extends DurableObject<Env> {
     this.noteLandingStep(id, step, clean, at);
     // A required check that failed on the merged tree records the names of its failing tests against the task (t536).
     if (step === "checks" && clean.failed === true) {
-      const named = Array.isArray(clean.failingTests) ? clean.failingTests as string[] : null;
-      this.recordCheckFailure([id], actor, "landing", typeof clean.failedCheck === "string" ? clean.failedCheck : null, named ?? (typeof clean.tail === "string" ? failingTests(clean.tail)?.names ?? [] : []), { ...(typeof clean.mergeCommit === "string" ? { mergeCommit: clean.mergeCommit } : {}), ...(typeof clean.attempt === "number" ? { attempt: clean.attempt } : {}) }, at);
+      const named = Array.isArray(sentNames) ? sentNames as string[] : null;
+      this.recordCheckFailure([id], actor, "landing", typeof clean.failedCheck === "string" ? clean.failedCheck : null, named ? { names: named, total: typeof clean.failedTotal === "number" ? clean.failedTotal : named.length } : namesOf(undefined, undefined, clean.tail), { ...(typeof clean.mergeCommit === "string" ? { mergeCommit: clean.mergeCommit } : {}), ...(typeof clean.attempt === "number" ? { attempt: clean.attempt } : {}) }, at);
     }
     return this.item(id);
   }
@@ -7135,9 +7151,10 @@ export class Ledger extends DurableObject<Env> {
   // (t536). Its cause starts unknown; the orchestrator sets it with
   // setCheckCause. `names` empty means none could be read from the output,
   // which the event says (`namesRead: false`) rather than leave it silent.
-  private recordCheckFailure(ids: readonly string[], actor: string, where: "landing" | "main", check: string | null, names: readonly string[], extra: Record<string, unknown>, at: string): void {
+  private recordCheckFailure(ids: readonly string[], actor: string, where: "landing" | "main", check: string | null, read: { names: readonly string[]; total: number }, extra: Record<string, unknown>, at: string): void {
+    const { names } = read, total = Math.max(read.total, names.length), kept = Math.min(names.length, 200);
     for (const id of ids) {
-      this.log(id, actor, "check.failed_tests", { where, check, tests: names.slice(0, 200).map((n) => n.slice(0, 300)), namesRead: names.length > 0, cause: "unknown", ...extra }, at);
+      this.log(id, actor, "check.failed_tests", { where, check, tests: names.slice(0, 200).map((n) => n.slice(0, 300)), namesRead: names.length > 0, total, ...(total > kept ? { more: `and ${total - kept} more` } : {}), cause: "unknown", ...extra }, at);
     }
   }
 

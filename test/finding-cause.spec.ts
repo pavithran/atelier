@@ -174,6 +174,21 @@ it("criterion 3: a check step failing on main after a merge records its failing 
   expect(await events(name, b, "check.cause")).toEqual([]);
 });
 
+it("criterion 3: a main failure whose caller sent 200 names and a total of 250 records 'and 50 more'", async () => {
+  const name = "cause-main-many";
+  const a = await task(name);
+  const policy = parsePostMerge({ version: 1, steps: [{ name: "suite", command: "npm test", class: "check", when: "always", protect: ["package.json"], timeoutMs: 1000 }], approval: { reason: "owner authorizes these commands" } }, "owner", new Date().toISOString())!;
+  const run = reservePostMerge(policy, [a], H0, "run-2", new Date().toISOString());
+  run.after = H1;
+  preparePostMerge(run, []);
+  await runInDurableObject(L(name), (instance) => (instance as unknown as { savePostMerge(r: unknown, actor: string, action: string): void }).savePostMerge(run, "owner", "prepared"));
+  const started = await L(name).postMergeAction(a, "owner", { run: "run-2", action: "start" });
+  const names = Array.from({ length: 200 }, (_, i) => `test ${i + 1}`);
+  await L(name).postMergeAction(a, "owner", { run: "run-2", action: "finish", attempt: started.steps[0].attempts[0].id, passed: false, output: "cut", failingTests: names, failedTotal: 250 });
+  const [failure] = await events(name, a, "check.failed_tests");
+  expect(failure.data).toMatchObject({ where: "main", tests: names, total: 250, more: "and 50 more", namesRead: true });
+});
+
 it("criterion 3: setting a check's cause is refused for anyone else, a bad cause or a record that is not the task's, and writes nothing", async () => {
   const name = "cause-check-refused";
   const id = await task(name);
