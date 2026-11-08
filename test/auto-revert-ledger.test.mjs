@@ -221,3 +221,28 @@ test("the ledger records one revert.notice per merge, however often it is posted
   assert.equal((await ledger.notices()).length, 2);
   await assert.rejects(ledger.send("POST", "/projects/p/revert-notices", { ...body, merge: "nope" }), /bad_request/);
 });
+
+test("a fix filing that fails once: the next run files it, the notice is posted again with the fix id, and the tick dispatches after approval", async t => {
+  const ledger = await boot(t, { policy: { requireCriteriaReview: true, criteriaReview: "before" } });
+  let refuse = 1;
+  const flaky = { ...ledger, real: async (method, path, body) => {
+    if (method === "POST" && path.endsWith("/items") && refuse-- > 0) throw new Error("filing refused");
+    return ledger.real(method, path, body);
+  } };
+  const w = seeded(t, { steps: suite }, flaky);
+  await assert.rejects(w.execute(), /remains merged/);
+  assert.equal((await ledger.notices()).length, 1, "the notice went out without the fix");
+  assert.equal((await ledger.notices())[0].data.fix, null);
+  // The next run files the fix; the notice is reposted with its id.
+  await assert.rejects(w.execute(), /already reverted/);
+  assert.equal((await ledger.notices()).length, 1, "the server records the notice once");
+  const recovery = async () => ledger.object.run(() => ledger.object.live.ctx.storage.sql.exec(`SELECT value FROM meta WHERE key LIKE 'revert-recovery:%'`).toArray());
+  assert.equal((await recovery()).length, 1, "the recovery row exists");
+  const posts = w.posted("/revert-notices").length;
+  await assert.rejects(w.execute(), /already reverted/);
+  assert.equal(w.posted("/revert-notices").length, posts, "a notice sent with the fix id is not sent again");
+  await ledger.approve("t2");
+  await ledger.tick();
+  const { item } = await ledger.send("GET", "/projects/p/items/t2");
+  assert.equal(`${item.dispatch.agent}/${item.dispatch.model}`, BUILDER, "dispatched by the tick");
+});

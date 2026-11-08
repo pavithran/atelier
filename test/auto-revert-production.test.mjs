@@ -77,7 +77,8 @@ test("a restart that finds the run failed with an unfinished revert resumes it i
   assert.equal(w.originHead(), landed, "no second revert");
   assert.equal(w.posted("/items").length, 2, "one refused, one filed");
   assert.equal(w.posted("/items/t101/dispatch").length, 1);
-  assert.equal(w.posted("/revert-notices").length, 1, "no second notice");
+  assert.equal(w.posted("/revert-notices").length, 2, "reposted once with the fix id");
+  assert.equal(w.notices.length, 1, "the ledger records it once");
   assert.equal(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures[Object.keys(saved.failures)[0]].reopened, true);
 });
 

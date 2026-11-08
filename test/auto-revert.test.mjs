@@ -101,7 +101,7 @@ test("a red release gate with a green suite is reverted the same way (criterion 
   assert.deepEqual(green.calls, []);
 });
 
-test("a fix task that cannot be filed leaves reopened unset but does not hold back the notice; a retry files it and records no second notice", async () => {
+test("a fix task that cannot be filed leaves reopened unset but does not hold back the notice; a retry files it and posts the notice again with the fix id, once", async () => {
   const h = harness({ file: async () => { throw new Error("server down"); } });
   await assert.rejects(h.run(), /server down/);
   const entry = Object.values(h.state.failures)[0];
@@ -111,7 +111,11 @@ test("a fix task that cannot be filed leaves reopened unset but does not hold ba
   assert.equal(h.calls.filter((c) => c[0] === "notice").length, 1);
   const retry = harness({ state: h.state });
   assert.equal((await retry.run()).action, "repeat");
-  assert.deepEqual(names(retry.calls), ["reopen", "dispatch"]);
+  assert.deepEqual(names(retry.calls), ["reopen", "notice", "dispatch"]);
+  assert.equal(retry.state.failures[Object.keys(retry.state.failures)[0]].noticedFix, true);
+  const again = harness({ state: retry.state });
+  await again.run();
+  assert.equal(again.calls.filter((c) => c[0] === "notice").length, 0, "a notice sent with the fix id is not sent again");
 });
 
 test("a crash before landing leaves nothing recorded", async () => {
@@ -175,7 +179,7 @@ test("a green run resumes the reopen a crash left undone", async () => {
   await assert.rejects(crashed.run(), /server down/);
   const green = harness({ state: d.load(), save: d.save, suite: async () => ({ passed: true, output: "" }) });
   assert.equal((await green.run()).action, "green");
-  assert.deepEqual(names(green.calls), ["reopen", "dispatch"]);
+  assert.deepEqual(names(green.calls), ["reopen", "notice", "dispatch"]);
   const done = harness({ state: d.load(), save: d.save, suite: async () => ({ passed: true, output: "" }) });
   await done.run();
   assert.deepEqual(done.calls, []);

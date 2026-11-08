@@ -278,7 +278,13 @@ export async function guardLanding({ project, members, head, io }) {
         if (!fix.task) { fix.task = await io.file(member, entry.output); await save(); }
       }
     });
-    if (!entry.noticed) await attempt(async () => { await io.notice(entry); entry.noticed = true; await save(); });
+    // A notice sent before the fix was filed carried no fix id, and the server
+    // records the recovery only from a notice that names one. It is sent again
+    // once the fix exists; the server records the notice itself once.
+    const fixId = entry.fixes[entry.members[0]]?.task ?? null;
+    if (!entry.noticed || (!entry.noticedFix && fixId)) {
+      await attempt(async () => { await io.notice(entry); entry.noticed = true; if (fixId) entry.noticedFix = true; await save(); });
+    }
     if (!entry.reopened) {
       await attempt(async () => {
         let waiting = false;
@@ -302,7 +308,7 @@ export async function guardLanding({ project, members, head, io }) {
     await io.wake(reason);
     (halted.woken ??= []).push(head); await save();
   };
-  for (const entry of Object.values(state.failures)) if (entry.landed && (!entry.reopened || !entry.noticed)) await finish(entry);
+  for (const entry of Object.values(state.failures)) if (entry.landed && (!entry.reopened || !entry.noticedFix)) await finish(entry);
   let kind = "suite", red = await io.suite();
   if (red.passed) { kind = "gate"; red = await io.gate(); }
   if (red.passed) return { action: "green" };
