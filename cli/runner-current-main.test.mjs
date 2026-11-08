@@ -16,7 +16,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { prepareBuildSubmission, runTask, mergeMainArgs } from './runner.mjs';
+import { prepareBuildSubmission, runTask, mergeMainArgs, taskRevisionKey } from './runner.mjs';
+import { runKeyOf } from './runner-failure.mjs';
 import { readMovedCodeRecords } from './landing.mjs';
 
 // A file main moves a block out of (lib.txt lines 2-7 to moved.txt lines
@@ -47,7 +48,7 @@ const landingGit = (cwd, args, { token, allowFail = false, raw = false, env = nu
   return raw ? r.stdout : r.stdout.trim();
 };
 
-function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false, noPort = false, history = null } = {}) {
+function fixture(t, { conflict = false, generatedConflict = false, regenerate = null, rework = false, resumed = false, unresolved = false, discardWork = false, failFetch = false, advanceDuringResolution = false, mergeJob = false, moved = null, failPort = false, noPort = false, history = null, skip = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'atelier-runner-main-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const main = join(root, 'main'), workspace = join(root, 'work');
@@ -55,7 +56,9 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
   git(main, 'init', '-qb', 'main');
   const base = commit(main, { 'shared.txt': 'base\n', ...(generatedConflict ? { 'gen.txt': 'base gen\n' } : {}), ...(moved ? { 'lib.txt': LIB } : {}) });
   git(root, 'clone', '-q', main, workspace);
-  const prior = rework || resumed ? commit(workspace, { 'prior.txt': 'previous work\n' }) : base;
+  // skip: the work is committed and pushed, an earlier run left its marker,
+  // and main moved on (to a change that conflicts, with 'conflict').
+  const prior = rework || resumed || skip ? commit(workspace, { 'prior.txt': 'previous work\n', ...(skip === 'conflict' ? { 'shared.txt': 'work\n' } : {}) }) : base;
   const job = { project: 'atelier', actor, agent: 'codex', model: 'gpt-6-astra', item: {
     id: 't435', kind: 'task', title: 'build', scope: ['shared.txt', 'work.txt'], base, head: prior,
     ...(resumed ? { state: 'claimed', owner: actor, head: base } : {}),
@@ -64,7 +67,8 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
   let latest, harnessCalls = 0, finished = false, tokenCount = 0;
   const fetchedTokens = new Set();
   const advanceMain = () => { latest = commit(main, { [conflict ? 'shared.txt' : 'main.txt']: 'new main\n', ...(generatedConflict ? { 'gen.txt': 'gen from main\n' } : {}), ...(moved ? { 'lib.txt': LIB_ON_MAIN, 'moved.txt': MOVED_ON_MAIN } : {}) }); };
-  if (resumed || mergeJob) advanceMain();
+  if (skip === 'conflict') conflict = true;
+  if (resumed || mergeJob || skip) advanceMain();
   if (mergeJob) job.item.dispatch = { job: 'merge-main', head: base };
   const io = {
     env: {}, ownerTokens: () => [], stopped: () => false, log: (line) => logs.push(line), workspacePath: () => workspace,
@@ -90,7 +94,8 @@ function fixture(t, { conflict = false, generatedConflict = false, regenerate = 
       catch (error) { return { code: error.status, output: error.stdout }; }
     },
     conflicts: async (cwd) => git(cwd, 'diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean),
-    jobBrief: async () => ({ text: 'Review findings: fix the behavior.', ...(history ? { history } : {}) }),
+    jobBrief: async () => ({ text: 'Review findings: fix the behavior.', ...(skip ? { job: 'build' } : {}), ...(history ? { history } : {}) }),
+    readRunResult: async () => skip ? { actor, head: prior, key: runKeyOf(taskRevisionKey(job.item), job.item) } : null,
     brief: async (cwd, text) => { briefs.push(text); return { file: join(root, `brief-${briefs.length}`) }; },
     removeBrief: async () => {},
     // The builder's commit identity (t451): the policy allows it here.
@@ -285,6 +290,32 @@ test('resumed work refreshes main before submission without rebuilding', async (
   assert.equal(state.phase, 'submitted', JSON.stringify(state));
   assert.equal(f.harnessCalls, 0);
   assert.equal(state.mainHead, f.latest);
+});
+
+// t335: the skipped builder still goes through prepareSubmission, so main is
+// merged into the committed head as for any submission.
+test('a skipped builder submits its committed head merged with a clean main, with no harness', async (t) => {
+  const f = fixture(t, { skip: 'clean' });
+  const head = f.job.item.head;
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'submitted', JSON.stringify(state));
+  assert.equal(f.harnessCalls, 0);
+  assert.equal(f.briefs.length, 0);
+  assert.ok(f.logs.some((line) => line.startsWith('skipped the builder:')), f.logs.join('\n'));
+  assert.equal(git(f.workspace, 'rev-parse', 'HEAD^1'), head, 'the committed head is the first parent of the merge');
+  assert.equal(state.mainHead, f.latest);
+  assert.ok(f.finished);
+});
+
+test('a skipped builder whose head conflicts with main starts the existing resolver', async (t) => {
+  const f = fixture(t, { skip: 'conflict' });
+  const state = await runTask(f.job, config, 'home', f.io);
+  assert.equal(state.phase, 'submitted', JSON.stringify(state));
+  assert.ok(f.logs.some((line) => line.startsWith('skipped the builder:')), f.logs.join('\n'));
+  assert.equal(f.harnessCalls, 1, 'only the resolver runs');
+  assert.match(f.briefs[0], /Resolve the merge of main/);
+  assert.equal(readFileSync(join(f.workspace, 'shared.txt'), 'utf8'), 'work and new main\n');
+  assert.ok(f.finished);
 });
 
 test('an uncommitted resolution is the model\'s failure and nothing is submitted', async (t) => {

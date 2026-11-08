@@ -931,6 +931,30 @@ submitted, its log names the rejected head and says no commit was added, and
 it counts as a task failure. An unchanged pushed head that no review rejected
 (not yet reviewed, or approved) is submitted as before (t453).
 
+A build is not started when the fork already holds its committed result
+(t335). The mining of 2026-10-26 reported that of 770 Studio claims that
+started a model, 178 ended "already complete: the harness changed nothing", each after a
+whole model session. A build run that exits 0 with a moved head writes the
+marker `.git/atelier-run-result` before it calls `finish`: the actor, the head
+and a run key. The key is the sha256 of the task revision key (criteria, scope
+and brief), the dispatch's `at` and `note`, and the number of criteria reviews
+with a verdict. A later run of the same actor skips the builder when all of
+these hold: the workspace head is the task's pushed head, ahead of its base;
+the marker names this actor, this head and the key the task has now; and the
+server's job brief says `build`. It then prepares the workspace, logs one line
+beginning `skipped the builder:` that names the head and the key, and goes to
+`finish` with that head. That goes through the usual submission, so main is
+merged cleanly, or a conflict starts the merge resolver. A skipped run is not
+a stall and not a failure. The builder starts as before when there is no
+marker, or it names another actor, head or key or cannot be read; when the
+job brief says `rework` (a rejecting review, a pre-review or a scope gap at
+that head) or is anything but `build`; when the task's criteria, scope, brief,
+dispatch time or note, or its count of criteria reviews, changed; when a
+harness failure is owed, a validation block stands for the task revision, or
+the head is work in progress; and for a merge-main job, a plan merge and a
+part. A run that exits 0 and moves nothing writes no marker, so the run key of
+a redispatched task is only recorded by a run that commits.
+
 Committed work remains local. The server's `validationBlockedAt` and
 `unblockedAt` decide whether a validation block remains unanswered (G5).
 The local `.git/atelier-validation-blocked` marker only keeps the actor,
