@@ -123,23 +123,23 @@ test("an entry for a function that no longer exists, or that gained a caller, fa
   assert.match(lines, /line 3: src\/a\.ts:kept: no longer test-only/);
 });
 
-test("default, async and generic exports are found", () => {
+test("async and generic named exports are found", () => {
   const dir = repo({
-    "src/d.ts": "export default function orphanDefault() {}\n",
-    "src/e.ts": "export default async function orphanAsyncDefault() {}\n",
     "src/f.ts": "export async function orphanAsync() {}\n",
     "src/g.ts": "export const orphanGeneric = <T>(x: T) => x;\n",
     "src/h.ts": "export const orphanAsyncGeneric = async <T,>(x: T): Promise<T> => x;\n",
-    "test/a.test.mjs": "import a from '../src/d.ts'; import b from '../src/e.ts';\nimport { orphanAsync } from '../src/f.ts'; import { orphanGeneric } from '../src/g.ts'; import { orphanAsyncGeneric } from '../src/h.ts';\norphanDefault(); orphanAsyncDefault(); orphanAsync(); orphanGeneric(1); orphanAsyncGeneric(1);\n",
+    "test/a.test.mjs": "import { orphanAsync } from '../src/f.ts'; import { orphanGeneric } from '../src/g.ts'; import { orphanAsyncGeneric } from '../src/h.ts';\norphanAsync(); orphanGeneric(1); orphanAsyncGeneric(1);\n",
   });
-  assert.deepEqual(names(dir), ["src/d.ts:orphanDefault", "src/e.ts:orphanAsyncDefault", "src/f.ts:orphanAsync", "src/g.ts:orphanGeneric", "src/h.ts:orphanAsyncGeneric"]);
+  assert.deepEqual(names(dir), ["src/f.ts:orphanAsync", "src/g.ts:orphanGeneric", "src/h.ts:orphanAsyncGeneric"]);
 });
 
-test("a default export imported under another name by production passes", () => {
+test("a default export is skipped, whoever references it", () => {
   const dir = repo({
+    "src/d.ts": "export default function orphanDefault() {}\n",
+    "src/e.ts": "export default async function orphanAsyncDefault() {}\n",
     "cli/commands/ev.mjs": "export default async function evCommand() {}\n",
     "cli/commands/index.mjs": "import command_ev from \"./ev.mjs\";\nexport const H = [command_ev];\n",
-    "test/a.test.mjs": "import evCommand from '../cli/commands/ev.mjs'; evCommand();\n",
+    "test/a.test.mjs": "import a from '../src/d.ts'; import b from '../src/e.ts'; import ev from '../cli/commands/ev.mjs';\na(); b(); ev(); orphanDefault(); orphanAsyncDefault(); evCommand();\n",
   });
   assert.deepEqual(names(dir), []);
 });

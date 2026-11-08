@@ -105,7 +105,7 @@ const START = String.raw`(?:^|[\n;}])\s*`;
 export function exportedFunctions(text) {
   const code = stripNonCode(text), found = new Map();
   const add = (name, declared) => { if (!found.has(name)) found.set(name, declared); };
-  for (const m of code.matchAll(new RegExp(`${START}export\\s+(?:default\\s+)?(?:async\\s+)?function\\s*\\*?\\s*([A-Za-z_$][\\w$]*)`, "g"))) add(m[1], 1);
+  for (const m of code.matchAll(new RegExp(`${START}export\\s+(?:async\\s+)?function\\s*\\*?\\s*([A-Za-z_$][\\w$]*)`, "g"))) add(m[1], 1);
   for (const m of code.matchAll(new RegExp(`${START}export\\s+(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*(?::[^=\\n]+)?=\\s*${FN_VALUE}`, "g"))) add(m[1], 1);
   for (const list of code.matchAll(/(?:^|[\n;}])\s*export\s*\{([^}]*)\}\s*(?!from\b)/g)) {
     for (const part of list[1].split(",")) {
@@ -118,30 +118,23 @@ export function exportedFunctions(text) {
   return found;
 }
 
-// The name of the function a file exports as its default, or null. Another
-// file may import it under any name, so it counts as used when a production
-// file default-imports this one by path (see defaultImports).
-export const defaultExportName = (text) => defaultNameOf(stripNonCode(text));
-const defaultNameOf = (code) => /(?:^|[\n;}])\s*export\s+default\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/.exec(code)?.[1] ?? null;
-const stem = (file) => file.replace(/^.*\//, "").replace(/\.[^.]+$/, "");
-const defaultImports = (raw, file) => new RegExp(`import\\s+[A-Za-z_$][\\w$]*\\s*(?:,\\s*\\{[^}]*\\}\\s*)?from\\s*["'][^"']*\\/${stem(file).replace(/[.$]/g, "\\$&")}(?:\\.\\w+)?["']`).test(raw);
+// Default exports are out of scope: in src/ and cli/ they are the command
+// modules the generated indexes load, so they are neither reported nor resolved.
 
 // Whether code (already stripped) declares a function named name, exported or not.
-const declaresFunction = (code, name) => new RegExp(`${START}(?:export\\s+(?:default\\s+)?)?(?:async\\s+)?function\\s*\\*?\\s*${escape(name)}\\b|${START}(?:export\\s+)?(?:const|let|var)\\s+${escape(name)}\\s*(?::[^=\\n]+)?=\\s*${FN_VALUE}`).test(code);
+const declaresFunction = (code, name) => new RegExp(`${START}(?:export\\s+)?(?:async\\s+)?function\\s*\\*?\\s*${escape(name)}\\b|${START}(?:export\\s+)?(?:const|let|var)\\s+${escape(name)}\\s*(?::[^=\\n]+)?=\\s*${FN_VALUE}`).test(code);
 // Every name a file declares as a function, class, variable or enum.
 const declaredNames = (code) => new Set(Array.from(code.matchAll(/(?:^|[\n;}{(,])\s*(?:export\s+(?:default\s+)?)?(?:declare\s+)?(?:async\s+)?(?:function\s*\*?|class|const|let|var|enum)\s+([A-Za-z_$][\w$]*)/g), (m) => m[1]));
 
 // [{ file, name }] sorted, for the repository at root.
 export function testOnlyExports(root) {
   const production = sourceFiles(root, SOURCE_DIRS[0]).concat(...SOURCE_DIRS.slice(1).map((d) => sourceFiles(root, d)));
-  const prodCounts = new Map(), prodRaw = new Map(), declaredIn = new Map(), defaults = new Map(), exportsOf = new Map();
+  const prodCounts = new Map(), declaredIn = new Map(), exportsOf = new Map();
   for (const file of production) {
     const raw = read(root, file);
     if (!raw) continue;
     const code = stripNonCode(raw);
     declaredIn.set(file, declaredNames(code));
-    defaults.set(file, defaultNameOf(code));
-    prodRaw.set(file, raw);
     prodCounts.set(file, countIdents(code));
     if (/^(src|cli)\//.test(file) && EXPORTING.test(file)) exportsOf.set(file, exportedFunctions(raw));
   }
@@ -156,9 +149,6 @@ export function testOnlyExports(root) {
       let uses = (prodCounts.get(file).get(name) ?? 0) - declared;
       for (const [other, counts] of prodCounts) {
         if (other !== file && (counts.get(name) ?? 0) > 0 && !declaredIn.get(other).has(name)) uses += counts.get(name);
-      }
-      if (name === defaults.get(file)) {
-        for (const [other, raw] of prodRaw) if (other !== file && defaultImports(raw, file)) uses++;
       }
       if (uses <= 0 && (testCounts.get(name) ?? 0) > 0) offenders.push({ file, name });
     }
