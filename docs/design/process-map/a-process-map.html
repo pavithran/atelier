@@ -1,0 +1,236 @@
+<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="../../../src/theme.css"><link rel="stylesheet" href="../../../src/layout.css"><link rel="stylesheet" href="../../../src/now.css"><link rel="stylesheet" href="dash.css">
+<title>Process · Atelier</title><style></style></head><body>
+<header class="owner-bar">
+  <div class="bar-row">
+    <a class="brand" href="#">Atelier</a>
+    <nav class="bar-nav" aria-label="Atelier"><a href="#">Decisions<span data-shell="waiting"> 3</span></a><a href="#">Now</a><a href="#" aria-current="page">Projects</a><a href="#">Activity</a></nav>
+    <details class="bar-menu switcher"><summary>Atelier</summary></details>
+    <details class="bar-menu account"><summary>PAVI</summary></details>
+  </div>
+  <div class="bar-row project-row">
+    <p class="crumb"><a href="#">Atelier</a> › <span>Activity</span></p>
+    <nav aria-label="Project"><a href="#">Overview</a><a href="#">Tasks</a><a href="#">Code</a><a href="#" aria-current="page">Activity</a><a href="#">Settings</a></nav>
+    <nav aria-label="Activity holds" class="held"><a href="#">Flow</a><a href="#" aria-current="page">Process</a></nav>
+  </div>
+</header>
+<main id="main"><div class="dash"><header class="dash-head">
+  <div><span class="kicker">Atelier · tasks filed Nov 1 – 8 · from the ledger</span>
+  <h1>Most of a task's life is <em>waiting for a runner</em></h1><p class="lead">Every block is one phase of the process, with how long tasks spend in it and its share of all measured time. Every dashed arrow is a loop, with how often it went round this week.</p></div>
+  <div class="controls"><div class="seg" role="group" aria-label="Window"><button aria-pressed="true">7 days</button><button aria-pressed="false">30 days</button></div><div class="seg" role="group" aria-label="Statistic" data-target="[data-show]"><button aria-pressed="true" data-v="median">Median</button><button aria-pressed="false" data-v="p90">p90</button></div></div>
+</header><dl class="figs">
+  <div class="fig over"><dt>Filed to deployed, median</dt><dd>11 h</dd><span class="target"><i class="bar-in" style="width:100%"></i><b style="left:9.4%"></b></span><p class="meta">target 1 h · 641 min</p></div>
+  <div class="fig over"><dt>Filed to deployed, p90</dt><dd>29 h</dd><span class="target"><i class="bar-in" style="width:100%"></i><b style="left:10.3%"></b></span><p class="meta">target 3 h · 1750 min</p></div>
+  <div class="fig"><dt>Filed to merged, median</dt><dd>2.3 h</dd><p class="meta">was 7.1 h the week before</p></div>
+  <div class="fig good"><dt>Review rounds per task, median</dt><dd>1<small>mean 1.7</small></dd><p class="meta">was 3 the week before</p></div>
+</dl><ul class="legend"><li><i class="k-work"></i>Work</li><li><i class="k-wait"></i>Waiting</li><li><i class="k-judge"></i>Judgement</li><li><i class="k-loop"></i>Loop, drawn heavier the more it happens</li></ul><figure class="map card" data-show="median" style="padding:26px clamp(10px,2vw,24px) 18px"><svg class="desk" viewBox="-4 40 1128 618" role="img" aria-label="The task process as a flowchart"><defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="e-head" d="M0 0L8 4L0 8z"/></marker>
+<marker id="lh" viewBox="0 0 8 8" refX="6" refY="4" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="e-loop-head" d="M0 0L8 4L0 8z"/></marker>
+<marker id="lhu" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path fill="var(--line-bright)" d="M0 0L8 4L0 8z"/></marker></defs><path class="e-flow" d="M194 212.0H229" marker-end="url(#ah)"/><path class="e-flow" d="M426 212.0H461" marker-end="url(#ah)"/><path class="e-flow" d="M658 212.0H693" marker-end="url(#ah)"/><path class="e-flow" d="M890 212.0H925" marker-end="url(#ah)"/><path class="e-flow" d="M1024.0 276V417" marker-end="url(#ah)"/><path class="e-flow" d="M926 482.0H891" marker-end="url(#ah)"/><path class="e-flow" d="M694 482.0H659" marker-end="url(#ah)"/><path class="e-flow" d="M462 482.0H427" marker-end="url(#ah)"/><path class="e-flow" d="M230 482.0H195" marker-end="url(#ah)"/><path class="e-loop unmeasured" d="M368.0 148C368.0 94 288.0 94 288.0 144" stroke-width="1.5" marker-end="url(#lhu)"/><g class="fade-in"><rect class="l-pill unmeasured" x="197.4" y="71" width="261.3" height="26" rx="13"/><text x="209.4" y="88.5"><tspan class="l-n" style="fill:var(--text-muted)">—</tspan><tspan class="l-t muted" dx="7">criteria rejected · not recorded yet</tspan></text></g><path class="e-loop" d="M1024.0 148C1024.0 90 792.0 90 792.0 142" stroke-width="6.5" marker-end="url(#lh)"/><g class="fade-in"><rect class="l-pill" x="814.0" y="75" width="187.9" height="26" rx="13"/><text x="826.0" y="92.5"><tspan class="l-n">39</tspan><tspan class="l-t" dx="7">check failed · 15 tasks</tspan></text></g><path class="e-loop" d="M962 418V365.0Q962 347.0 944 347.0H810.0Q792.0 347.0 792.0 329.0V282" stroke-width="7.0" marker-end="url(#lh)"/><g class="fade-in"><rect class="l-pill" x="574.0" y="334.0" width="232.0" height="26" rx="13"/><text x="586.0" y="351.5"><tspan class="l-n">61</tspan><tspan class="l-t" dx="7">rejected, fix round · 24 tasks</tspan></text></g><path class="e-loop" d="M520.0 546C520.0 598 600.0 598 600.0 550" stroke-width="2.3" marker-end="url(#lh)"/><g class="fade-in"><rect class="l-pill" x="489.2" y="593" width="141.6" height="26" rx="13"/><text x="501.2" y="610.5"><tspan class="l-n">1</tspan><tspan class="l-t" dx="7">conflict · 1 task</tspan></text></g><path class="e-loop" d="M1024.0 546V584" stroke-width="4.0" marker-end="url(#lh)"/><g class="blocked fade-in"><rect class="n-box" x="928" y="588" width="192" height="58" rx="12"/>
+<text x="942" y="624"><tspan class="n-big" style="font-size:24px">10</tspan><tspan class="n-unit" dx="6">blocked for PAVI</tspan></text>
+<text class="n-sub" x="942" y="640">3 or more rejections</text></g><line class="callout-line" x1="560.0" y1="110" x2="560.0" y2="146"/><text class="callout" x="560.0" y="100" text-anchor="middle">55% of measured time is spent here</text><text class="n-sub" x="478" y="292">incl. core-file holds</text><g class="n-end fade-in">
+<rect class="n-box" x="0" y="150" width="192" height="124" rx="12"/>
+<text class="n-kick" x="14" y="172">1 · start</text>
+<text class="n-name" x="14" y="192">File the task</text>
+<text x="14" y="226"><tspan class="n-big">134</tspan><tspan class="n-unit" dx="5">filed</tspan></text>
+<text class="n-sub" x="14" y="245">tasks with a full record</text>
+</g><g class="n-judge fade-in">
+<rect class="n-box" x="232" y="150" width="192" height="124" rx="12"/>
+<text class="n-kick" x="246" y="172">2 · judge</text>
+<text class="n-name" x="246" y="192">Criteria review</text>
+<text class="v-med" x="246" y="226"><tspan class="n-big">1.7</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="246" y="226"><tspan class="n-big">5.5</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="246" y="245">p90 5.5 min · 31 tasks</text>
+<text class="n-sub v-p90" x="246" y="245">median 1.7 min · 31 tasks</text>
+<rect class="n-track" x="246" y="254" width="124" height="6" rx="3"/>
+<rect class="n-fill" x="246" y="254" width="2.0" height="6" rx="3"/>
+<text class="n-pct" x="410" y="261" text-anchor="end"><1%</text>
+</g><g class="n-hot fade-in">
+<rect class="n-box" x="464" y="150" width="192" height="124" rx="12"/>
+<text class="n-kick" x="478" y="172">3 · wait</text>
+<text class="n-name" x="478" y="192">Dispatch, runner wait</text>
+<text class="v-med" x="478" y="226"><tspan class="n-big">42</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="478" y="226"><tspan class="n-big">10</tspan><tspan class="n-unit" dx="5">h p90</tspan></text>
+<text class="n-sub v-med" x="478" y="245">p90 10 h · 85 tasks</text>
+<text class="n-sub v-p90" x="478" y="245">median 42 min · 85 tasks</text>
+<rect class="n-track" x="478" y="254" width="124" height="6" rx="3"/>
+<rect class="n-fill" x="478" y="254" width="68.2" height="6" rx="3"/>
+<text class="n-pct" x="642" y="261" text-anchor="end">55%</text>
+</g><g class="n-work fade-in">
+<rect class="n-box" x="696" y="150" width="192" height="124" rx="12"/>
+<text class="n-kick" x="710" y="172">4 · work</text>
+<text class="n-name" x="710" y="192">Build</text>
+<text class="v-med" x="710" y="226"><tspan class="n-big">22</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="710" y="226"><tspan class="n-big">83</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="710" y="245">p90 83 min · 90 tasks</text>
+<text class="n-sub v-p90" x="710" y="245">median 22 min · 90 tasks</text>
+<rect class="n-track" x="710" y="254" width="124" height="6" rx="3"/>
+<rect class="n-fill" x="710" y="254" width="29.9" height="6" rx="3"/>
+<text class="n-pct" x="874" y="261" text-anchor="end">24%</text>
+</g><g class="n-work fade-in">
+<rect class="n-box" x="928" y="150" width="192" height="124" rx="12"/>
+<text class="n-kick" x="942" y="172">5 · work</text>
+<text class="n-name" x="942" y="192">Checks, clean clone</text>
+<text class="v-med" x="942" y="226"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="942" y="226"><tspan class="n-big">87</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="942" y="245">p90 87 min · 89 tasks</text>
+<text class="n-sub v-p90" x="942" y="245">median &lt;1 min · 89 tasks</text>
+<rect class="n-track" x="942" y="254" width="124" height="6" rx="3"/>
+<rect class="n-fill" x="942" y="254" width="13.7" height="6" rx="3"/>
+<text class="n-pct" x="1106" y="261" text-anchor="end">11%</text>
+</g><g class="n-judge fade-in">
+<rect class="n-box" x="928" y="420" width="192" height="124" rx="12"/>
+<text class="n-kick" x="942" y="442">6 · judge</text>
+<text class="n-name" x="942" y="462">Code review</text>
+<text class="v-med" x="942" y="496"><tspan class="n-big">5.3</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="942" y="496"><tspan class="n-big">37</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="942" y="515">p90 37 min · 88 tasks</text>
+<text class="n-sub v-p90" x="942" y="515">median 5.3 min · 88 tasks</text>
+<rect class="n-track" x="942" y="524" width="124" height="6" rx="3"/>
+<rect class="n-fill" x="942" y="524" width="6.8" height="6" rx="3"/>
+<text class="n-pct" x="1106" y="531" text-anchor="end">5%</text>
+</g><g class="n-wait fade-in">
+<rect class="n-box" x="696" y="420" width="192" height="124" rx="12"/>
+<text class="n-kick" x="710" y="442">7 · wait</text>
+<text class="n-name" x="710" y="462">Accept, wait to land</text>
+<text class="v-med" x="710" y="496"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="710" y="496"><tspan class="n-big">—</tspan><tspan class="n-unit" dx="5"> p90</tspan></text>
+<text class="n-sub v-med" x="710" y="515">p90 1.1 min + 17 min · 84 tasks</text>
+<text class="n-sub v-p90" x="710" y="515">median &lt;1 min · 84 tasks</text>
+<rect class="n-track" x="710" y="524" width="124" height="6" rx="3"/>
+<rect class="n-fill" x="710" y="524" width="4.6" height="6" rx="3"/>
+<text class="n-pct" x="874" y="531" text-anchor="end">4%</text>
+</g><g class="n-work fade-in">
+<rect class="n-box" x="464" y="420" width="192" height="124" rx="12"/>
+<text class="n-kick" x="478" y="442">8 · work</text>
+<text class="n-name" x="478" y="462">Land</text>
+<text class="v-med" x="478" y="496"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="478" y="496"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="478" y="515">p90 &lt;1 min · 83 tasks</text>
+<text class="n-sub v-p90" x="478" y="515">median &lt;1 min · 83 tasks</text>
+<rect class="n-track" x="478" y="524" width="124" height="6" rx="3"/>
+<rect class="n-fill" x="478" y="524" width="2.0" height="6" rx="3"/>
+<text class="n-pct" x="642" y="531" text-anchor="end"><1%</text>
+</g><g class="n-wait fade-in">
+<rect class="n-box" x="232" y="420" width="192" height="124" rx="12"/>
+<text class="n-kick" x="246" y="442">9 · ship</text>
+<text class="n-name" x="246" y="462">Ship</text>
+<text x="246" y="496"><tspan class="n-big">≈8.4</tspan><tspan class="n-unit" dx="5">h</tspan></text>
+<text class="n-sub" x="246" y="515">merge to deploy, estimated</text>
+</g><g class="n-end fade-in">
+<rect class="n-box" x="0" y="420" width="192" height="124" rx="12"/>
+<text class="n-kick" x="14" y="442">10 · end</text>
+<text class="n-name" x="14" y="462">Live</text>
+<text x="14" y="496"><tspan class="n-big">86</tspan><tspan class="n-unit" dx="5">of 90</tspan></text>
+<text class="n-sub" x="14" y="515">merges deployed</text>
+</g></svg><svg class="phone" viewBox="-2 0 334 1860" role="img" aria-label="The task process as a flowchart"><defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="e-head" d="M0 0L8 4L0 8z"/></marker>
+<marker id="lh" viewBox="0 0 8 8" refX="6" refY="4" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="e-loop-head" d="M0 0L8 4L0 8z"/></marker>
+<marker id="lhu" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path fill="var(--line-bright)" d="M0 0L8 4L0 8z"/></marker></defs><path class="e-flow" d="M24 140V185" marker-end="url(#ah)"/><path class="e-flow" d="M24 318V363" marker-end="url(#ah)"/><path class="e-flow" d="M24 496V541" marker-end="url(#ah)"/><path class="e-flow" d="M24 674V719" marker-end="url(#ah)"/><path class="e-flow" d="M24 852V897" marker-end="url(#ah)"/><path class="e-flow" d="M24 1030V1145" marker-end="url(#ah)"/><path class="e-flow" d="M24 1278V1323" marker-end="url(#ah)"/><path class="e-flow" d="M24 1456V1501" marker-end="url(#ah)"/><path class="e-flow" d="M24 1634V1679" marker-end="url(#ah)"/><path class="e-loop unmeasured" d="M254 218C298 218 298 270 260 270" stroke-width="1.5" marker-end="url(#lhu)"/><g class="fade-in"><rect class="l-pill unmeasured" x="40.0" y="328.0" width="261.3" height="26" rx="13"/><text x="52.0" y="345.5"><tspan class="l-n" style="fill:var(--text-muted)">—</tspan><tspan class="l-t muted" dx="7">criteria rejected · not recorded yet</tspan></text></g><path class="e-loop" d="M254 786.0C300 786.0 300 608.0 260 608.0" stroke-width="6.5" marker-end="url(#lh)"/><g class="fade-in"><rect class="l-pill" x="40.0" y="862.0" width="187.9" height="26" rx="13"/><text x="52.0" y="879.5"><tspan class="l-n">39</tspan><tspan class="l-t" dx="7">check failed · 15 tasks</tspan></text></g><path class="e-loop" d="M254 964.0C346 964.0 346 608.0 260 608.0" stroke-width="7.0" marker-end="url(#lh)"/><g class="fade-in"><rect class="l-pill" x="40.0" y="684.0" width="232.0" height="26" rx="13"/><text x="52.0" y="701.5"><tspan class="l-n">61</tspan><tspan class="l-t" dx="7">rejected, fix round · 24 tasks</tspan></text></g><g class="blocked fade-in"><rect class="n-box" x="48" y="1042" width="204" height="52" rx="12"/>
+<text x="62" y="1074"><tspan class="n-big" style="font-size:22px">10</tspan><tspan class="n-unit" dx="6">blocked, 3 rejections</tspan></text></g>
+<path class="e-loop" d="M30 1030V1068H44" stroke-width="4.0" marker-end="url(#lh)"/><path class="e-loop" d="M254 1356C298 1356 298 1408 260 1408" stroke-width="2.3" marker-end="url(#lh)"/><g class="fade-in"><rect class="l-pill" x="40.0" y="1466.0" width="141.6" height="26" rx="13"/><text x="52.0" y="1483.5"><tspan class="l-n">1</tspan><tspan class="l-t" dx="7">conflict · 1 task</tspan></text></g><text class="callout" x="262" y="416">55%</text><text class="n-sub" x="262" y="432">of all</text><text class="n-sub" x="262" y="446">time</text><g class="n-end fade-in">
+<rect class="n-box" x="0" y="10" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="32">1 · start</text>
+<text class="n-name" x="14" y="52">File the task</text>
+<text x="14" y="86"><tspan class="n-big">134</tspan><tspan class="n-unit" dx="5">filed</tspan></text>
+<text class="n-sub" x="14" y="105">tasks with a full record</text>
+</g><g class="n-judge fade-in">
+<rect class="n-box" x="0" y="188" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="210">2 · judge</text>
+<text class="n-name" x="14" y="230">Criteria review</text>
+<text class="v-med" x="14" y="264"><tspan class="n-big">1.7</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="14" y="264"><tspan class="n-big">5.5</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="14" y="283">p90 5.5 min · 31 tasks</text>
+<text class="n-sub v-p90" x="14" y="283">median 1.7 min · 31 tasks</text>
+<rect class="n-track" x="14" y="296" width="184" height="6" rx="3"/>
+<rect class="n-fill" x="14" y="296" width="2.0" height="6" rx="3"/>
+<text class="n-pct" x="238" y="303" text-anchor="end"><1%</text>
+</g><g class="n-hot fade-in">
+<rect class="n-box" x="0" y="366" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="388">3 · wait</text>
+<text class="n-name" x="14" y="408">Dispatch, runner wait</text>
+<text class="v-med" x="14" y="442"><tspan class="n-big">42</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="14" y="442"><tspan class="n-big">10</tspan><tspan class="n-unit" dx="5">h p90</tspan></text>
+<text class="n-sub v-med" x="14" y="461">p90 10 h · 85 tasks</text>
+<text class="n-sub v-p90" x="14" y="461">median 42 min · 85 tasks</text>
+<rect class="n-track" x="14" y="474" width="184" height="6" rx="3"/>
+<rect class="n-fill" x="14" y="474" width="101.2" height="6" rx="3"/>
+<text class="n-pct" x="238" y="481" text-anchor="end">55%</text>
+</g><g class="n-work fade-in">
+<rect class="n-box" x="0" y="544" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="566">4 · work</text>
+<text class="n-name" x="14" y="586">Build</text>
+<text class="v-med" x="14" y="620"><tspan class="n-big">22</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="14" y="620"><tspan class="n-big">83</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="14" y="639">p90 83 min · 90 tasks</text>
+<text class="n-sub v-p90" x="14" y="639">median 22 min · 90 tasks</text>
+<rect class="n-track" x="14" y="652" width="184" height="6" rx="3"/>
+<rect class="n-fill" x="14" y="652" width="44.4" height="6" rx="3"/>
+<text class="n-pct" x="238" y="659" text-anchor="end">24%</text>
+</g><g class="n-work fade-in">
+<rect class="n-box" x="0" y="722" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="744">5 · work</text>
+<text class="n-name" x="14" y="764">Checks, clean clone</text>
+<text class="v-med" x="14" y="798"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="14" y="798"><tspan class="n-big">87</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="14" y="817">p90 87 min · 89 tasks</text>
+<text class="n-sub v-p90" x="14" y="817">median &lt;1 min · 89 tasks</text>
+<rect class="n-track" x="14" y="830" width="184" height="6" rx="3"/>
+<rect class="n-fill" x="14" y="830" width="20.3" height="6" rx="3"/>
+<text class="n-pct" x="238" y="837" text-anchor="end">11%</text>
+</g><g class="n-judge fade-in">
+<rect class="n-box" x="0" y="900" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="922">6 · judge</text>
+<text class="n-name" x="14" y="942">Code review</text>
+<text class="v-med" x="14" y="976"><tspan class="n-big">5.3</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="14" y="976"><tspan class="n-big">37</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="14" y="995">p90 37 min · 88 tasks</text>
+<text class="n-sub v-p90" x="14" y="995">median 5.3 min · 88 tasks</text>
+<rect class="n-track" x="14" y="1008" width="184" height="6" rx="3"/>
+<rect class="n-fill" x="14" y="1008" width="10.1" height="6" rx="3"/>
+<text class="n-pct" x="238" y="1015" text-anchor="end">5%</text>
+</g><g class="n-wait fade-in">
+<rect class="n-box" x="0" y="1148" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="1170">7 · wait</text>
+<text class="n-name" x="14" y="1190">Accept, wait to land</text>
+<text class="v-med" x="14" y="1224"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="14" y="1224"><tspan class="n-big">—</tspan><tspan class="n-unit" dx="5"> p90</tspan></text>
+<text class="n-sub v-med" x="14" y="1243">p90 1.1 min + 17 min · 84 tasks</text>
+<text class="n-sub v-p90" x="14" y="1243">median &lt;1 min · 84 tasks</text>
+<rect class="n-track" x="14" y="1256" width="184" height="6" rx="3"/>
+<rect class="n-fill" x="14" y="1256" width="6.8" height="6" rx="3"/>
+<text class="n-pct" x="238" y="1263" text-anchor="end">4%</text>
+</g><g class="n-work fade-in">
+<rect class="n-box" x="0" y="1326" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="1348">8 · work</text>
+<text class="n-name" x="14" y="1368">Land</text>
+<text class="v-med" x="14" y="1402"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min median</tspan></text>
+<text class="v-p90" x="14" y="1402"><tspan class="n-big">&lt;1</tspan><tspan class="n-unit" dx="5">min p90</tspan></text>
+<text class="n-sub v-med" x="14" y="1421">p90 &lt;1 min · 83 tasks</text>
+<text class="n-sub v-p90" x="14" y="1421">median &lt;1 min · 83 tasks</text>
+<rect class="n-track" x="14" y="1434" width="184" height="6" rx="3"/>
+<rect class="n-fill" x="14" y="1434" width="2.0" height="6" rx="3"/>
+<text class="n-pct" x="238" y="1441" text-anchor="end"><1%</text>
+</g><g class="n-wait fade-in">
+<rect class="n-box" x="0" y="1504" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="1526">9 · ship</text>
+<text class="n-name" x="14" y="1546">Ship</text>
+<text x="14" y="1580"><tspan class="n-big">≈8.4</tspan><tspan class="n-unit" dx="5">h</tspan></text>
+<text class="n-sub" x="14" y="1599">merge to deploy, estimated</text>
+</g><g class="n-end fade-in">
+<rect class="n-box" x="0" y="1682" width="252" height="128" rx="12"/>
+<text class="n-kick" x="14" y="1704">10 · end</text>
+<text class="n-name" x="14" y="1724">Live</text>
+<text x="14" y="1758"><tspan class="n-big">86</tspan><tspan class="n-unit" dx="5">of 90</tspan></text>
+<text class="n-sub" x="14" y="1777">merges deployed</text>
+</g></svg></figure><p class="meta foot">Phases and loops: <code>atelier flow --json</code>, tasks filed in the window with a full record; minutes are each phase's total per task, medians and p90s over the tasks that entered it. Deploy times: <code>atelier flow --bars</code>. Ship is the gap between the median filed-to-deployed and filed-to-merged times, not a measured phase. Accept and wait to land are added together.</p></div></main>
+<script>
+document.querySelectorAll('.seg').forEach(s => s.addEventListener('click', ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  s.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  if (s.dataset.target) document.querySelectorAll(s.dataset.target).forEach(t => t.dataset.show = b.dataset.v);
+}));
+
+</script></body></html>
