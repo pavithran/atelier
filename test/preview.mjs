@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const ENTRIES = ["ui", "pulse", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view", "now"];
+const ENTRIES = ["ui", "process", "pulse", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view", "now"];
 // The bundles are loaded once, then their folder is removed (t658: it was
 // left in the temp folder on every run).
 const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
@@ -24,6 +24,7 @@ try {
 const load = (x) => modules[x];
 const ui = load("ui");
 const { projectShowcase } = load("pulse");
+const processPage = load("process");
 const { buildFloor } = load("floor");
 const { renderHow } = load("how");
 const { attentionFor } = load("attention");
@@ -276,6 +277,7 @@ export function route(url) {
     "/p/atelier": () => ui.renderProject(project, items, events.slice(-8).reverse(), "PAVI"),
     "/p/atelier/tasks": () => ui.renderProjectTasks(project, items, "PAVI"),
     "/p/atelier/flow": () => ui.renderProjectFlow(project, story, OWNER, "PAVI"),
+    "/p/atelier/process": () => ui.renderProjectProcess(project, processPage.renderProcess(processPage.buildProcess(project.name, empty ? [] : events, now.getTime(), "7d"), "median", "/p/atelier/process"), processPage.PROCESS_CSS, "PAVI"),
     "/p/atelier/plans": () => ui.renderProjectPlans(project, empty ? [] : plans, "PAVI"),
     "/p/atelier/ship": () => ui.renderProjectShip(project, renderActions(project.name, [], [], HEAD), "PAVI"),
     "/p/atelier/settings": () => ui.renderProjectSettings(project, "PAVI"),
