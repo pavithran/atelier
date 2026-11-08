@@ -1692,14 +1692,21 @@ const PROJECT_TABS: [label: string, sub: string][] = [
   ["Activity", "flow"],
   ["Settings", "settings"],
 ];
-const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Ship: "Settings", Showcase: "" };
+const TAB_OF: Record<string, string> = { Plans: "Tasks", Log: "Code", Flow: "Activity", Process: "Activity", Ship: "Settings", Showcase: "" };
 // The pages a tab holds, linked under it while it is current, so each stays
 // one click from the bar (the shell's pre-review: without these links no
 // page reached /plans, /log or /ship).
 const HELD: Record<string, [label: string, sub: string][]> = {
   Tasks: [["Plans", "plans"]],
   Code: [["Log", "log"]],
+  Activity: [["Flow", "flow"], ["Process", "process"]],
   Settings: [["Ship", "ship"]],
+};
+// The Process tab (t558) is linked from every page of the area: under
+// Activity with Flow, and after the held pages of any other tab.
+const heldOf = (tab: string): [label: string, sub: string][] => {
+  const held = HELD[tab] ?? [];
+  return held.some(([, sub]) => sub === "process") ? held : [...held, ["Process", "process"]];
 };
 
 // `active` is the page's own name, a tab's or one it holds; `crumb` ends the
@@ -1712,7 +1719,7 @@ export function projectTabs(p: ProjectRecord, active: string, crumb?: string): s
 // The page of a project's area an address names, for the row of a page
 // whose body drew none: `rest` is the path after /p/NAME, decoded. A task's
 // pages, its branch's browsing included, are under Tasks with its id.
-const PAGE_AT: Record<string, string> = { tasks: "Tasks", plans: "Plans", flow: "Flow", ship: "Ship", settings: "Settings", showcase: "Showcase", code: "Code", log: "Log", commit: "Code", history: "Code" };
+const PAGE_AT: Record<string, string> = { tasks: "Tasks", plans: "Plans", flow: "Flow", process: "Process", ship: "Ship", settings: "Settings", showcase: "Showcase", code: "Code", log: "Log", commit: "Code", history: "Code" };
 export function projectPageAt(rest: string[]): { active: string; crumb?: string } {
   const [first] = rest;
   if (!first) return { active: "Overview" };
@@ -1725,9 +1732,9 @@ function projectRow(p: ProjectRecord, active: string, crumb?: string): string {
     `<a href="${href("p", p.name, ...sub ? [sub] : [])}"${label === tab ? ' aria-current="page"' : ""}>${label}${label === "Tasks" ? `<span data-shell="tasks">${MARK.tasks(p.name)}</span>` : ""}</a>`).join("");
   return `
   <div class="bar-row project-row">
-    <p class="crumb"><a href="${href("p", p.name)}">${e(titleOf(p))}</a> › <span>${e(crumb ?? (active === "Flow" ? "Activity" : active))}</span></p>
-    <nav aria-label="Project">${tabs}</nav>${HELD[tab] ? `
-    <nav aria-label="${tab} holds" class="held">${HELD[tab].map(([label, sub]) => `<a href="${href("p", p.name, sub)}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</nav>` : ""}
+    <p class="crumb"><a href="${href("p", p.name)}">${e(titleOf(p))}</a> › <span>${e(crumb ?? (active === "Flow" || active === "Process" ? "Activity" : active))}</span></p>
+    <nav aria-label="Project">${tabs}</nav>${heldOf(tab).length ? `
+    <nav aria-label="${tab} holds" class="held">${heldOf(tab).map(([label, sub]) => `<a href="${href("p", p.name, sub)}"${label === active ? ' aria-current="page"' : ""}>${label}</a>`).join("")}</nav>` : ""}
   </div>`;
 }
 
@@ -1814,6 +1821,12 @@ export function renderProjectFlow(p: ProjectRecord, story: Story, owner: string,
     ? `${legendLine(vendorsIn(shown), shown.some(s => s.tally.localRuns > 0))}${stages}${moments}`
     : `<div class="empty"><h3>No work yet.</h3><p>When an agent claims a task, its thread appears here, from claim to merge.</p></div>`;
   return projectPage(p, "Flow", body, ownerName, `Flow · ${titleOf(p)}`, live);
+}
+
+// Process (t558): the task flow as a flowchart, drawn by src/process.ts into
+// `body` with its own `css`. Like Now it follows the device's colour scheme.
+export function renderProjectProcess(p: ProjectRecord, body: string, css: string, ownerName: string | null = null): string {
+  return page(`Process · ${titleOf(p)}`, `${projectTabs(p, "Process")}${body}`, "Home", ownerName, 0, true, undefined, { css, device: true });
 }
 
 // A project's showcase (t757): the page its record is proud of, for the
