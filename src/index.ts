@@ -23,7 +23,7 @@ import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectProcess, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, redactKeys, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -72,6 +72,7 @@ import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { errorLine, RETRY_AFTER, retryableByRuntime } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
+import { buildProcess, parseStat, parseWindow, readProcessEvents, renderProcess, PROCESS_CSS } from "./process.ts";
 import { buildNow, readEvents, type NowProject } from "./now.ts";
 
 export { Ledger };
@@ -4653,7 +4654,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
 
 // The tabs a project's area holds beyond the pages that browse it. A task id
 // cannot clash with one (tN), so the order here decides.
-const PROJECT_AREA_TABS = new Set(["tasks", "flow", "plans", "ship", "settings", "showcase"]);
+const PROJECT_AREA_TABS = new Set(["tasks", "flow", "process", "plans", "ship", "settings", "showcase"]);
 
 async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refresh: number }, nonce: string): Promise<Response> {
   const { env } = c;
@@ -4693,6 +4694,14 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
         const story = buildStory(p.name, items, events, ownerActor(env), events.length >= STORY_EVENTS, titleOf(p));
         const imported = await importedFor(env, p, firstTaskAt(items));
         return html(renderProjectFlow(p, story, ownerActor(env), ownerName(env), imported ? new Map([[p.name, imported]]) : new Map(), live), 200, nonce);
+      }
+      case "process": {
+        // The developer's page, like the rest of the area. ?since and ?stat
+        // choose the window and the statistic; any other value is the default.
+        const windowId = parseWindow(c.url.searchParams.get("since")), now = Date.now();
+        const events = await readProcessEvents((before) => L.events(undefined, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, (id) => readEvents((before) => L.events(id, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE), EVENTS_PAGE, now, windowId);
+        const model = buildProcess(p.name, events, now, windowId);
+        return html(renderProjectProcess(p, renderProcess(model, parseStat(c.url.searchParams.get("stat")), `/p/${encodeURIComponent(p.name)}/process`), PROCESS_CSS, ownerName(env)), 200, nonce);
       }
       case "plans": {
         const items = await L.items();
