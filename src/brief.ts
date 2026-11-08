@@ -20,6 +20,7 @@ export interface Brief {
   nonGoals: string[];
   stopWhen: string[];
   nextGate: string | null;
+  design: string | null;
   // What a review judges the change against: the task's acceptance criteria,
   // a part's criteria from the approved plan, and the binding of the two a
   // review names (src/criteria.ts), which `atelier review --criteria` takes.
@@ -192,6 +193,7 @@ export function briefFor(detail: Detail, events: LedgerEvent[] = definingOf(deta
     nonGoals: item.nonGoals ?? [],
     stopWhen: item.stopWhen ?? [],
     nextGate: item.nextGate ?? null,
+    design: item.design ?? null,
     accept: item.accept ?? [],
     partAccept: item.partAccept ?? null,
     criteria: criteriaOf(item),

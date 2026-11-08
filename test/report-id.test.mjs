@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { SERVER_CAPABILITIES } from "../src/route-level.ts";
+import { CLAIM_MAX } from "../src/text.ts";
 
 // `atelier report [ID] "claim"`: the claim is recorded on the item named,
 // else on the workspace's item. Inside a workspace, an ID that is not its
@@ -128,7 +129,7 @@ test("an id with no claim, a bad --item, and --help are answered with the usage,
   assert.match(other.stderr, /report does not take --note; see atelier report --help/);
   const help = f.run(f.workspace, ["report", "--help"]);
   assert.equal(help.status, 0);
-  assert.match(help.stdout, /^usage: atelier report \[ID\] "what you verified and how" \[--item ID\] \[--project P\]$/m);
+  assert.equal(help.stdout.split("\n")[0], `usage: atelier report [ID] "what you verified and how" [--item ID] [--project P] (claim: up to ${CLAIM_MAX} characters)`);
   assert.match(help.stdout, /in a workspace, another task's id needs `--item ID`/);
   assert.deepEqual(f.recorded(), []);
 });

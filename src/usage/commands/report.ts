@@ -1,12 +1,13 @@
 import type { CommandSpec } from "../command.ts";
+import { CLAIM_MAX } from "../../text.ts";
 
 const spec: CommandSpec = {
   name: "report",
   forms: [
     {
       group: "Agents", line: 2, slot: 60,
-      form: 'report [ID] "what you verified and how" [--item ID] [--project P]',
-      about: "Records a Reported claim at the current head: what the agent verified and how. It goes on the task named, else on the workspace's task; in a workspace, another task's id needs `--item ID`. It is shown and never counted as a check.",
+      form: `report [ID] "what you verified and how" [--item ID] [--project P] (claim: up to ${CLAIM_MAX} characters)`,
+      about: `Records a Reported claim at the current head: what the agent verified and how, up to ${CLAIM_MAX} characters (UTF-16 code units). A longer claim is refused, never cut. It goes on the task named, else on the workspace's task; in a workspace, another task's id needs \`--item ID\`. It is shown and never counted as a check.`,
     },
   ],
   flags: { item: false },

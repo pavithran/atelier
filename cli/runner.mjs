@@ -2843,8 +2843,9 @@ async function runReviewJob(assignment, config, name, runnerIO, preclaimed = nul
       // A refusal for the input's size is the harness's limit, not the
       // model's verdict (t230): reported once with the limit and the size, and
       // skipped, so it is neither tried again as it is nor counted against
-      // the model.
-      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      // the model. It is read from the harness's stderr alone, here only
+      // after a non-zero exit or a signal that was not the time limit (t554).
+      const tooLarge = inputSizeRefusal(result.stderr);
       if (tooLarge) {
         const diffText = ownDiff === null ? shown : `${shown}${ownDiff}`;
         const why = sizeRefusalReason(actor, tooLarge, text.length + diffText.length);
@@ -3168,7 +3169,7 @@ export async function runCriteriaReview(assignment, config, name, runnerIO) {
     if (result.code !== 0) {
       // A refusal for the input's size is recorded as one, with the limit and
       // the size (t323), and skipped as a review's is: not the model's failure.
-      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      const tooLarge = inputSizeRefusal(result.stderr);
       if (tooLarge) {
         const why = sizeRefusalReason(actor, tooLarge, claimed.brief.length);
         await fail(why);
@@ -3362,7 +3363,7 @@ export async function runPrereview(assignment, config, name, runnerIO) {
     }
     if (result.code !== 0) {
       // A refusal for the input's size is recorded as one (t323), as a review's is.
-      const tooLarge = inputSizeRefusal(`${result.stderr ?? ""}\n${result.output ?? ""}`);
+      const tooLarge = inputSizeRefusal(result.stderr);
       if (tooLarge) {
         const why = sizeRefusalReason(actor, tooLarge, text.length + diff.length);
         await end({ outcome: "runner", detail: why });
