@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../src/runtime/server.mjs";
-import { failingTestOf } from "../src/post-merge.ts";
+import { failingTestOf, revertBrief } from "../src/post-merge.ts";
 import { world } from "./helpers/auto-revert-world.mjs";
 // No test reads this Mac's own iCloud folder (t645).
 process.env.ATELIER_PRIVATE_ROOT ||= `${process.env.TMPDIR || "/tmp"}/atelier-tests-no-icloud-${process.pid}`;
@@ -332,4 +332,71 @@ test("a failed fix filing in a project that requires criteria review: the tick f
   const { item } = await ledger.send("GET", "/projects/p/items/t2");
   assert.equal(`${item.dispatch.agent}/${item.dispatch.model}`, BUILDER);
   assert.equal(await itemCount(ledger), 2);
+});
+
+// Criterion 2 at the brief limit: the post-merge output may be 8,192
+// characters, the brief at most 4,000. The brief keeps the output's last part
+// that fits, marked cut with where the full output is.
+const longSuite = () => [{ name: "suite", command: "grep -q good f || { echo 'not ok 1 - long output'; seq 1 3000; exit 1; }" }];
+const cutBrief = (brief, output) => {
+  assert.ok(brief.length <= 4000, `the brief is ${brief.length} characters`);
+  const mark = /\n\n\(cut; full output: the post-merge\.finish event of run run-1 on t\d+, listed by atelier events --project p --kind post-merge\.finish\)\n/.exec(brief);
+  assert.ok(mark, brief.slice(0, 600));
+  const tail = brief.slice(mark.index + mark[0].length);
+  assert.ok(tail.length > 3000, `the brief keeps ${tail.length} characters of the output`);
+  assert.ok(output.trimEnd().endsWith(tail), "the part kept is the output's last part");
+};
+
+test("8,192 characters of output and a failed first filing: the tick files the fix with the output's last part, marked cut", async t => {
+  const ledger = await boot(t);
+  const w = seeded(t, { steps: longSuite }, refusingFirstFiling(ledger));
+  await assert.rejects(w.execute(), /remains merged/);
+  const output = Object.values(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures)[0].output;
+  assert.equal(output.length, 8192);
+  assert.equal((await recoveries(ledger))[0].state, "filing");
+  await ledger.tick();
+  const detail = await ledger.send("GET", "/projects/p/items/t2");
+  assert.ok(detail.events.some(e => e.kind === "item.fix_of" && e.data.itemId === "t1"));
+  assert.match(detail.item.brief, /^t\d+ landed as [a-f0-9]{40} and was reverted automatically because it turned main red\. The failing output:/);
+  cutBrief(detail.item.brief, output);
+  assert.equal(`${detail.item.dispatch.agent}/${detail.item.dispatch.model}`, BUILDER);
+  assert.equal((await recoveries(ledger))[0].state, "complete");
+});
+
+test("8,192 characters of output: the executor files the fix itself with the output's last part, marked cut", async t => {
+  const ledger = await boot(t);
+  const w = seeded(t, { steps: longSuite }, ledger);
+  await assert.rejects(w.execute(), /was reverted/);
+  const output = Object.values(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures)[0].output;
+  const { item } = await ledger.send("GET", "/projects/p/items/t2");
+  cutBrief(item.brief, output);
+  assert.equal(`${item.dispatch.agent}/${item.dispatch.model}`, BUILDER);
+  assert.equal(await itemCount(ledger), 2);
+});
+
+test("a notice whose fix brief passes the limit: the tick files the output's last part, marked cut, not a brief without it", async t => {
+  const ledger = await boot(t);
+  const output = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join("\n").slice(-8192);
+  await ledger.send("POST", "/projects/p/revert-notices", {
+    item: "t1", merge: "a".repeat(40), revert: "b".repeat(40), fix: null, kind: "suite", failure: "t1 turned the post-merge suite red: the failing check",
+    filing: { title: "Fix t1: its landing turned main red", brief: `t1 landed and was reverted automatically. The failing output:\n\n${output}`, accept: ["the failing check passes on the reverted task's change; test"] },
+  });
+  await ledger.tick();
+  const { item } = await ledger.send("GET", "/projects/p/items/t2");
+  assert.ok(item.brief.startsWith("t1 landed and was reverted automatically. The failing output:\n\n(cut; full output: "), item.brief.slice(0, 300));
+  assert.ok(item.brief.length <= 4000);
+  assert.ok(item.brief.endsWith("line 1999"));
+  assert.ok(output.endsWith(item.brief.slice(item.brief.indexOf(")\n") + 2)));
+});
+
+test("a fix brief of exactly 4,000 characters is whole; one more cuts the output's start, never the lead", () => {
+  const lead = "t1 was reverted. The failing output:";
+  const fits = "x".repeat(4000 - lead.length - 2);
+  assert.equal(revertBrief(lead, fits, "there"), `${lead}\n\n${fits}`);
+  const cut = revertBrief(lead, `${fits}y`, "there");
+  assert.equal(cut.length, 4000);
+  assert.ok(cut.startsWith(`${lead}\n\n(cut; full output: there)\n`));
+  assert.ok(cut.endsWith("xy"));
+  // A cut that falls inside a surrogate pair drops its lone half.
+  assert.ok(!/^[\udc00-\udfff]/.test(revertBrief(lead, `a${"😀".repeat(3000)}`, "there").split(")\n")[1]));
 });

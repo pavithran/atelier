@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, renameSyn
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { currentStep, failingTestOf, failureKey, hash, newRevertState, redactedOutput } from "../src/post-merge.ts";
+import { currentStep, failingTestOf, failureKey, hash, newRevertState, redactedOutput, revertBrief } from "../src/post-merge.ts";
 import { matchesFolded } from "../src/rules.ts";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
@@ -382,9 +382,11 @@ export async function recoverFailedLanding({ request, name, id, env, print, grou
     return { passed: result.passed, output: redactedOutput(result.output) };
   };
   const base = `/projects/${encodeURIComponent(name)}`;
+  // The output is the failed attempt's, which the run's finish event records.
+  const where = `the post-merge.finish event of run ${run.id} on ${run.members[0]}, listed by atelier events --project ${name} --kind post-merge.finish`;
   const filing = (member, text) => ({
     title: `Fix ${member}: its landing turned ${what} red`,
-    brief: `${member} landed as ${run.after} and was reverted automatically because it turned ${what} red. The failing output:\n\n${text}`,
+    brief: revertBrief(`${member} landed as ${run.after} and was reverted automatically because it turned ${what} red. The failing output:`, text, where),
     accept: [`${failingTestOf(text)} passes on the reverted task's change; test`],
   });
   const io = {

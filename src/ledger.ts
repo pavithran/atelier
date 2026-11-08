@@ -9,7 +9,7 @@ import { dueNotices, noticeKey } from "./stuck/notices.ts";
 import { keyOf as episodeKeyOf, reconcile as reconcileEpisodes, type EpisodeKey, type Transition } from "./stuck/episodes.ts";
 import { applyServed, type CountRow, type DayRow, type ServedMove, type ShowcaseCounts } from "./graph.ts";
 import { dayInZone } from "./time.ts";
-import { parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
+import { fitRevertBrief, parsePostMerge, reservePostMerge, preparePostMerge, startAttempt, finishAttempt, recordCommand, recoverPostMerge, expireAttempt, type PostMergePolicy, type PostMergeRun, type Attempt } from "./post-merge.ts";
 import type { BoardSnapshot, StageFacts } from "./board.ts";
 import { cleanSession, type SessionNote } from "./sessions.ts";
 import { LANDING_LEASE_EXPIRY_MS, landingLeaseLapsed, waitingLandingGone, type LandingLease, type WaitingLanding } from "./landing-lease.ts";
@@ -6080,7 +6080,7 @@ export class Ledger extends DurableObject<Env> {
     if (fix !== null) this.item(fix);
     this.item(item);
     const failure = Array.from(String(body.failure ?? "")).slice(0, 1000).join("");
-    const filing = revertFilingOf(body.filing) ?? revertFiling(item, failure);
+    const filing = revertFilingOf(body.filing, item) ?? revertFiling(item, failure);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS revert_notices (merge TEXT PRIMARY KEY, at TEXT NOT NULL)`);
     const at = new Date().toISOString();
     return this.ctx.storage.transactionSync(() => {
@@ -12255,12 +12255,14 @@ interface RevertRecovery { item: string; merge?: string; fix: string | null; sta
 
 // The fix task the executor would have filed, as its notice sends it; null
 // when it sent none or one the item fields refuse.
-function revertFilingOf(input: unknown): RevertFiling | null {
+// A brief past the limit keeps its output's last part, marked cut (fitRevertBrief).
+function revertFilingOf(input: unknown, item: string): RevertFiling | null {
   if (!input || typeof input !== "object") return null;
   const raw = input as Record<string, unknown>;
   if (typeof raw.title !== "string" || !raw.title.trim()) return null;
+  const brief = typeof raw.brief === "string" ? fitRevertBrief(raw.brief, `the post-merge.finish event on ${item}, listed by atelier events --kind post-merge.finish`) : raw.brief;
   try {
-    const fields = itemFields({ brief: raw.brief, accept: raw.accept });
+    const fields = itemFields({ brief, accept: raw.accept });
     return { title: shortTitle(raw.title), brief: fields.brief ?? "", accept: fields.accept ?? [] };
   } catch (error) {
     if (error instanceof RuleError) return null;

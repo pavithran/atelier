@@ -1,4 +1,4 @@
-import { matchesFolded, RuleError } from "./rules.ts";
+import { BRIEF_MAX, matchesFolded, RuleError } from "./rules.ts";
 import { refusalOf } from "./checks.ts";
 
 // This policy and run are independent of leases, tasks' terminal state and
@@ -216,4 +216,24 @@ export function failingTestOf(output: unknown): string {
     if (name) return name.slice(0, 200);
   }
   return "the failing check";
+}
+
+// The brief of an automatic revert's fix task: the lead, a blank line, the
+// failing output. The output may be 8,192 characters and a brief at most
+// BRIEF_MAX, so output that would not fit keeps its last part, where a test
+// run ends with its failures, behind a mark naming where the whole is.
+export function revertBrief(lead: string, output: string, where: string): string {
+  const whole = `${lead}\n\n${output}`;
+  if (whole.length <= BRIEF_MAX) return whole;
+  const head = `${lead}\n\n(cut; full output: ${where})\n`;
+  const tail = output.slice(output.length - Math.max(0, BRIEF_MAX - head.length)).replace(/^[\udc00-\udfff]/, "");
+  return `${head}${tail}`;
+}
+
+// A revert's fix brief, as an executor sent it, made to fit: the part before
+// the first blank line is the lead, the rest the output.
+export function fitRevertBrief(brief: string, where: string): string {
+  if (brief.length <= BRIEF_MAX) return brief;
+  const at = brief.indexOf("\n\n");
+  return at < 0 ? revertBrief("", brief, where).trimStart() : revertBrief(brief.slice(0, at), brief.slice(at + 2), where);
 }
