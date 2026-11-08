@@ -21,7 +21,7 @@ import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./cre
 import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
 import { REVIEW_RENEW_MS, VALIDATION_BLOCKED as BLOCKED_NOTE, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
-import { parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
+import { TEST_RUNS_MAX, parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
 import { reviewBrief, BRIEF_LIMITS, REVIEW_GUIDE_FILE, REVIEW_GUIDE_MAX, criteriaCount } from "../src/review/brief.ts";
 import { deferredCriteria } from "../src/review/criteria.ts";
 import { stopped as reviewStopped, stopText } from "../src/review/stopped.ts";
@@ -1024,9 +1024,18 @@ export function testRunsFor(evidence, head, required) {
   const runs = new Map();
   const add = (names, status) => { for (const test of names) runs.set(`${test}\0${result(status)}`, { test, head, result: result(status) }); };
   const same = evidence && evidence.head === head;
+  const names = required?.names ?? [];
+  let covering = same ? evidence.covering?.status ?? "not-run" : "not-run";
   // The full-suite fallback is one result; per-file results beside it could pass the server's cap.
-  if (!required?.full && same && evidence.tests?.status && evidence.tests.status !== "none") add(evidence.tests.files ?? [], evidence.tests.status);
-  if (required?.names?.length) add(required.names, same ? evidence.covering?.status ?? "not-run" : "not-run");
+  if (!required?.full && same && evidence.tests?.status && evidence.tests.status !== "none") {
+    const status = evidence.tests.status;
+    const extra = (evidence.tests.files ?? []).filter((file) => !names.includes(file));
+    if (names.length + extra.length <= TEST_RUNS_MAX) add(extra, status);
+    else if (names.length < TEST_RUNS_MAX) add([`${extra.length} changed tests outside the covering tests`], status);
+    // No room for even one entry: the required names carry the worse of the two results.
+    else if (status !== "pass" && covering === "pass") covering = status;
+  }
+  if (names.length) add(names, covering);
   return [...runs.values()].sort((a, b) => (a.test < b.test ? -1 : a.test > b.test ? 1 : 0));
 }
 

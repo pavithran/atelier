@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
+import { testRunsFor, runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
 import { cleanTestRuns } from "../src/review/verify.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
@@ -208,6 +208,33 @@ test("runReview with the full-suite fallback posts only the full-suite result, h
   const sent = JSON.parse(argv[argv.indexOf("--tests") + 1]);
   assert.deepEqual(sent, [{ test: "npm test", head: H1, result: "passed" }]);
   assert.equal(cleanTestRuns(sent).length, 1);
+});
+
+test("testRunsFor keeps every required name and stays within the evidence cap in mapped mode (t523)", () => {
+  const names = (n) => Array.from({ length: n }, (_, i) => `test/r${String(i).padStart(3, "0")}.test.mjs`);
+  const extra = (n) => Array.from({ length: n }, (_, i) => `test/x${i}.test.mjs`);
+  const evidence = (files, status = "pass") => ({ head: H1, tests: { status, files }, covering: { status: "pass" } });
+  const req = (n) => ({ names: names(n), full: false });
+  const sentFor = (n, e, status) => testRunsFor(evidence(e, status), H1, req(n));
+
+  for (const [n, e] of [[200, 1], [200, 3], [199, 1], [199, 3], [10, 2]]) {
+    const sent = sentFor(n, extra(e));
+    assert.ok(sent.length <= 200, `${n}+${e}: ${sent.length} entries`);
+    assert.equal(cleanTestRuns(sent).length, sent.length);
+    for (const name of names(n)) assert.ok(sent.some((s) => s.test === name && s.result === "passed"), `${n}+${e}: ${name} sent`);
+    assert.ok(sent.every((s) => s.result === "passed"));
+  }
+  // Under the cap nothing changes: one entry per changed test.
+  assert.equal(sentFor(10, extra(2)).length, 12);
+  assert.ok(sentFor(10, extra(2)).some((s) => s.test === "test/x0.test.mjs"));
+  // Past the cap with room for one: the extras are one entry carrying their status.
+  const folded = sentFor(199, extra(3), "fail");
+  assert.equal(folded.length, 200);
+  assert.equal(folded.filter((s) => s.result === "failed").length, 1);
+  // With no room at all, a failing extra run still keeps the approval from passing.
+  const full = sentFor(200, extra(1), "fail");
+  assert.equal(full.length, 200);
+  assert.ok(full.every((s) => s.result === "failed"));
 });
 
 test("runReview releases the request when an approval proves no acceptance criterion, and posts one that does", async () => {
