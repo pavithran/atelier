@@ -2274,6 +2274,7 @@ export class Ledger extends DurableObject<Env> {
   // read makes the read incomplete, and an incomplete read queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     this.dispatchApprovedCriteria();
+    this.resumeRevertRecoveries();
     let offers: SeenOffer[] | null = null;
     try {
       offers = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
@@ -3964,6 +3965,37 @@ export class Ledger extends DurableObject<Env> {
       });
     } finally {
       this.dispatchingOnCriteria = false;
+    }
+  }
+
+  // Recoveries of automatic reverts (t524) still waiting on their fix task:
+  // the notice names the reverted task and its fix task, and the recovery is
+  // "recovering" until the fix task is dispatched to the reverted task's
+  // builder, or was handed on some other way (dispatched, blocked, closed).
+  // The stage tick dispatches it once its criteria are approved, with no
+  // executor run and no standing decision, and marks the recovery complete
+  // only after that. It lives in its own record, so the landing job's removal
+  // when a failed post-merge run is reported does not touch it.
+  private resumeRevertRecoveries(): void {
+    for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'revert-recovery:%'`).toArray()) {
+      const recovery = JSON.parse(row.value as string) as { item: string; fix: string; state: "recovering" | "complete" };
+      if (recovery.state !== "recovering") continue;
+      try {
+        const done = () => this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, row.key, JSON.stringify({ ...recovery, state: "complete", at: new Date().toISOString() }));
+        const fix = this.item(recovery.fix);
+        const dispatchedBefore = !!this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.dispatched' LIMIT 1`, fix.id).toArray().length;
+        if (fix.state !== "open" || fix.owner || fix.dispatch || dispatchedBefore) { done(); continue; }
+        if (!this.criteriaReviewStatus(fix.id).approved) continue;
+        const [agent, ...model] = String(this.item(recovery.item).owner ?? "").split("/");
+        if (!agent || !model.length) continue;
+        this.ctx.storage.transactionSync(() => {
+          this.dispatch(fix.id, this.owner, { to: "home", agent, model: model.join("/") }, undefined, `Fix of ${recovery.item}, reverted automatically; its criteria are approved.`);
+          done();
+        });
+      } catch (error) {
+        // A policy or model refusal keeps the recovery waiting for the next tick.
+        if (!(error instanceof RuleError)) throw error;
+      }
     }
   }
 
@@ -5948,6 +5980,7 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS revert_notices (merge TEXT PRIMARY KEY, at TEXT NOT NULL)`);
     const at = new Date().toISOString();
     return this.ctx.storage.transactionSync(() => {
+      if (fix !== null) this.sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`, `revert-recovery:${merge}`, JSON.stringify({ item, fix, state: "recovering", at }));
       if (this.sql.exec(`INSERT OR IGNORE INTO revert_notices (merge, at) VALUES (?, ?)`, merge, at).rowsWritten === 0) return { recorded: false, merge };
       this.log(item, actor, "revert.notice", { item, merge, revert, fix, kind, failure }, at);
       return { recorded: true, merge };
@@ -11066,6 +11099,8 @@ export class Ledger extends DurableObject<Env> {
       // merge is recorded before the journal is cleared and the run executes,
       // and a landing killed between them resumes from here. A failed run
       // was reported by the landing that ran it, so it is not offered again.
+      // (A revert's pending recovery is kept apart, as revert-recovery, and is
+      // not dropped here: the stage tick finishes it.)
       const run = item.state === "merged" ? this.postMergeRun(item.id) : null;
       if (item.state === "abandoned" || (item.state === "merged" && (!run || run.state === "complete" || run.state === "failed"))) { this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id); continue; }
       // A blocked task is never landed, and a landing that failed at the

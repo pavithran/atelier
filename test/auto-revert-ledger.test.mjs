@@ -72,7 +72,9 @@ async function boot(t, { policy = {}, models = [BUILDER, REVIEWER, ACTING] } = {
     await as(`/projects/p/items/${id}/criteria-review`, { approve: true, rev: c.rev, criteria: c.criteria, request: c.id ?? c.request, note: "observable" });
   };
   const notices = async () => ((await send("GET", "/projects/p/items/t1")).events ?? []).filter(e => e.kind === "revert.notice");
-  return { send, real, server, approve, notices };
+  // One stage tick of the server, as its timer runs it.
+  const tick = () => object.run(() => object.live.stageTick(new Date()));
+  return { send, real, server, approve, notices, tick, object };
 }
 // The world's merged task is t7; the ledger's is t1.
 const seeded = (t, options, ledger) => {
@@ -117,6 +119,29 @@ test("a project that requires criteria review, with no standing decision: revert
   const dispatches = w.posted("/items/t2/dispatch").length;
   await assert.rejects(w.execute(), /already reverted/);
   assert.equal(w.posted("/items/t2/dispatch").length, dispatches);
+  assert.equal((await ledger.notices()).length, 1);
+});
+
+test("recovery waiting on the fix task's criteria resumes on the server's stage tick, with no executor run", async t => {
+  const ledger = await boot(t, { policy: { requireCriteriaReview: true, criteriaReview: "before" } });
+  const w = seeded(t, { steps: suite }, ledger);
+  await assert.rejects(w.execute(), /was reverted/);
+  const fix = () => ledger.send("GET", "/projects/p/items/t2").then(r => r.item);
+  // Review asked, not yet approved: a tick dispatches nothing.
+  await ledger.tick();
+  assert.equal((await fix()).dispatch ?? null, null);
+  await ledger.approve("t2");
+  assert.equal((await fix()).dispatch ?? null, null, "approval alone dispatches nothing without a standing decision");
+  const posts = w.posted("/items/t2/dispatch").length, requests = w.posted("/items").length;
+  await ledger.tick();
+  const item = await fix();
+  assert.equal(`${item.dispatch.agent}/${item.dispatch.model}`, BUILDER, "dispatched to the reverted task's builder by the tick");
+  assert.equal(w.posted("/items/t2/dispatch").length, posts, "the executor was not run");
+  assert.equal(w.posted("/items").length, requests);
+  // Recovery is complete: a second tick dispatches nothing more.
+  const at = item.dispatch.at;
+  await ledger.tick();
+  assert.equal((await fix()).dispatch.at, at);
   assert.equal((await ledger.notices()).length, 1);
 });
 
