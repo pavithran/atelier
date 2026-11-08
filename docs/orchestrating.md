@@ -147,6 +147,36 @@ points at it and states the review path (it does not edit the file).
   read a log.
 - Feed what you learn back into Atelier, as the last section says.
 
+## Process v3
+
+PAVI approved these six rules on 7 November 2026 ("Yes, all seven"). They answer rework the record already shows: on 10 October one task took
+three review rounds and another five over cases the criteria left unstated,
+and t389's criterion was rejected ten times between 9 and 12 October over paths
+its test could not prove. Atelier carries the rules, not the orchestrator's
+notes. `atelier guide --role orchestrate` states all six; `atelier guide --role
+build` states rules 3 and 4, which are the builder's.
+
+1. **A design note comes before tasks that share a mechanism.** The note
+   states what it records and where, the production entry point,
+   what happens on a crash, a retry, a repeat and a timeout, and one harness
+   scenario. The developer decides it, and a model of another company reads it
+   once before any of the tasks is filed.
+2. **A task has at most five criteria and one mechanism.** Split anything
+   larger; a task that changes two mechanisms is two tasks.
+3. **A builder proves each criterion from the production entry point.** It
+   tests each named failure path at the real boundary, and shows the test red on
+   main first, then green, with both outputs. The orchestrator writes criteria
+   that ask for this. Before submitting, the builder walks each criterion, names
+   and runs its proof, and says plainly which proof it could not run.
+4. **A new mechanism goes in its own files, and core files only call it.**
+   Core files stay small enough to review, and the mechanism can be tested apart
+   from them.
+5. **Builds never run inside the orchestrating session.** The session
+   dispatches builders and reads their results; it does not write the change.
+6. **Before a criteria review, match each requirement of the brief to the
+   criterion that tests it.** A requirement with no criterion is added, or
+   dropped from the brief, before the reviewer sees either.
+
 ## Acting on the developer token
 
 The developer token is the developer's authority, and a model holds it
