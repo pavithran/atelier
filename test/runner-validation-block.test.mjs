@@ -6,6 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { runTask, runOutcome, taskRevisionKey } from "../cli/runner.mjs";
+import { runKeyOf } from "../cli/runner-failure.mjs";
 import { config, assignment, fixture } from "./runner-shared.mjs";
 
 const item = { ...assignment.item, brief: "Make the runner build the task.", accept: ["The runner builds the task; tested."] };
@@ -115,3 +116,22 @@ test("the task revision key covers the criteria binding, the scope list and the 
   assert.notEqual(taskRevisionKey({ ...item, brief: undefined }), key);
   assert.equal(taskRevisionKey({ ...item, accept: [] }), taskRevisionKey({ ...item, accept: undefined }));
 });
+
+// t335: a task whose result is committed and marked is not built again, but a
+// validation block recorded for the same revision is still replayed, at both
+// replay points, and is not skipped past.
+for (const [point, prepared] of [["before the claim", false], ["after preparation", true]]) {
+  test(`a validation block for this key is replayed ${point}, not skipped past by a run-result marker`, async () => {
+    const pushed = { ...item, state: "claimed", owner: assignment.actor, head: "before", base: "base", validationBlockedAt: "2026-10-28T10:00:00.000Z" };
+    const f = fixture({ head: "before", runResult: { actor: assignment.actor, head: "before", key: runKeyOf(taskRevisionKey(pushed), pushed) } });
+    f.io.jobBrief = async () => ({ job: "build", text: "", hash: "h" });
+    f.io.readValidationBlock = async () => ({ actor: assignment.actor, head: "before", taskKey: taskRevisionKey(pushed), detail: "needs a scope change", prepared });
+    if (prepared) f.io.prepare = async () => ({ key: "ready" });
+    const state = await runTask({ ...assignment, item: pushed }, config, "home:studio", f.io);
+    assert.equal(state.validationBlocked, true);
+    assert.equal(runOutcome(state), "validation_blocked");
+    assert.match(state.reason, /needs a scope change/);
+    assert.ok(!f.calls.some((c) => c.harness || c.argv?.[0] === "finish"));
+    assert.ok(!f.logs.some((l) => l.startsWith("skipped the builder:")));
+  });
+}

@@ -2,6 +2,8 @@
 // site that decides what a failed harness left behind asks here, so the
 // reason, the starting head, the claim and the marker cannot drift apart.
 
+import { createHash } from "node:crypto";
+
 const short = (head) => String(head).slice(0, 8);
 
 // The reason a harness that did not succeed is failed with. A harness that
@@ -80,4 +82,20 @@ export function harnessOutcome(i) {
   const headMoved = !!head && head !== from;
   const release = i.kind === "part" && headMoved;
   return { from, markerFrom: markerStart, reason, headMoved, keepClaim: !release && (headMoved || !!i.marker), release };
+}
+
+// The run key (t335): what a build's committed result answers. It is the
+// sha256 of the task revision key (criteria, scope and brief), the dispatch's
+// time and note, and the number of criteria reviews with a verdict, so a
+// redispatch, a new note, an edit of the task or a new review of its criteria
+// each give a different key and the builder runs again.
+export function runKeyOf(revisionKey, item) {
+  return createHash("sha256").update(JSON.stringify(["atelier-run-key/1", revisionKey, item.dispatch?.at ?? null, item.dispatch?.note ?? null, item.criteriaReviews ?? 0])).digest("hex");
+}
+
+// Whether a run-result marker (.git/atelier-run-result) vouches for this run:
+// written by this actor, for this head, under this run key. A marker that is
+// missing, unreadable or of another shape vouches for nothing.
+export function runResultHolds(marker, { actor, head, key }) {
+  return !!marker && typeof marker === "object" && marker.actor === actor && marker.head === head && marker.key === key;
 }
