@@ -361,3 +361,46 @@ test("a publication refuses a commit holding a private file of the project and p
   await publishPinned({ git: r.git, run: { after: head }, step: r.s, cwd: r.dir, project: "other" });
   assert.equal(r.pushes(), 1, "for a project that names no private file, the same publication goes");
 });
+
+// The failure branch of a real run reaches automatic recovery (t524).
+function failingRun() {
+  const r = run([step("verify")]); preparePostMerge(r, []);
+  const request = async (method, path, body) => {
+    if (path.endsWith("git-token")) return { kind: "read", remote: "https://baseline.test/git", token: "secret" };
+    if (body?.action === "start") startAttempt(r, "1", at);
+    if (body?.action === "finish") finishAttempt(r, body.attempt, body.passed, body.output, at);
+    return { run: structuredClone(r) };
+  };
+  const group = async (argv, opts) => {
+    if (argv[0] === "git") return { status: 0, stdout: argv.includes("rev-parse") ? b : "", stderr: "" };
+    return { status: 1, stdout: "not ok 3 - widget renders\n", stderr: "" };
+  };
+  return { request, group };
+}
+
+test("a failed check step on the landed merge is handed to automatic recovery with its output", async () => {
+  const { request, group } = failingRun(), seen = [];
+  const recover = async arg => { seen.push(arg); return { action: "reverted", revert: "d".repeat(40) }; };
+  await assert.rejects(executePostMerge({ request, name: "p", id: "t1", group, print() {}, recover }), /t1 was reverted/);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].step.name, "verify");
+  assert.match(seen[0].output, /not ok 3 - widget renders/);
+});
+
+test("with no recover given, a failure reaches the built-in recovery, which needs a checkout", async () => {
+  const { request, group } = failingRun(), said = [];
+  await assert.rejects(executePostMerge({ request, name: "p", id: "t1", group, print: line => said.push(line) }), /remains merged/);
+  assert.ok(said.some(line => /no checkout on this Mac/.test(line)), said.join("\n"));
+});
+
+test("a recovery that throws leaves the original failure standing", async () => {
+  const { request, group } = failingRun(), said = [];
+  await assert.rejects(executePostMerge({ request, name: "p", id: "t1", group, print: line => said.push(line), recover: async () => { throw new Error("push refused"); } }), /remains merged/);
+  assert.ok(said.some(line => /push refused/.test(line)));
+});
+
+test("gate is true only on a check step", () => {
+  assert.equal(policy([step("release", { gate: true })]).steps[0].gate, true);
+  assert.throws(() => policy([step("x", { gate: "yes" })]));
+  assert.throws(() => policy([step("x", { gate: true, class: "deploy", command: "npm run deploy", versionUrl: "https://x.test/version" })]));
+});
