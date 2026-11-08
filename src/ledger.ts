@@ -1131,6 +1131,7 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("non_goals")) this.sql.exec(`ALTER TABLE items ADD COLUMN non_goals TEXT`);
     if (!columns.includes("stop_when")) this.sql.exec(`ALTER TABLE items ADD COLUMN stop_when TEXT`);
     if (!columns.includes("next_gate")) this.sql.exec(`ALTER TABLE items ADD COLUMN next_gate TEXT`);
+    if (!columns.includes("design")) this.sql.exec(`ALTER TABLE items ADD COLUMN design TEXT`);
     if (!columns.includes("blocked")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked TEXT`);
     // Plans (docs/orchestrator.md, section 1): an item's kind (null for an
     // ordinary task, plan or part), a part's plan item, its key in the
@@ -2922,7 +2923,7 @@ export class Ledger extends DurableObject<Env> {
       if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409, "edit the plan's scope instead");
       set.scope = JSON.stringify(scope);
     }
-    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate or --context", 400, "give at least one field to change");
+    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate, --design or --context", 400, "give at least one field to change");
     if (context !== undefined) assertLength(context, NOTE_MAX, "the task's context");
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
@@ -3989,7 +3990,7 @@ export class Ledger extends DurableObject<Env> {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
-    const live = open.length && policy.coreFiles?.length ? this.coreHolders(lease?.item ?? "") : [];
+    const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];
@@ -12097,6 +12098,7 @@ function toItem(r: Row): Item {
     nonGoals: r.non_goals ? (JSON.parse(r.non_goals as string) as string[]) : [],
     stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
     nextGate: (r.next_gate as string | null) ?? null,
+    design: (r.design as string | null) ?? null,
     brief: (r.brief as string | null) ?? null,
     accept: r.accept ? (JSON.parse(r.accept as string) as string[]) : [],
     // Only a blocked item carries the record; unblocking and abandoning clear it.
@@ -12127,6 +12129,7 @@ function fieldColumns(fields: ItemFields): Record<string, string | null> {
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
+  if (fields.design !== undefined) set.design = fields.design;
   if (fields.accept !== undefined) set.accept = fields.accept.length ? JSON.stringify(fields.accept) : null;
   if (fields.brief !== undefined) set.brief = fields.brief;
   return set;
