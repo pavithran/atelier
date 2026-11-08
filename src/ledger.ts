@@ -3990,7 +3990,7 @@ export class Ledger extends DurableObject<Env> {
     const rows = this.sql.exec(`SELECT * FROM items WHERE state = 'open' AND (owner IS NULL OR owner = '') AND dispatch IS NOT NULL AND dispatch != '' ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray();
     const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).sort((a, b) => a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
-    const live = open.length && policy.coreFiles?.length ? this.coreHolders(lease?.item ?? "") : [];
+    const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
     const graph = holdGraph(all, policy.coreFiles, lease, now, runners);
     const saved = this.sql.exec(`SELECT value FROM meta WHERE key = 'core-holds'`).toArray()[0];

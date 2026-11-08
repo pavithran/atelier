@@ -19,8 +19,8 @@ function call(method: string, path: string, body?: unknown) {
   }), testEnv);
 }
 
-async function project(name: string) {
-  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], coreFiles: ["src/ledger.ts"] }, createdAt: new Date().toISOString() };
+async function project(name: string, coreFiles: string[] = ["src/ledger.ts"]) {
+  const record = { name, repo: name, policy: { checks: ["npm test"], protected: [], coreFiles }, createdAt: new Date().toISOString() };
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject(record, "owner");
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject(record);
@@ -38,8 +38,8 @@ const dispatchOf = (L: Awaited<ReturnType<typeof project>>, id: string) => L.dis
 
 // A holder (dispatched, then claimed) and a waiting task, each filed through
 // the create route with its design; the runner claims through its own token.
-async function pair(name: string, first?: string, second?: string) {
-  const L = await project(name);
+async function pair(name: string, first?: string, second?: string, coreFiles?: string[]) {
+  const L = await project(name, coreFiles);
   const holder = await file(name, "Holder", ["src/a/**"], first);
   const waiting = await file(name, "Waiting", ["src/b/**"], second);
   await dispatchOf(L, holder);
@@ -96,4 +96,15 @@ it("criterion 4: edit --design \"\" clears the name and the next poll offers the
   expect(await heldOf(L, waiting)).toBeUndefined();
   expect(await poll()).toContain(waiting);
   expectPast(await claim(), "after the edit");
+});
+
+it("a project with no core files still holds, withholds from the queue and refuses the claim by design", async () => {
+  const { L, holder, waiting, poll, claim } = await pair("design-hold-nocore", "notify", "notify", []);
+  expect(await heldOf(L, waiting)).toMatchObject({ id: holder, core: "design notify" });
+  expect(await poll()).not.toContain(waiting);
+  expectHeld(await claim(), "claim");
+  for (const [label, second] of [["other", "waking"], ["none", undefined]] as const) {
+    const o = await pair(`design-hold-nocore-${label}`, "notify", second, []);
+    expect(await o.poll(), label).toContain(o.waiting);
+  }
 });
