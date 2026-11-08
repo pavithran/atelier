@@ -72,14 +72,27 @@ test("a restart that finds the run failed with an unfinished revert resumes it i
   assert.equal(Object.values(saved.failures)[0].reopened, undefined);
   assert.equal(w.notices.length, 1, "the notice does not wait on the fix task");
   assert.equal(w.notices[0].fix, null);
-  // A new executor, from the saved state alone.
+  assert.match(w.notices[0].filing.brief, /reverted automatically/, "the notice carries the fix task for the ledger to file");
+  assert.equal(w.notices[0].filing.title, "Fix t7: its landing turned main red");
+  // A new executor, from the saved state alone, before the stage tick filed
+  // the fix: it files none of its own, and posts the notice again.
   await assert.rejects(w.execute(), error => /already reverted/.test(error.message) || assert.fail(w.prints.join("\n")));
   assert.equal(w.originHead(), landed, "no second revert");
-  assert.equal(w.posted("/items").length, 2, "one refused, one filed");
-  assert.equal(w.posted("/items/t101/dispatch").length, 1);
-  assert.equal(w.posted("/revert-notices").length, 2, "reposted once with the fix id");
+  assert.equal(w.posted("/items").length, 1, "the refused filing only");
+  assert.equal(w.posted("/revert-notices").length, 2);
+  // The tick filed t42; the next executor adopts it from the notice's answer and dispatches it.
+  w.tickFiles("t42");
+  await assert.rejects(w.execute(), /already reverted/);
+  assert.equal(w.posted("/items").length, 1);
+  assert.equal(w.posted("/items/t42/dispatch").length, 1);
+  assert.equal(w.posted("/revert-notices").length, 3);
   assert.equal(w.notices.length, 1, "the ledger records it once");
-  assert.equal(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures[Object.keys(saved.failures)[0]].reopened, true);
+  const done = JSON.parse(readFileSync(w.stateFile(), "utf8")).failures[Object.keys(saved.failures)[0]];
+  assert.equal(done.fixes.t7.task, "t42");
+  assert.equal(done.reopened, true);
+  assert.equal(done.noticedFix, true);
+  await assert.rejects(w.execute(), /already reverted/);
+  assert.equal(w.posted("/revert-notices").length, 3, "not posted again once the answer named the fix");
 });
 
 test("a notice the ledger did not answer is posted again on restart and recorded once (crash and resume)", async t => {

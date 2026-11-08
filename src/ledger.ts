@@ -28,7 +28,7 @@ import {
   assertHandoffTarget, assertReviewAllowed, pushActors, pushAuthors, ACTOR_MAX,
   overlappingLive, overlappingRefusal, assertNotTerminal, assertClaimAllowed, assertCriteria, assertEligible, assertOwner, assertRevision, assertLive, assertOverridesAllowed, changeClass, confirmationAt, contributorsOf, DEFAULT_OWNER, evidenceAt, gate, inboxFor, OVERRIDE_CONFIRMATION_MS, overrideConfirmationHint, reviewOverrideFor, roleRefusal, RuleError, sameActor, validActor,
   type OverrideConfirmation, type OwnerFactor,
-  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, shortTitle, titleLine, TITLE_MAX, ACCEPT_COUNT, BRIEF_MAX,
+  assertBlockable, assertNotBlocked, blockReason, blockUntil, VALIDATION_BLOCKED, validationBlockReason, secretClearReason, secretBlockers, REASON_MAX, itemText, itemFields, shortTitle, titleLine, TITLE_MAX, ACCEPT_COUNT, BRIEF_MAX,
   actorFamily, assertSingleFamily, companyRefusal, contributed, independentReviewerText, singleFamily,
   standingReview, bindingOf, retainableApprovals, retentionVerdict, type RetentionRead, countingReviews, independentApproval,
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
@@ -2279,7 +2279,14 @@ export class Ledger extends DurableObject<Env> {
   // read makes the read incomplete, and an incomplete read queues nothing.
   async stageTick(now: Date): Promise<{ complete: boolean; recorded: number; tasks: number }> {
     this.dispatchApprovedCriteria();
-    this.resumeRevertRecoveries();
+    // The pool a revert's fix task needs for its criteria review, read only
+    // while a recovery is unfinished; null when the index could not be read.
+    let pool: ModelEntry[] | null = null;
+    if (this.sql.exec(`SELECT 1 FROM meta WHERE key LIKE 'revert-recovery:%' AND json_extract(value, '$.state') != 'complete' LIMIT 1`).toArray().length) {
+      try { pool = await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).models() as unknown as ModelEntry[]; }
+      catch { /* the review is asked on a later tick */ }
+    }
+    this.resumeRevertRecoveries(pool);
     let offers: SeenOffer[] | null = null;
     try {
       offers = this.ownOffers(await this.env.LEDGER.get(this.env.LEDGER.idFromName("__index")).runnerOffers());
@@ -3974,24 +3981,54 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  // Recoveries of automatic reverts (t524) still waiting on their fix task:
-  // the notice names the reverted task and its fix task, and the recovery is
-  // "recovering" until the fix task is dispatched to the reverted task's
-  // builder, or was handed on some other way (dispatched, blocked, closed).
-  // The stage tick dispatches it once its criteria are approved, with no
+  // Recoveries of automatic reverts (t524) still waiting on their fix task.
+  // A notice sent after the fix task could not be filed leaves its record at
+  // "filing", holding the task to file: the tick files it (fixOf the reverted
+  // task, the failing output in its brief), stores its id in the record and
+  // moves it to "recovering" in one transaction, so the record's fix id keeps
+  // a later tick from filing a second. A filing refused again leaves the
+  // record at "filing" for the next tick. A recovery is "recovering" until the
+  // fix task is dispatched to the reverted task's builder, or was handed on
+  // some other way (dispatched, blocked, closed). The tick asks the fix's
+  // criteria review where one is wanted (from `pool`, the stage tick's read
+  // of the index), dispatches it once its criteria are approved, with no
   // executor run and no standing decision, and marks the recovery complete
-  // only after that. It lives in its own record, so the landing job's removal
-  // when a failed post-merge run is reported does not touch it.
-  private resumeRevertRecoveries(): void {
+  // only after that. It lives in its own record, so the
+  // landing job's removal when a failed post-merge run is reported does not
+  // touch it.
+  private resumeRevertRecoveries(pool: readonly ModelEntry[] | null): void {
     for (const row of this.sql.exec(`SELECT key, value FROM meta WHERE key LIKE 'revert-recovery:%'`).toArray()) {
-      const recovery = JSON.parse(row.value as string) as { item: string; fix: string; state: "recovering" | "complete" };
-      if (recovery.state !== "recovering") continue;
+      let recovery = JSON.parse(row.value as string) as RevertRecovery;
+      if (recovery.state === "complete") continue;
       try {
-        const done = () => this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, row.key, JSON.stringify({ ...recovery, state: "complete", at: new Date().toISOString() }));
-        const fix = this.item(recovery.fix);
+        const save = (next: RevertRecovery) => this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, row.key, JSON.stringify(next));
+        if (recovery.state === "filing" || recovery.fix === null) {
+          const filing = recovery.filing ?? revertFiling(recovery.item, "");
+          recovery = this.ctx.storage.transactionSync(() => {
+            const made = this.newItem(filing.title, [], this.owner, { fixOf: recovery.item, brief: filing.brief, accept: filing.accept });
+            const next: RevertRecovery = { ...recovery, fix: made.id, state: "recovering", at: new Date().toISOString() };
+            save(next);
+            return next;
+          });
+        }
+        const done = () => save({ ...recovery, state: "complete", at: new Date().toISOString() });
+        const fix = this.item(recovery.fix!);
         const dispatchedBefore = !!this.sql.exec(`SELECT 1 FROM events WHERE item_id = ? AND kind = 'item.dispatched' LIMIT 1`, fix.id).toArray().length;
         if (fix.state !== "open" || fix.owner || fix.dispatch || dispatchedBefore) { done(); continue; }
-        if (!this.criteriaReviewStatus(fix.id).approved) continue;
+        const status = this.criteriaReviewStatus(fix.id);
+        if (this.criteriaGate() && !status.approved) {
+          if (status.need === "review" && pool) {
+            // The server picks no reviewer (G17); as the executor does, the
+            // tick names the first eligible candidate the refusal lists.
+            try { this.requestCriteriaReview(fix.id, this.owner, null, pool); }
+            catch (error) {
+              const first = error instanceof RuleError && error.code === "reviewer_needed" ? /^name one: atelier criteria-review \S+ --reviewer (\S+?),/.exec(error.next ?? "")?.[1] : null;
+              if (!first) throw error;
+              this.requestCriteriaReview(fix.id, this.owner, first, pool);
+            }
+          }
+          continue;
+        }
         const [agent, ...model] = String(this.item(recovery.item).owner ?? "").split("/");
         if (!agent || !model.length) continue;
         this.ctx.storage.transactionSync(() => {
@@ -3999,7 +4036,9 @@ export class Ledger extends DurableObject<Env> {
           done();
         });
       } catch (error) {
-        // A policy or model refusal keeps the recovery waiting for the next tick.
+        // A refused filing, a policy or model refusal, or no reviewer that
+        // qualifies (which atelier status lists as a deadlock) keeps the
+        // recovery waiting for the next tick.
         if (!(error instanceof RuleError)) throw error;
       }
     }
@@ -6024,7 +6063,14 @@ export class Ledger extends DurableObject<Env> {
   // task, and sessions read the event from the ledger. The revert_notices
   // table's key on the merge makes the store refuse a second notice for the
   // same reverted merge, so a resume or a repeat records nothing more.
-  recordRevertNotice(actor: string, body: Record<string, unknown>): { recorded: boolean; merge: string } {
+  // In the same transaction the notice writes the merge's recovery record:
+  // "recovering" with the fix task it names, or, when the filing failed and it
+  // names none, "filing" with the task to file (body.filing), which the stage
+  // tick files. The record's fix id is the guard against a second fix task: a
+  // record that has one keeps it, a "filing" record takes the first fix a
+  // notice names, and the answer gives the record's fix id so the executor
+  // adopts the tick's fix rather than filing its own.
+  recordRevertNotice(actor: string, body: Record<string, unknown>): { recorded: boolean; merge: string; fix: string | null } {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer records an automatic revert", 403, "the post-merge executor records it with the developer token");
     const item = String(body.item ?? ""), merge = String(body.merge ?? ""), revert = String(body.revert ?? "");
     const fix = body.fix === undefined || body.fix === null ? null : String(body.fix);
@@ -6034,13 +6080,20 @@ export class Ledger extends DurableObject<Env> {
     if (fix !== null) this.item(fix);
     this.item(item);
     const failure = Array.from(String(body.failure ?? "")).slice(0, 1000).join("");
+    const filing = revertFilingOf(body.filing) ?? revertFiling(item, failure);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS revert_notices (merge TEXT PRIMARY KEY, at TEXT NOT NULL)`);
     const at = new Date().toISOString();
     return this.ctx.storage.transactionSync(() => {
-      if (fix !== null) this.sql.exec(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`, `revert-recovery:${merge}`, JSON.stringify({ item, fix, state: "recovering", at }));
-      if (this.sql.exec(`INSERT OR IGNORE INTO revert_notices (merge, at) VALUES (?, ?)`, merge, at).rowsWritten === 0) return { recorded: false, merge };
+      const key = `revert-recovery:${merge}`;
+      const saved = this.sql.exec(`SELECT value FROM meta WHERE key = ?`, key).toArray()[0];
+      let recovery = saved ? JSON.parse(saved.value as string) as RevertRecovery : null;
+      if (!recovery || (recovery.fix === null && fix !== null)) {
+        recovery = fix !== null ? { item, merge, fix, state: "recovering", at } : { item, merge, fix: null, state: "filing", filing, at };
+        this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, key, JSON.stringify(recovery));
+      }
+      if (this.sql.exec(`INSERT OR IGNORE INTO revert_notices (merge, at) VALUES (?, ?)`, merge, at).rowsWritten === 0) return { recorded: false, merge, fix: recovery.fix };
       this.log(item, actor, "revert.notice", { item, merge, revert, fix, kind, failure }, at);
-      return { recorded: true, merge };
+      return { recorded: true, merge, fix: recovery.fix };
     });
   }
 
@@ -12193,4 +12246,33 @@ function fieldColumns(fields: ItemFields): Record<string, string | null> {
   if (fields.accept !== undefined) set.accept = fields.accept.length ? JSON.stringify(fields.accept) : null;
   if (fields.brief !== undefined) set.brief = fields.brief;
   return set;
+}
+
+// The recovery record of an automatic revert (t524), meta revert-recovery:MERGE.
+// "filing" holds the fix task still to file; "recovering" and "complete" name it.
+interface RevertFiling { title: string; brief: string; accept: string[] }
+interface RevertRecovery { item: string; merge?: string; fix: string | null; state: "filing" | "recovering" | "complete"; filing?: RevertFiling; at: string }
+
+// The fix task the executor would have filed, as its notice sends it; null
+// when it sent none or one the item fields refuse.
+function revertFilingOf(input: unknown): RevertFiling | null {
+  if (!input || typeof input !== "object") return null;
+  const raw = input as Record<string, unknown>;
+  if (typeof raw.title !== "string" || !raw.title.trim()) return null;
+  try {
+    const fields = itemFields({ brief: raw.brief, accept: raw.accept });
+    return { title: shortTitle(raw.title), brief: fields.brief ?? "", accept: fields.accept ?? [] };
+  } catch (error) {
+    if (error instanceof RuleError) return null;
+    throw error;
+  }
+}
+
+// The fix task filed from the notice alone, for a notice that carried none.
+function revertFiling(item: string, failure: string): RevertFiling {
+  return {
+    title: `Fix ${item}: its landing was reverted automatically`,
+    brief: `${item} was reverted automatically because its landing turned main or the release gate red. ${failure}`.trim(),
+    accept: [`The check that failed after ${item} landed passes on the reverted task's change; test`],
+  };
 }

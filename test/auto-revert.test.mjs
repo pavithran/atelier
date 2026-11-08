@@ -101,17 +101,24 @@ test("a red release gate with a green suite is reverted the same way (criterion 
   assert.deepEqual(green.calls, []);
 });
 
-test("a fix task that cannot be filed leaves reopened unset but does not hold back the notice; a retry files it and posts the notice again with the fix id, once", async () => {
+test("a fix task that cannot be filed leaves reopened unset but does not hold back the notice; a retry files none of its own, adopts the ledger's fix from the notice's answer, and stops posting it", async () => {
   const h = harness({ file: async () => { throw new Error("server down"); } });
   await assert.rejects(h.run(), /server down/);
   const entry = Object.values(h.state.failures)[0];
   assert.equal(entry.landed, revertSha);
   assert.equal(entry.reopened, undefined);
   assert.equal(entry.noticed, true);
+  assert.equal(entry.noticing, true);
   assert.equal(h.calls.filter((c) => c[0] === "notice").length, 1);
-  const retry = harness({ state: h.state });
+  // The ledger has not filed the fix yet: the retry files nothing and posts the notice again.
+  const early = harness({ state: h.state, notice: async (e) => { early.calls.push(["notice", structuredClone(e)]); return { recorded: false, fix: null }; } });
+  assert.equal((await early.run()).action, "repeat");
+  assert.deepEqual(names(early.calls), ["notice"]);
+  assert.equal(early.state.failures[Object.keys(early.state.failures)[0]].noticedFix, undefined);
+  // The stage tick filed t42: the answer names it, and the retry dispatches it.
+  const retry = harness({ state: h.state, notice: async (e) => { retry.calls.push(["notice", structuredClone(e)]); return { recorded: false, fix: "t42" }; } });
   assert.equal((await retry.run()).action, "repeat");
-  assert.deepEqual(names(retry.calls), ["reopen", "notice", "dispatch"]);
+  assert.deepEqual(retry.calls.map((c) => c[0] === "dispatch" ? c.slice(0, 2) : c[0]), ["notice", ["dispatch", "t42"]]);
   assert.equal(retry.state.failures[Object.keys(retry.state.failures)[0]].noticedFix, true);
   const again = harness({ state: retry.state });
   await again.run();
@@ -177,9 +184,9 @@ test("a green run resumes the reopen a crash left undone", async () => {
   const d = disk();
   const crashed = harness({ state: d.load(), save: d.save, file: async () => { throw new Error("server down"); } });
   await assert.rejects(crashed.run(), /server down/);
-  const green = harness({ state: d.load(), save: d.save, suite: async () => ({ passed: true, output: "" }) });
+  const green = harness({ state: d.load(), save: d.save, suite: async () => ({ passed: true, output: "" }), notice: async (e) => { green.calls.push(["notice", structuredClone(e)]); return { recorded: false, fix: "t42" }; } });
   assert.equal((await green.run()).action, "green");
-  assert.deepEqual(names(green.calls), ["reopen", "notice", "dispatch"]);
+  assert.deepEqual(names(green.calls), ["notice", "dispatch"]);
   const done = harness({ state: d.load(), save: d.save, suite: async () => ({ passed: true, output: "" }) });
   await done.run();
   assert.deepEqual(done.calls, []);

@@ -41,7 +41,7 @@ export function world(t, { steps, red = true, real }) {
   const run = reservePostMerge(policy, ["t7"], before, "run-1", at);
   run.after = merge; preparePostMerge(run, []);
 
-  const log = [], notices = [], noticed = new Set();
+  const log = [], notices = [], noticed = new Set(), fixes = new Map();
   let counter = 0, failNext = {};
   const request = async (method, path, body) => {
     log.push({ method, path, body });
@@ -61,9 +61,13 @@ export function world(t, { steps, red = true, real }) {
     if (path.endsWith("/landing-lease")) return method === "GET" ? { lease: null } : { ok: true };
     if (path.endsWith("/items") && method === "POST") return { id: `t${99 + log.filter(l => l.path.endsWith("/items") && l.method === "POST").length}` };
     if (path.endsWith("/revert-notices")) {
-      if (noticed.has(body.merge)) return { recorded: false, merge: body.merge };
+      // The ledger's recovery record keeps the first fix a notice names; the
+      // test sets one itself where the stage tick would file it.
+      if (body.fix && !fixes.get(body.merge)) fixes.set(body.merge, body.fix);
+      const fix = fixes.get(body.merge) ?? null;
+      if (noticed.has(body.merge)) return { recorded: false, merge: body.merge, fix };
       noticed.add(body.merge); notices.push(body);
-      return { recorded: true, merge: body.merge };
+      return { recorded: true, merge: body.merge, fix };
     }
     if (path.endsWith("/items/t7")) return { item: { id: "t7", owner: "claude-code/sonnet-5.5" } };
     const fix = /\/items\/(t\d+)$/.exec(path);
@@ -86,6 +90,7 @@ export function world(t, { steps, red = true, real }) {
   return {
     root, origin, work, outside, merge, run, log, notices, prints, execute, sh, env,
     failNext: (key, n = 1) => { failNext[key] = n; },
+    tickFiles: id => fixes.set(merge, id),
     originHead: () => sh(origin, ["rev-parse", "main"]),
     posted: suffix => log.filter(l => l.method === "POST" && l.path.endsWith(suffix)),
     stateFile: () => join(sh(work, ["rev-parse", "--absolute-git-dir"]), "atelier-auto-revert.json"),

@@ -272,18 +272,29 @@ export async function guardLanding({ project, members, head, io }) {
     let failure = null;
     const attempt = async fn => { try { await fn(); } catch (error) { failure ??= error; } };
     entry.fixes ??= {};
+    // Once a notice may have reached the server (entry.noticing, saved before
+    // it is posted), the first member's fix is the server's to file: a notice
+    // with no fix left a recovery record at "filing", which the stage tick
+    // files from. The executor then only posts the notice again and adopts the
+    // fix id the server answers with, so one merge never gets two fix tasks.
     await attempt(async () => {
       for (const member of entry.members) {
         const fix = entry.fixes[member] ??= {};
-        if (!fix.task) { fix.task = await io.file(member, entry.output); await save(); }
+        if (!fix.task && !(entry.noticing && member === entry.members[0])) { fix.task = await io.file(member, entry.output); await save(); }
       }
     });
-    // A notice sent before the fix was filed carried no fix id, and the server
-    // records the recovery only from a notice that names one. It is sent again
-    // once the fix exists; the server records the notice itself once.
-    const fixId = entry.fixes[entry.members[0]]?.task ?? null;
-    if (!entry.noticed || (!entry.noticedFix && fixId)) {
-      await attempt(async () => { await io.notice(entry); entry.noticed = true; if (fixId) entry.noticedFix = true; await save(); });
+    // The server records the notice itself once however often it is posted.
+    // It is posted again until the answer names the fix.
+    if (!entry.noticed || !entry.noticedFix) {
+      await attempt(async () => {
+        if (!entry.noticing) { entry.noticing = true; await save(); }
+        const answer = await io.notice(entry);
+        const first = entry.fixes[entry.members[0]] ??= {};
+        if (!first.task && answer?.fix) first.task = answer.fix;
+        entry.noticed = true;
+        if (first.task) entry.noticedFix = true;
+        await save();
+      });
     }
     if (!entry.reopened) {
       await attempt(async () => {
@@ -371,6 +382,11 @@ export async function recoverFailedLanding({ request, name, id, env, print, grou
     return { passed: result.passed, output: redactedOutput(result.output) };
   };
   const base = `/projects/${encodeURIComponent(name)}`;
+  const filing = (member, text) => ({
+    title: `Fix ${member}: its landing turned ${what} red`,
+    brief: `${member} landed as ${run.after} and was reverted automatically because it turned ${what} red. The failing output:\n\n${text}`,
+    accept: [`${failingTestOf(text)} passes on the reverted task's change; test`],
+  });
   const io = {
     state,
     suite: kind === "suite" ? again : async () => ({ passed: true, output: "" }),
@@ -398,22 +414,16 @@ export async function recoverFailedLanding({ request, name, id, env, print, grou
         if (took) await request("POST", leasePath, { cancel: true, item: id }).catch(error => print(`the landing lease taken for ${id}'s revert could not be released: ${error.message}; free it with atelier land ${id} --release-lease`));
       }
     },
-    file: async (member, text) => {
-      const failing = failingTestOf(text);
-      const made = await request("POST", `${base}/items`, {
-        title: `Fix ${member}: its landing turned ${what} red`,
-        brief: `${member} landed as ${run.after} and was reverted automatically because it turned ${what} red. The failing output:\n\n${text}`,
-        fixOf: member,
-        accept: [`${failing} passes on the reverted task's change; test`],
-      });
-      return made.id;
-    },
+    file: async (member, text) => (await request("POST", `${base}/items`, { ...filing(member, text), fixOf: member })).id,
     // The one notice of this revert, keyed in the ledger by the reverted merge.
+    // With no fix filed it carries the fix task to file, which the server's
+    // stage tick files; the answer names the fix the server's record holds.
     notice: async entry => {
-      const first = entry.members[0];
-      await request("POST", `${base}/revert-notices`, {
-        item: first, merge: entry.merge, revert: entry.landed, fix: entry.fixes?.[first]?.task ?? null, kind: entry.kind,
+      const first = entry.members[0], fix = entry.fixes?.[first]?.task ?? null;
+      return request("POST", `${base}/revert-notices`, {
+        item: first, merge: entry.merge, revert: entry.landed, fix, kind: entry.kind,
         failure: `${entry.members.join(", ")} turned ${entry.kind === "gate" ? "the release gate" : "the post-merge suite"} red: ${failingTestOf(entry.output)}`,
+        ...(fix ? {} : { filing: filing(first, entry.output) }),
       });
     },
     // The fix task goes to the reverted task's builder. Where the project holds

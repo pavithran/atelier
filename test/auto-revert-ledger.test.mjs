@@ -60,9 +60,9 @@ async function boot(t, { policy = {}, models = [BUILDER, REVIEWER, ACTING] } = {
     return send(method, path, body);
   };
   // The reviewer approves the criteria review it was asked for, claiming as its runner does.
-  const approve = async id => {
+  const approve = async (id, reviewer = REVIEWER) => {
     const as = async (path, body) => {
-      const res = await realFetch(new URL(`/api${path}`, server.url), { method: "POST", headers: { authorization: `Bearer ${OWNER_TOKEN}`, "content-type": "application/json", "x-atelier-actor": REVIEWER, "x-atelier-acting": ACTING, "x-atelier-runner": "home:studio" }, body: JSON.stringify(body) });
+      const res = await realFetch(new URL(`/api${path}`, server.url), { method: "POST", headers: { authorization: `Bearer ${OWNER_TOKEN}`, "content-type": "application/json", "x-atelier-actor": reviewer, "x-atelier-acting": ACTING, "x-atelier-runner": "home:studio" }, body: JSON.stringify(body) });
       const data = await res.json();
       assert.equal(res.status, 200, JSON.stringify(data));
       return data;
@@ -211,8 +211,8 @@ test("one notice per revert across a crash after the ledger recorded it and befo
 test("the ledger records one revert.notice per merge, however often it is posted", async t => {
   const ledger = await boot(t);
   const body = { item: "t1", merge: "a".repeat(40), revert: "b".repeat(40), fix: null, kind: "gate", failure: "t1 turned the release gate red: the failing check" };
-  assert.deepEqual(await ledger.send("POST", "/projects/p/revert-notices", body), { recorded: true, merge: body.merge });
-  assert.deepEqual(await ledger.send("POST", "/projects/p/revert-notices", { ...body, revert: "c".repeat(40) }), { recorded: false, merge: body.merge });
+  assert.deepEqual(await ledger.send("POST", "/projects/p/revert-notices", body), { recorded: true, merge: body.merge, fix: null });
+  assert.deepEqual(await ledger.send("POST", "/projects/p/revert-notices", { ...body, revert: "c".repeat(40) }), { recorded: false, merge: body.merge, fix: null });
   const notices = await ledger.notices();
   assert.equal(notices.length, 1);
   assert.equal(notices[0].data.revert, body.revert);
@@ -222,7 +222,7 @@ test("the ledger records one revert.notice per merge, however often it is posted
   await assert.rejects(ledger.send("POST", "/projects/p/revert-notices", { ...body, merge: "nope" }), /bad_request/);
 });
 
-test("a fix filing that fails once: the next run files it, the notice is posted again with the fix id, and the tick dispatches after approval", async t => {
+test("a fix filing that fails once: a later executor run files none of its own, the tick files and dispatches after approval, and the executor adopts that fix", async t => {
   const ledger = await boot(t, { policy: { requireCriteriaReview: true, criteriaReview: "before" } });
   let refuse = 1;
   const flaky = { ...ledger, real: async (method, path, body) => {
@@ -233,16 +233,103 @@ test("a fix filing that fails once: the next run files it, the notice is posted 
   await assert.rejects(w.execute(), /remains merged/);
   assert.equal((await ledger.notices()).length, 1, "the notice went out without the fix");
   assert.equal((await ledger.notices())[0].data.fix, null);
-  // The next run files the fix; the notice is reposted with its id.
+  // A later run before the tick: the fix is the ledger's to file.
   await assert.rejects(w.execute(), /already reverted/);
+  assert.equal(w.posted("/items").length, 1, "the refused filing only");
   assert.equal((await ledger.notices()).length, 1, "the server records the notice once");
-  const recovery = async () => ledger.object.run(() => ledger.object.live.ctx.storage.sql.exec(`SELECT value FROM meta WHERE key LIKE 'revert-recovery:%'`).toArray());
-  assert.equal((await recovery()).length, 1, "the recovery row exists");
+  await ledger.tick();
+  const reviews = (await ledger.send("GET", "/projects/p/items/t2/criteria-reviews")).reviews ?? [];
+  assert.equal(reviews.length, 1);
+  // The next run adopts t2 from the notice's answer; a notice the answer named the fix for is not sent again.
+  await assert.rejects(w.execute(), /already reverted/);
+  const entry = Object.values(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures)[0];
+  assert.equal(entry.fixes[Object.keys(entry.fixes)[0]].task, "t2");
+  assert.equal(entry.noticedFix, true);
   const posts = w.posted("/revert-notices").length;
   await assert.rejects(w.execute(), /already reverted/);
-  assert.equal(w.posted("/revert-notices").length, posts, "a notice sent with the fix id is not sent again");
-  await ledger.approve("t2");
+  assert.equal(w.posted("/revert-notices").length, posts);
+  await ledger.approve("t2", reviews[0].reviewer);
   await ledger.tick();
   const { item } = await ledger.send("GET", "/projects/p/items/t2");
   assert.equal(`${item.dispatch.agent}/${item.dispatch.model}`, BUILDER, "dispatched by the tick");
+  assert.equal(await itemCount(ledger), 2);
+});
+
+// The first filing of the fix task fails and the executor is not run again
+// (the landing job is gone once the failed run was reported): the stage tick
+// alone files the fix from the recovery record the notice left at "filing".
+const recoveries = ledger => ledger.object.run(() => ledger.object.live.ctx.storage.sql.exec(`SELECT value FROM meta WHERE key LIKE 'revert-recovery:%'`).toArray().map(r => JSON.parse(r.value)));
+const itemCount = ledger => ledger.object.run(() => ledger.object.live.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM items`).one().n);
+const refusingFirstFiling = ledger => {
+  let refuse = 1;
+  return { ...ledger, real: async (method, path, body) => {
+    if (method === "POST" && path.endsWith("/items") && refuse-- > 0) throw new Error("filing refused");
+    return ledger.real(method, path, body);
+  } };
+};
+
+test("a failed fix filing with no later executor run: the tick files the fix (fix_of, failing output in its brief), dispatches it and reposts the notice", async t => {
+  const ledger = await boot(t);
+  const w = seeded(t, { steps: suite }, refusingFirstFiling(ledger));
+  await assert.rejects(w.execute(), /remains merged/);
+  const [filing] = await recoveries(ledger);
+  assert.equal(filing?.state, "filing", "the notice left a recovery record to file from");
+  assert.equal(filing.fix, null);
+  assert.equal(await itemCount(ledger), 1, "nothing filed yet");
+  await ledger.tick();
+  const detail = await ledger.send("GET", "/projects/p/items/t2");
+  assert.ok(detail.events.some(e => e.kind === "item.fix_of" && e.data.itemId === "t1"), "linked to the reverted task");
+  const output = Object.values(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures)[0].output;
+  assert.ok(detail.item.brief.includes(`The failing output:\n\n${output}`), detail.item.brief);
+  assert.match(detail.item.accept[0], /passes on the reverted task's change; test$/);
+  assert.equal(`${detail.item.dispatch.agent}/${detail.item.dispatch.model}`, BUILDER, "dispatched by the tick");
+  const [done] = await recoveries(ledger);
+  assert.equal(done.fix, "t2");
+  assert.equal(done.state, "complete");
+  const notices = await ledger.notices();
+  assert.equal(notices.length, 1, "the repost records no second notice");
+  // A later executor run adopts the tick's fix and files none of its own.
+  await assert.rejects(w.execute(), /already reverted/);
+  assert.equal(await itemCount(ledger), 2);
+  const entry = Object.values(JSON.parse(readFileSync(w.stateFile(), "utf8")).failures)[0];
+  assert.equal(Object.values(entry.fixes)[0].task, "t2");
+  assert.equal(entry.reopened, true);
+});
+
+test("a filing that fails again on the tick stays at filing and files nothing; two ticks after success file exactly one fix task", async t => {
+  const ledger = await boot(t);
+  const w = seeded(t, { steps: suite }, refusingFirstFiling(ledger));
+  await assert.rejects(w.execute(), /remains merged/);
+  // The tick's filing is refused too: t1 reads as not merged for a moment.
+  const setState = state => ledger.object.run(() => ledger.object.live.ctx.storage.sql.exec("UPDATE items SET state = ? WHERE id = 't1'", state));
+  await setState("open");
+  await ledger.tick();
+  await setState("merged");
+  assert.equal(await itemCount(ledger), 1, "nothing filed");
+  assert.equal((await recoveries(ledger))[0].state, "filing");
+  assert.equal((await recoveries(ledger))[0].fix, null);
+  await ledger.tick();
+  await ledger.tick();
+  assert.equal(await itemCount(ledger), 2, "exactly one fix task");
+  assert.equal((await recoveries(ledger))[0].fix, "t2");
+  assert.equal((await ledger.notices()).length, 1);
+});
+
+test("a failed fix filing in a project that requires criteria review: the tick files the fix, asks its review, and dispatches after approval", async t => {
+  const ledger = await boot(t, { policy: { requireCriteriaReview: true, criteriaReview: "before" } });
+  const w = seeded(t, { steps: suite }, refusingFirstFiling(ledger));
+  await assert.rejects(w.execute(), /remains merged/);
+  await ledger.tick();
+  assert.equal((await ledger.send("GET", "/projects/p/items/t2")).item.dispatch ?? null, null);
+  const reviews = (await ledger.send("GET", "/projects/p/items/t2/criteria-reviews")).reviews ?? [];
+  assert.equal(reviews.length, 1, "the tick asked the review");
+  assert.equal((await recoveries(ledger))[0].state, "recovering");
+  // A second tick asks no second review.
+  await ledger.tick();
+  assert.equal(((await ledger.send("GET", "/projects/p/items/t2/criteria-reviews")).reviews ?? []).length, 1);
+  await ledger.approve("t2", reviews[0].reviewer);
+  await ledger.tick();
+  const { item } = await ledger.send("GET", "/projects/p/items/t2");
+  assert.equal(`${item.dispatch.agent}/${item.dispatch.model}`, BUILDER);
+  assert.equal(await itemCount(ledger), 2);
 });

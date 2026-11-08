@@ -185,11 +185,14 @@ export type RedKind = "suite" | "gate";
 // every member's fix task is one or the other; while a criteria review is
 // still open it stays unset and the next run tries again. `noticed` is set
 // once the ledger recorded the revert.notice event (which it keys by the
-// merge, so a resend records nothing more). `noticedFix` is set once a notice
-// that named the fix task went out; one sent before the fix was filed is sent
-// again after it, so the server records the recovery.
+// merge, so a resend records nothing more). `noticedFix` is set once the
+// ledger's answer to a notice named the fix task. `noticing` is the one marker
+// written before its work: it says a notice may have reached the ledger, after
+// which the first member's fix task is the ledger's to file (a notice with no
+// fix leaves its recovery at "filing", and the stage tick files it), and the
+// executor only adopts the fix id the ledger answers with.
 export interface RevertFix { task?: string; dispatched?: "dispatched" | "blocked" }
-export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; fixes?: Record<string, RevertFix>; reopened?: true; noticed?: true; noticedFix?: true }
+export interface RevertEntry { kind: RedKind; members: string[]; merge: string; output: string; landed?: string; fixes?: Record<string, RevertFix>; reopened?: true; noticing?: true; noticed?: true; noticedFix?: true }
 export interface RevertState { halted: { reason: string; at: string; woken?: string[] } | null; failures: Record<string, RevertEntry> }
 export const newRevertState = (): RevertState => ({ halted: null, failures: {} });
 
