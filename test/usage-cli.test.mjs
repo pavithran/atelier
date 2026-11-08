@@ -528,16 +528,20 @@ test("runner --usage posts each summary naming the acting model, from ATELIER_AC
   assert.deepEqual(posts().map((r) => [r.url, r.acting, r.runner]), [
     ["/api/usage/codex", "claude-code/opus-5.5", "home:test"],
     ["/api/usage/claude-code", "claude-code/opus-5.5", "home:test"],
+    ["/api/usage/antigravity", "claude-code/opus-5.5", "home:test"],
+    ["/api/model-slate/propose", "claude-code/opus-5.5", "home:test"],
   ]);
-  assert.match(env.stdout, /Reported 2 usage summaries to Atelier\./);
+  assert.match(env.stdout, /Reported 3 usage summaries to Atelier\./);
   seen.length = 0;
   const flag = await run(["runner", "--usage", "--name", "home:test", "--as", "codex/gpt-6.1-sol"]);
   assert.equal(flag.code, 0, flag.stderr);
   assert.deepEqual(posts().map((r) => [r.url, r.acting]), [
     ["/api/usage/codex", "codex/gpt-6.1-sol"],
     ["/api/usage/claude-code", "codex/gpt-6.1-sol"],
+    ["/api/usage/antigravity", "codex/gpt-6.1-sol"],
+    ["/api/model-slate/propose", "codex/gpt-6.1-sol"],
   ]);
-  assert.match(flag.stdout, /Reported 2 usage summaries to Atelier\./);
+  assert.match(flag.stdout, /Reported 3 usage summaries to Atelier\./);
   const by = Object.fromEntries(posts().map((r) => [r.url, r.body]));
   assert.deepEqual(by["/api/usage/codex"].windows.map((w) => w.name), ["5-hour", "weekly"]);
   assert.deepEqual(by["/api/usage/claude-code"].models.map((m) => m.model), ["claude-opus-5-5"]);
