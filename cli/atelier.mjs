@@ -2170,6 +2170,11 @@ export async function reportUsage() {
     await runUsage(args, {
       signal: controller.signal,
       report: (tool, body, runner) => postAsRunner(`/usage/${encodeURIComponent(tool)}`, body, runner, controller.signal),
+      propose: async (runner) => {
+        // The same server and credential as the reports; any failure names the server.
+        try { await postAsRunner("/model-slate/propose", {}, runner, controller.signal); }
+        catch (error) { throw new Error(`the server ${server()} did not take the slate proposal: ${error.message}`); }
+      },
       gateway: async () => (await request("GET", "/usage", undefined, OWNER)).gateway,
       speed: async () => (await request("GET", "/reliability", undefined, OWNER)).speed,
     });
