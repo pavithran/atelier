@@ -161,13 +161,14 @@ test("the counts: strict codes, codes with a next, exempt codes", () => {
   console.log(`# strict ${STRICT.length}, with next ${withNext}, exempt ${exempt.size}, codes ${sites.size}`);
   // Server-index validation and conflicts add two guided refusals (t7), and
   // t504's criteriaReview check one more (bad_policy); t505's repair link adds
-  // a second not_merged site, a code already counted with a next.
+  // a second not_merged site, a code already counted with a next. t522 adds
+  // private_project and no_land_reviewer.
   assert.equal(STRICT.length, 78);
   // t518 removed the tier review's refusals (bad_review_tier, not_tier, tier_refused).
   // t523 adds five guided refusals: four review-proof codes and bad_tests.
-  assert.equal(withNext, 233);
+  assert.equal(withNext, 235);
   assert.equal(exempt.size, 124);
-  assert.equal(sites.size, 357);
+  assert.equal(sites.size, 359);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });

@@ -8,6 +8,8 @@ interface Context {
   dispatchedBefore: (id: string) => boolean;
   held: (item: Item) => boolean;
   dispatch: (id: string, agent: string, model: string, reason: string) => void;
+  // A rule refused the dispatch; the task stays undispatched.
+  refused: (item: Item, error: RuleError) => void;
 }
 
 // The decision supplies the builder. A revised task that was dispatched
@@ -25,6 +27,7 @@ export function dispatchOnCriteria(c: Context): void {
       // A policy or model refusal keeps the approved task waiting. Storage
       // failures still fail the call, and its transaction rolls back.
       if (!(error instanceof RuleError)) throw error;
+      c.refused(item, error);
     }
   }
 }
