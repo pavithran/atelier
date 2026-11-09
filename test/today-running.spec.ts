@@ -1,4 +1,3 @@
-import "./today-clock.ts";
 import { env } from "./support/workers.ts";
 import { afterAll, beforeAll, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";

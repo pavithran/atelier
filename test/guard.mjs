@@ -110,7 +110,8 @@ const EXIT_GRACE_MS = Number(process.env.ATELIER_TEST_EXIT_GRACE_MS ?? 10_000);
 // others are left in the group. The watchdog frees a negated slot once its
 // group is empty, as its id may then be reused.
 const live = new Int32Array(new SharedArrayBuffer(4 * 1024));
-// When the file's tests ended, in seconds since the epoch; 0 while they run.
+// 1 once the file's tests have ended; 0 while they run. Not a time: the file's
+// Date may be faked, so the watchdog times the grace on its own clock.
 const ended = new Int32Array(new SharedArrayBuffer(4));
 const track = (pid) => { for (let i = 0; i < live.length; i++) if (Atomics.compareExchange(live, i, 0, pid) === 0) return; };
 const groupLeft = (pgid) => { try { process.kill(-pgid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
@@ -141,7 +142,7 @@ process.on("exit", killLive);
 // The pool is a coordinator, not a test file. Registering an after hook here
 // starts a second empty harness whose zero-count footer hides the real result.
 if (basename(process.argv[1] ?? "") !== "node-pool.mjs") {
-  after(() => { killLive(); Atomics.store(ended, 0, Math.ceil(Date.now() / 1000)); });
+  after(() => { killLive(); Atomics.store(ended, 0, 1); });
 }
 
 // Node's own execFileSync and execSync call its internal spawnSync, not the
@@ -181,6 +182,7 @@ const watchdog = new Worker(`
   const { writeSync } = require("node:fs");
   const { workerData: { pid, ppid, runner, limitMs, graceMs, live, ended, file } } = require("node:worker_threads");
   const started = Date.now();
+  let endedAt = 0;
   const kill = (target) => { try { process.kill(target, "SIGKILL"); } catch {} };
   // Every process descended from this one, with its group: [pid, pgid] pairs.
   const descendants = () => {
@@ -208,10 +210,11 @@ const watchdog = new Worker(`
       const pgid = Atomics.load(live, i);
       if (pgid < 0 && !groupLeft(-pgid)) Atomics.compareExchange(live, i, pgid, 0);
     }
+    if (Atomics.load(ended, 0) && !endedAt) endedAt = Date.now();
     if (process.ppid !== ppid) end("lost its parent, pid " + ppid);
     else if (runner && !alive(runner)) end("lost npm test's runner, pid " + runner);
     else if (Date.now() - started > limitMs) end("ran past its limit of " + Math.round(limitMs / 1000) + " s");
-    else if (Atomics.load(ended, 0) && Date.now() - Atomics.load(ended, 0) * 1000 > graceMs) end("did not exit " + Math.round(graceMs / 1000) + " s after its tests ended");
+    else if (endedAt && Date.now() - endedAt > graceMs) end("did not exit " + Math.round(graceMs / 1000) + " s after its tests ended");
   }, 500);
 `, { eval: true, workerData: { pid: process.pid, ppid: process.ppid, runner: Number(process.env.ATELIER_TEST_RUNNER) || 0, limitMs: LIMIT_MS, graceMs: EXIT_GRACE_MS, live, ended, file: process.argv[1] ?? "node" } });
 watchdog.unref();
