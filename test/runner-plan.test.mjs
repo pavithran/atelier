@@ -77,15 +77,15 @@ function fixture(t, options = {}) {
     async jobBrief(project, id, actor) {
       calls.push({ jobBrief: [project, id, actor] });
       if (options.failJobBrief) throw Object.assign(new Error("job-brief unavailable"), { infrastructure: true });
-      return { job: "plan", text: "SERVER BRIEF", hash: "hb1" };
+      return { job: "plan", text: "SERVER BRIEF", hash: "hb1", ...(options.buildLimitMinutes !== undefined ? { buildLimitMinutes: options.buildLimitMinutes } : {}) };
     },
     async postPlan(project, id, actor, text) {
       calls.push({ postPlan: [project, id, actor], text });
       return options.refused ?? { valid: true, hash: "abc123", parts: 1 };
     },
     async identityRefusals() { return []; },
-    async harness(argv, cwd, env) {
-      calls.push({ harness: argv, cwd, env });
+    async harness(argv, cwd, env, opts) {
+      calls.push({ harness: argv, cwd, env, timeoutMs: opts?.timeoutMs });
       if (options.noDocument !== true) writeFileSync(planFilePath(cwd), JSON.stringify(planDocument));
       return { code: options.code ?? 0, timedOut: options.timedOut, stderr: options.stderr ?? "", output: options.output ?? "" };
     },
@@ -194,6 +194,16 @@ test("a part's build brief comes from the server, and any other task keeps brief
   const ordinaryBrief = ordinary.calls.find((c) => c.brief).brief;
   assert.ok(ordinaryBrief.includes("tests your change touches"));
   assert.ok(ordinaryBrief.endsWith("\nSERVER BRIEF\n"), ordinaryBrief.slice(-80));
+});
+
+test("a part's runner applies the project's build limit from the server's answer, on a retried part too, and its brief states it (t588)", async (t) => {
+  const stated = (calls) => Number(/Your harness is stopped ([\d.]+) minutes/.exec(calls.find((c) => c.brief).brief)?.[1]);
+  for (const [limit, minutes] of [[120, 120], [150, 150], [null, 45]]) {
+    const part = fixture(t, { buildLimitMinutes: limit });
+    assert.equal((await runTask(partJob, buildConfig, "home:studio", part.io)).phase, "submitted");
+    assert.equal(part.calls.find((c) => c.harness).timeoutMs, minutes * 60_000);
+    assert.equal(stated(part.calls), minutes);
+  }
 });
 
 test("a part whose finish fails is released with the reason; an ordinary task keeps its claim", async (t) => {

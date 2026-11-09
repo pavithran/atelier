@@ -3,7 +3,8 @@
 // and the real CLI. Every credential here is a dummy.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,7 +49,8 @@ async function serve() {
   await git("commit", "-q", "-m", "first");
   await git("-c", `http.extraHeader=Authorization: Bearer ${OWNER}`, "push", "-q", `${server.url}/git/demo.git`, "HEAD:refs/heads/main");
   await cli(["login", "--server", server.url]);
-  return { server, api, cli, checkout };
+  const envFor = (url) => ({ ...process.env, ATELIER_CONFIG_DIR: config, ATELIER_TOKEN: OWNER, ATELIER_SERVER: url, ATELIER_SECRET_STORE: "file", NO_COLOR: "1", ATELIER_ACTING: "claude-code/opus-5.5" });
+  return { server, api, cli, checkout, envFor };
 }
 
 const limit = async (api) => (await api("GET", "/projects/demo")).body.project.policy.buildLimitMinutes;
@@ -75,7 +77,7 @@ test("atelier init --build-limit records the build limit; the same value again c
   } finally { await server.close(); }
 });
 
-test("a refused or interrupted init leaves the build limit as it was", { timeout: 90_000 }, async () => {
+test("a refused init leaves the build limit as it was", { timeout: 90_000 }, async () => {
   const { server, api, cli, checkout } = await serve();
   try {
     assert.equal((await api("PUT", "/projects/demo", { buildLimitMinutes: 90 })).status, 200);
@@ -121,4 +123,32 @@ test("atelier show prints the build limit", { timeout: 90_000 }, async () => {
     const plain = await cli(["show", id, "--project", "demo"]);
     assert.doesNotMatch(plain.stdout, /a builder's harness is stopped/);
   } finally { await server.close(); }
+});
+
+test("an init killed before its policy write is answered leaves the policy as it was", { timeout: 90_000 }, async () => {
+  const { server, api, checkout, envFor } = await serve();
+  // A proxy to the real server that holds the policy write: it takes the
+  // request and neither forwards nor answers it, so the write never lands.
+  let held;
+  const reached = new Promise((resolve) => { held = resolve; });
+  const proxy = createServer(async (req, res) => {
+    if (req.method === "PUT" && /^\/api\/projects\/demo$/.test(req.url)) { held(); return; }
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const upstream = await fetch(server.url + req.url, { method: req.method, headers: req.headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
+    res.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+    res.end(Buffer.from(await upstream.arrayBuffer()));
+  });
+  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  try {
+    assert.equal((await api("PUT", "/projects/demo", { buildLimitMinutes: 90 })).status, 200);
+    const before = JSON.stringify((await api("GET", "/projects/demo")).body.project.policy);
+    const child = spawn(process.execPath, [join(process.cwd(), "cli/atelier.mjs"), "init", "--build-limit", "30", "--project", "demo"], { cwd: checkout, env: envFor(`http://127.0.0.1:${proxy.address().port}`), stdio: "ignore" });
+    const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+    await Promise.race([reached, exited.then((e) => { throw new Error(`init ended before its policy write: ${JSON.stringify(e)}`); })]);
+    child.kill("SIGKILL");
+    assert.equal((await exited).signal, "SIGKILL");
+    assert.equal(JSON.stringify((await api("GET", "/projects/demo")).body.project.policy), before);
+    assert.equal(await limit(api), 90);
+  } finally { proxy.closeAllConnections(); proxy.close(); await server.close(); }
 });

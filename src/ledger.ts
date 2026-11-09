@@ -8336,6 +8336,7 @@ export class Ledger extends DurableObject<Env> {
         proseStandard: project.policy.proseStandard ?? null,
       }),
       proseStandard: project.policy.proseStandard ?? null,
+      buildLimitMinutes: project.policy.buildLimitMinutes ?? null,
     };
   }
 

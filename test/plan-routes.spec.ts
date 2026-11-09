@@ -286,6 +286,31 @@ it("the planner reads its brief from job-brief, with the owner's note and the la
   for (const text of ["Split the work in two", "plan.extra: unknown field", "attempt 2 of 2"]) expect(second.text).toContain(text);
 });
 
+it("a plan part's job-brief answer carries the project's build limit as the policy stands at each read (t588)", async () => {
+  const name = "plan-brief-limit";
+  const id = await started(name);
+  const L = ledger(name);
+  const post = await L.postPlan(id, "claude-code/opus-5.5", doc(part("a")));
+  const hash = post.valid ? post.hash : "";
+  await L.release(id, "claude-code/opus-5.5", "proposed");
+  const view = await (await call("POST", `/projects/${name}/items/${id}/plan/approve`, "owner", { hash, routes: routes("a") })).json() as PlanView;
+  const a = view.parts[0];
+  const actor = `${a.dispatch!.agent}/${a.dispatch!.model}`;
+  await L.claim(a.id, actor, RUNNER);
+  const builder = await agentToken(actor);
+  const limit = async () => ((await (await call("GET", `/projects/${name}/items/${a.id}/job-brief`, null, undefined, builder)).json()) as { buildLimitMinutes: number | null }).buildLimitMinutes;
+  expect(await limit()).toBeNull();
+  expect((await call("PUT", `/projects/${name}`, "owner", { buildLimitMinutes: 120 })).status).toBe(200);
+  expect(await limit()).toBe(120);
+  // The part is released and claimed again: the retry reads the policy now.
+  await L.release(a.id, actor, "harness timed out");
+  expect((await call("PUT", `/projects/${name}`, "owner", { buildLimitMinutes: 150 })).status).toBe(200);
+  await L.claim(a.id, actor, RUNNER);
+  expect(await limit()).toBe(150);
+  expect((await call("PUT", `/projects/${name}`, "owner", { buildLimitMinutes: "" })).status).toBe(200);
+  expect(await limit()).toBeNull();
+});
+
 it("a part's builder reads its brief: the spec and checks, dependencies with landed heads, and rework with findings and failing output", async () => {
   const name = "plan-brief-part";
   const id = await started(name);
