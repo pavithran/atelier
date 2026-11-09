@@ -294,17 +294,46 @@ it("the Land form drawn beside a refusal carries the page's nonce and the handle
 async function resetJobs(project: string) {
   await runInDurableObject(ledger(project), async (_i: Ledger, st: DurableObjectState) => { st.storage.sql.exec(`DELETE FROM land_jobs`); st.storage.sql.exec(`DELETE FROM page_requests`); });
 }
+const pageRequests = (project: string) => runInDurableObject(ledger(project), async (_i: Ledger, st: DurableObjectState) => st.storage.sql.exec(`SELECT * FROM page_requests`).toArray());
 it("a POST that timed out while its Ledger call ran: the retry with its id is the replay, and one land.requested stands", async () => {
   const id = ready()[3];
   await resetJobs(NAME);
   const before = (await events(NAME, id, "land.requested")).length;
   const shown = { ...(await bound(NAME, id)), request: crypto.randomUUID() };
-  const slow = press(NAME, id, shown);
-  await Promise.race([slow.then(() => "answered"), new Promise((r) => setTimeout(() => r("timed out"), 0))]);
+  // Hold the first call on a gate the test opens later, so the POST is still pending when the client gives up.
+  let open!: () => void;
+  const gate = new Promise<void>((r) => { open = r; });
+  let heldCalls = 0;
+  const held = Object.assign(Object.create(Object.getPrototypeOf(env.LEDGER)), {
+    idFromName: (n: string) => env.LEDGER.idFromName(n),
+    get: (lid: unknown) => {
+      const stub = env.LEDGER.get(lid as never) as unknown as Record<string, (...a: unknown[]) => unknown>;
+      return new Proxy(stub, {
+        get: (t, prop: string) => prop === "requestLand" && heldCalls === 0
+          ? async (...a: unknown[]) => { heldCalls++; await gate; return t.requestLand(...a); }
+          : t[prop],
+      });
+    },
+  });
+  const bindings = { ...pages, LEDGER: held } as unknown as Env;
+  const slow = press(NAME, id, shown, {}, bindings);
+  const outcome = await Promise.race([slow.then(() => "answered"), new Promise((r) => setTimeout(() => r("timed out"), 50))]);
+  expect(outcome).toBe("timed out");
+  expect(heldCalls).toBe(1);
+  expect(await events(NAME, id, "land.requested")).toHaveLength(before);
+  expect(await pageRequests(NAME)).toHaveLength(0);
+  // The retry with the same id commits as a first request while the first is held.
   const retry = await press(NAME, id, shown);
   expect(retry.status).toBe(303);
-  expect((await slow).status).toBe(303);
+  open();
+  // The released first call finds its id used and answers the first answer, recording nothing more.
+  const first = await slow;
+  expect(first.status).toBe(303);
+  expect(first.headers.get("location")).toBe(retry.headers.get("location"));
   expect(await events(NAME, id, "land.requested")).toHaveLength(before + 1);
+  const rows = await pageRequests(NAME);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: shown.request, item: id, verb: "land" });
 });
 it("a POST whose Ledger call failed before completing leaves no id, and the retry is a first request", async () => {
   const id = ready()[3];
