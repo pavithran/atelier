@@ -6,14 +6,14 @@ import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, lstatSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir, hostname, tmpdir } from "node:os";
+import { cpus, freemem, homedir, hostname, loadavg, tmpdir, totalmem } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { killTree, runGroup, treeGroups } from "./group.mjs";
 import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
-import { SLOT_WRAPPER } from "./load.mjs";
+import { HOST_POOL, SLOT_WRAPPER, slotStatus } from "./load.mjs";
 import { pairedProjectCommit } from "./fresh.mjs";
 import { runLandJob } from "./land-queue.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS, runKeyOf, runResultHolds } from "./runner-failure.mjs";
@@ -4608,7 +4608,28 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
+// The machine this runner runs on, sent with every poll beside the memory
+// (t607): host, cores, load averages, free memory and the host test pool's
+// use, which is null on a host without the pool file. A pool in use past its
+// capacity (draining after a cut) is reported as full, the most the server
+// accepts. A pool that cannot be read is reported as none rather than
+// holding the poll.
+export async function machineReading({ os = { hostname, cpus, loadavg, freemem, totalmem }, pool = HOST_POOL, status = slotStatus } = {}) {
+  let testSlots = null;
+  try {
+    if (existsSync(pool)) {
+      const { capacity, usage } = await status({ path: pool });
+      testSlots = { capacity, inUse: Math.min(usage, capacity) };
+    }
+  } catch { testSlots = null; }
+  const total = os.totalmem();
+  return {
+    host: os.hostname(), cpus: os.cpus().length, loadavg: os.loadavg(),
+    memFreePercent: total > 0 ? Math.round((os.freemem() / total) * 10000) / 100 : 0, testSlots,
+  };
+}
+
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, machine = machineReading, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -4651,6 +4672,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // What the runner remembers of the tasks it passes by goes with every poll
   // and heartbeat, and is read back at start (runnerMemory, G5).
   const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, pauses: limits.pauses }) });
+  // The machine's load goes with every poll and heartbeat (t607): a heartbeat is
+  // recorded as a poll is, so one without it would drop the reading mid-job.
+  const machineReport = async () => { try { return { machine: await machine() }; } catch { return {}; } };
   // The running build's progress line (G21, cli/progress.mjs) goes with every
   // poll and heartbeat while a build runs, and once more when it has ended.
   const runnerLogs = runnerLogBuffer([credential].filter(v => typeof v === "string"));
@@ -5286,7 +5310,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         let tasks;
         await checkReady();
         if (controller.signal.aborted) break;
-        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() };
+        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()), ...await machineReport(), ...progressReport() };
         try { tasks = await queue(pollOffer, controller.signal); if (pollOffer.progress) progress.sent(); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
@@ -5371,13 +5395,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { runnerLogs.line(`running ${task.item.dispatch?.job ?? "build"}`); await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { runnerLogs.line(`running ${task.item.dispatch?.job ?? "build"}`); await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...await machineReport(), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           // The ended build's last progress (its cost among it) is sent at once,
           // so the server keeps the run's final line even under --once.
           runnerLogs.line(`run ended: ${state.phase}${state.reason ? `: ${state.reason}` : ""}`);
           runnerLogs.end();
           if (heartbeat) {
-            try { await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); progress.sent(); }
+            try { await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...await machineReport(), ...progressReport() }, controller.signal); progress.sent(); }
             catch (error) { if (!controller.signal.aborted) line(`the build's last progress was not sent: ${error.message}`); }
           }
           if (controller.signal.aborted) break;

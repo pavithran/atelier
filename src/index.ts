@@ -50,6 +50,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } from "./graph";
 import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
+import { parseMachine } from "./runners/machine";
 import { parseReadiness } from "./runners/readiness";
 import { diskOf, lastRunOf, situationOf } from "./situation.ts";
 import { automaticNote, isFacts, isFactsOutcome } from "./run-facts.ts";
@@ -4102,10 +4103,12 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const readiness = parseReadiness(body.readiness);
   // What the runner remembers of the tasks it passes by (G5).
   const memory = parseMemory(body.memory);
+  // The machine's load, kept with the offer; a bad reading is dropped whole (t607).
+  const machine = parseMachine(body.machine);
   // The commit the runner's checkout runs (G4), which situation compares with the server's.
   const commit = typeof body.commit === "string" && /^[0-9a-f]{40,64}$/.test(body.commit) ? body.commit : null;
   return {
-    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}), ...(commit ? { commit } : {}),
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}), ...(machine ? { machine } : {}), ...(commit ? { commit } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     ...(Array.isArray(body.checkouts) ? { checkouts: body.checkouts.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {
