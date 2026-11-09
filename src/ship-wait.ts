@@ -27,8 +27,8 @@ export function waitClock(at: string): string {
 // The waits among a project's events at `now`. Only the ship that started a
 // step last can be waiting or have given up: ships take turns on the checkout,
 // so a later ship's start ends every earlier one's story.
-export function shipWaits(events: readonly WaitEvent[], now: Date): ShipWait[] {
-  const ordered = events.filter((e) => e.kind === "action.started" || e.kind === "action.ran")
+export function shipWaits(events: readonly WaitEvent[] | undefined | null, now: Date): ShipWait[] {
+  const ordered = (Array.isArray(events) ? events : []).filter((e) => e.kind === "action.started" || e.kind === "action.ran")
     .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0) || Date.parse(a.at) - Date.parse(b.at));
   const last = ordered.filter((e) => e.kind === "action.started").at(-1);
   if (!last) return [];
@@ -60,4 +60,4 @@ export const shipWaitLines = (events: readonly WaitEvent[] | undefined | null, n
 
 // Only the events the waits read, kept on a status view.
 export const shipEventsOf = (events: readonly WaitEvent[] | undefined | null): WaitEvent[] =>
-  (events ?? []).filter((e) => e.kind === "action.started" || e.kind === "action.ran");
+  (Array.isArray(events) ? events : []).filter((e) => e.kind === "action.started" || e.kind === "action.ran");
