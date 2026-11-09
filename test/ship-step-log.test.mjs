@@ -125,3 +125,25 @@ test("two claims on one file store: the second is queued and writes no log", asy
   assert.deepEqual(readdirSync(dir).filter((f) => f.endsWith(".log")), []);
   assert.ok(existsSync(join(dir, "state.json")));
 });
+
+test("a failed step with no output still gets a log holding its exit line, and the report names it", async (t) => {
+  const s = setup(t, { run: ["/bin/sh", "-c", "exit 1"] });
+  const r = await runShip(s);
+  const [file] = logs(s.logDir);
+  assert.ok(file, "a log is saved");
+  assert.match(readFileSync(join(s.logDir, file), "utf8"), /exited 1/);
+  assert.match(r.out, new RegExp(`deploy: full output saved to ${join(s.logDir, file).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("a record that throws after a failed step does not lose its log", async (t) => {
+  const s = setup(t, { run: ["/bin/sh", "-c", "echo kept; exit 1"] });
+  const request = async (method, path, body) => {
+    if (path.endsWith("/actions") && method === "GET") return { approvals: [{ id: "a1", kind: "deploy", commit: head, by: "owner", at: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400_000).toISOString() }] };
+    if (path.endsWith("/consume")) return { id: "a1" };
+    if (method === "POST" && path.endsWith("/actions/runs") && body?.step === "deploy") throw new Error("server down");
+    return {};
+  };
+  await runShip(s, { request }).catch((error) => assert.equal(error.message, "server down"));
+  assert.equal(logs(s.logDir).length, 1, "the log is saved before the record is tried");
+  assert.match(readFileSync(join(s.logDir, logs(s.logDir)[0]), "utf8"), /kept/);
+});

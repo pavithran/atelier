@@ -28,9 +28,9 @@ export function saveStepLog({ dir, ship, step, text }, io = { writeFileSync, ren
 
 // What a failed step prints: its last lines, and the file holding all of its
 // output (or that none was saved). `redact` cuts the secrets from both.
-export function failedStepReport({ dir, ship, step, output, secrets, redact, io }) {
-  const clean = redact(output ?? "", secrets);
-  if (!clean.trim()) return null;
+// A step that printed nothing is saved with `ended` (how it ended) as its text.
+export function failedStepReport({ dir, ship, step, output, ended, secrets, redact, io }) {
+  const clean = redact(output ?? "", secrets).trim() ? redact(output, secrets) : `[atelier] ${ended || "failed with no output"}\n`;
   const path = saveStepLog({ dir, ship, step, text: clean }, io);
   return `${step}: last ${SHOWN_LINES} lines of its output:\n${lastLines(clean)}\n${step}: ${path ? `full output saved to ${path}` : "its full output could not be saved"}`;
 }
