@@ -1,5 +1,5 @@
 import { overlapNext, overlappingRefusal } from "./rules.ts";
-import { stuckBatchRequests } from "./notify.ts";
+import { NOTICE_WINDOW_MS, USAGE_ALERT, noticeText, type Notice, type NoticeKind } from "./notify.ts";
 import { validateIndex } from "./index-transfer.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
@@ -1754,9 +1754,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     if (parts.length === 2 && m === "POST") {
       const runner = parseRunner(c.token?.runner ?? req.headers.get("x-atelier-runner"));
       if (!runner) throw new RuleError("bad_runner", "a usage report names its runner in X-Atelier-Runner", 400);
-      return json(await I.putUsage(cleanReport(parts[1], body, new Date().toISOString(), runner.runner), thresholds(env), c.url.origin));
+      return json(await I.putUsage(cleanReport(parts[1], body, new Date().toISOString(), runner.runner), thresholds(env)));
     }
     throw new RuleError("not_found", "no such route", 404);
+  }
+  // The notices of the last 24 hours (t533), newest first: the developer's
+  // inbox notices, usage alerts and stuck digests, which were once sent to a
+  // phone. Read-only and the developer's alone; atelier status prints them.
+  // A project that cannot be read is named in `unread`, not dropped silently.
+  if (parts[0] === "notices" && parts.length === 1 && m === "GET") {
+    requireOwner(env, actor);
+    return json(await noticesOf(env, new Date()));
   }
   // Runs that stalled, timed out, were refused or failed another way, which
   // the ledger never sees: a runner reports each under its name, as it
@@ -3831,32 +3839,19 @@ async function readStuckReport(env: Env, ref: ProjectRef, origin: string, limits
 // The origin the recorded evidence links name: the PUBLIC_ORIGIN setting, so
 // the staging server links to itself, and production's origin when it is unset.
 const stuckOrigin = (env: Env) => (env as unknown as Settings).PUBLIC_ORIGIN?.trim().replace(/\/+$/, "") || "https://atelier.zone";
-// Sends the project's due episodes (src/stuck/notices.ts) in as many messages
-// as the channel's body limit needs, and records each message's episodes only
-// when the channel answers it with success. A non-success answer or a failed
-// request records nothing for that message and stops the batch, so the next
-// tick sends the rest again; messages already accepted stay recorded. A
-// request that fails after the channel received it, such as a timeout awaiting
-// the answer, cannot be told from one it never got: that message is then sent
-// again and the developer may see it twice.
+// Records the project's due episodes (src/stuck/notices.ts) as one
+// stuck.digest_notice event in the project's ledger (t533), then marks them
+// told on the index. The event's own keys make the order safe: a failure
+// between the two leaves the episodes due, and the next tick records no second
+// event for them.
 async function notifyStuck(env: Env, I: ReturnType<typeof index>, key: string, name: string, at: string): Promise<void> {
-  const topic = (env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-  if (!topic) return;
   // The project's standing notice-delay (src/standing.ts) replaces the
   // default wait; an unreadable project waits the default.
   const delay = await ledger(env, key).standing().then((m) => m.get("notice-delay"), () => undefined);
   const due = await I.stuckDue(key, at, delay ? Number(delay) * 60_000 : undefined);
-  for (const { request, episodes } of stuckBatchRequests(topic, stuckOrigin(env), name, due)) {
-    try {
-      const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
-      await response.body?.cancel();
-      if (!response.ok) { console.error("Atelier stuck notification failed", response.status); return; }
-    } catch {
-      console.error("Atelier stuck notification failed");
-      return;
-    }
-    await I.stuckNotified(key, episodes, at);
-  }
+  if (!due.length) return;
+  await ledger(env, key).recordStuckDigest(name, due);
+  await I.stuckNotified(key, due, at);
 }
 
 export async function recordStuckEpisodes(env: Env, now = new Date()): Promise<void> {
@@ -4198,6 +4193,29 @@ async function inbox(env: Env, token?: AgentToken) {
     return [];
   }).sort((a, b) => b.weight - a.weight);
   return { entries, unread };
+}
+
+// How the index's notices (usage alerts) are named when they cannot be read.
+const INDEX_NOTICE_SOURCE = "usage alerts (index)";
+
+// The notices of the last 24 hours across the index (usage alerts) and every
+// project, each project read on its own.
+async function noticesOf(env: Env, now: Date): Promise<{ notices: Notice[]; unread: string[] }> {
+  const since = new Date(now.getTime() - NOTICE_WINDOW_MS).toISOString();
+  const projects = await index(env).projects();
+  const reads = await Promise.allSettled([index(env).notices(since), ...projects.map((p) => ledgerOf(env, p).notices(since))]);
+  const unread: string[] = [];
+  const notices = reads.flatMap((r, i): (Notice & { seq: number })[] => {
+    if (r.status === "rejected") {
+      const source = i === 0 ? INDEX_NOTICE_SOURCE : projects[i - 1].name;
+      console.error("project notices unavailable", source, codeOf(r.reason).trim());
+      unread.push(source);
+      return [];
+    }
+    return r.value.map((e) => ({ seq: e.seq, at: e.at, kind: e.kind as NoticeKind, project: e.kind === USAGE_ALERT ? null : projects[i - 1].name, item: e.itemId, text: noticeText(e.kind as NoticeKind, e.data) }));
+  });
+  notices.sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.seq - a.seq);
+  return { notices: notices.map(({ seq: _seq, ...n }) => n), unread };
 }
 
 // Whether a revision is on a project's main line as Atelier holds it: the
@@ -4785,7 +4803,7 @@ async function reviewerAvailability(env: Env, L: ReturnType<typeof ledger>, id: 
 // The API's own top-level paths, as api() and the routes before it read them.
 // A caller without a token is refused on them (401); anything else under /api
 // answers 404 before auth is asked, as it does after it.
-const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects", "now"]);
+const API_PATHS = new Set(["index", "config", "tokens", "inbox", "models", "model-roles", "model-review", "usage", "runs", "reliability", "queue", "runners", "projects", "now", "notices"]);
 
 // A push to a task's branch, as the post-receive hook tells it (Atelier 2.0,
 // task 8; design section 4.4): what queue() did for a push event from

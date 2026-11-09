@@ -4,8 +4,8 @@ import worker from "../src/index.ts";
 import { scheduled } from "./workers-removed.ts";
 
 // The staging copy's vars (release split, PAVI 2026-10-26), through the
-// Worker: the stuck notices the */10 cron sends link to PUBLIC_ORIGIN. Unset,
-// it is production's. (The queue's ARTIFACTS_NAMESPACE filter is gone with
+// Worker: the */10 cron records its stuck digests as ledger events whatever
+// PUBLIC_ORIGIN is, and sends nothing (t533). (The queue's ARTIFACTS_NAMESPACE filter is gone with
 // queue() in 2.0 task 8: a push comes from the post-receive hook of the
 // server's own repos, so no namespace is named and no test pins one.)
 
@@ -31,26 +31,27 @@ async function stuckProject(name: string) {
 const tick = (hours: number, e: typeof env) => scheduled({ scheduledTime: Date.now() + hours * HOUR, cron: "*/10 * * * *", noRetry() {} } as ScheduledController, e);
 afterEach(() => vi.restoreAllMocks());
 
-// The notice for `name` after its episode has been open an hour: its Click
-// link and its body.
+// The digest events recorded for `name` after its episode has been open an
+// hour, and the requests the Worker made meanwhile.
 async function notice(name: string, e: typeof env) {
   await stuckProject(name);
   const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
   const notifying = { ...e, NTFY_TOPIC: "stuck-topic" } as typeof env;
   await tick(7, notifying);
   await tick(8.1, notifying);
-  const sent = send.mock.calls.map(([r]) => r as Request).filter((r) => r.headers.get("Click")?.endsWith(`/p/${name}`));
-  expect(sent).toHaveLength(1);
-  return { click: sent[0].headers.get("Click"), body: await sent[0].text() };
+  const digests = (await L(name).notices(new Date(0).toISOString())).filter((ev) => ev.kind === "stuck.digest_notice");
+  return { digests, requests: send.mock.calls.length };
 }
 
-it("under staging's PUBLIC_ORIGIN the cron's stuck notices link to next.atelier.zone", async () => {
-  const { click, body } = await notice("origin-staging", withVars({ PUBLIC_ORIGIN: "https://next.atelier.zone" }));
-  expect(click).toBe("https://next.atelier.zone/p/origin-staging");
-  expect(body).not.toContain("https://atelier.zone");
-});
-
-it("under production's PUBLIC_ORIGIN, and with none set, they link to atelier.zone", async () => {
-  expect((await notice("origin-production", withVars({ PUBLIC_ORIGIN: "https://atelier.zone" }))).click).toBe("https://atelier.zone/p/origin-production");
-  expect((await notice("origin-unset", withVars({}, ["PUBLIC_ORIGIN"]))).click).toBe("https://atelier.zone/p/origin-unset");
+it("the same stuck digest is recorded under staging's, production's and no PUBLIC_ORIGIN, and nothing is sent", async () => {
+  for (const [name, e] of [
+    ["origin-staging", withVars({ PUBLIC_ORIGIN: "https://next.atelier.zone" })],
+    ["origin-production", withVars({ PUBLIC_ORIGIN: "https://atelier.zone" })],
+    ["origin-unset", withVars({}, ["PUBLIC_ORIGIN"])],
+  ] as const) {
+    const { digests, requests } = await notice(name, e);
+    expect(digests).toHaveLength(1);
+    expect(JSON.stringify(digests[0].data)).not.toContain("atelier.zone");
+    expect(requests).toBe(0);
+  }
 });

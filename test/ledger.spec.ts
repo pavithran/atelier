@@ -157,7 +157,7 @@ it("an item moves from creation to merge, gated by observed evidence", async () 
   expect(merged).toMatchObject({ state: "merged", owner: null });
   expect(await L.owners()).toEqual([]);
   expect(kinds(await L.events("t1"))).toEqual([
-    "item.merged", "item.accepted", "review.approved", "item.submitted", "evidence.observed", "push.observed",
+    "item.merged", "item.accepted", "review.approved", "inbox.notice", "item.submitted", "evidence.observed", "push.observed",
     "workspace.created", "item.claimed", "item.created",
   ]);
 });
@@ -1242,7 +1242,7 @@ it("one Ledger change takes one timestamp: the item's times and the change's eve
       expect(L.events(undefined, 1)[0]).toMatchObject({ kind: "token.revoked", at: revoked?.revokedAt });
       L.putUsage({ tool: "codex", runner: "home:studio", at: new Date().toISOString(), windows: [
         { name: "weekly", usedPercent: 95, resetsAt: null, at: null }, { name: "5-hour", usedPercent: 99, resetsAt: null, at: null },
-      ], models: [], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: null, balanceFloor: null }, "https://atelier.test");
+      ], models: [], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: null, balanceFloor: null });
       const alerts = L.events(undefined, 2);
       expect(alerts.map((e) => e.kind)).toEqual(["usage.alert", "usage.alert"]);
       expect(alerts[0].at).toBe(alerts[1].at);

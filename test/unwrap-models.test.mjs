@@ -95,7 +95,7 @@ test("without a plan unwrap reports actual recent builders and recorded reviewer
 
 test("unwrap includes usage and explicit missing limits", async () => {
   await project("usage-plan");
-  await namespace.get(namespace.idFromName("__index")).putUsage({ tool: "codex", runner: "home:studio", at: new Date().toISOString(), windows: [{ name: "weekly", usedPercent: 42, resetsAt: "2027-01-01T00:00:00.000Z", at: null }], models: [], balances: [], notes: [] }, { weeklyPercent: null, windowPercent: null, dailySpend: null, balanceFloor: null }, "https://atelier.test");
+  await namespace.get(namespace.idFromName("__index")).putUsage({ tool: "codex", runner: "home:studio", at: new Date().toISOString(), windows: [{ name: "weekly", usedPercent: 42, resetsAt: "2027-01-01T00:00:00.000Z", at: null }], models: [], balances: [], notes: [] }, { weeklyPercent: null, windowPercent: null, dailySpend: null, balanceFloor: null });
   const result = await run("usage-plan", "unwrap");
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /codex.*42% used.*2027-01-01/);
@@ -130,7 +130,7 @@ test("unwrap names an alternative builder and an independent reviewer from live 
   const pool = [["codex", "gpt-6.1-sol", "openai"], ["claude-code", "opus-5.5", "anthropic"], ["antigravity", "gemini-4-argon", "google"]];
   for (const [harness, id, family] of pool) await I.putModel({ harness, id, family, where: "home", provider: "subscription", aliases: [], note: "", addedAt: at, addedBy: "owner" });
   await I.putRunnerOffer({ runner: "home:studio", kind: "home", agents: pool.map(([agent, model]) => ({ agent, models: [model] })), jobs: ["build", "review"] }, at);
-  for (const [tool, usedPercent] of [["codex", 0], ["claude-code", 10], ["antigravity", 95]]) await I.putUsage({ tool, runner: "home:studio", at, windows: [{ name: "weekly", usedPercent, resetsAt: "2027-01-01T00:00:00.000Z", at }], models: [], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 }, "https://atelier.test");
+  for (const [tool, usedPercent] of [["codex", 0], ["claude-code", 10], ["antigravity", 95]]) await I.putUsage({ tool, runner: "home:studio", at, windows: [{ name: "weekly", usedPercent, resetsAt: "2027-01-01T00:00:00.000Z", at }], models: [], balances: [], notes: [] }, { weeklyPercent: 80, windowPercent: 90, dailySpend: 10, balanceFloor: 10 });
   await namespace.object("project:usage-advice").live.sql.exec(`INSERT INTO items (id, title, scope, state, created_at, updated_at) VALUES ('t1', 'Review me', '[]', 'submitted', ?, ?)`, at, at);
   await namespace.object("project:usage-advice").live.sql.exec(`INSERT INTO events (item_id, at, actor, kind, data) VALUES ('t1', ?, 'codex/gpt-6.1-sol', 'push.observed', '{}')`, at);
   const result = await run("usage-advice", "unwrap");

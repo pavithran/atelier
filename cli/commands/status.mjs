@@ -14,11 +14,16 @@ import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
 import { deployGateLines, packageScripts } from "../deploy-gate.mjs";
 import { nowText } from "../../src/now.ts";
+import { noticeLines } from "../../src/notify.ts";
 
 // Usage warnings come first, as the token-expiry warnings do; a server that
 // cannot answer leaves the text as it was.
 const usageWarnings = (as) => request("GET", "/usage", undefined, as).then((u) => formatUsageWarnings(u), () => []);
 const withUsage = (text, lines) => (lines.length ? `${lines.join("\n")}\n\n${text}` : text);
+// The last 24 hours' notices (t533), which are no longer sent anywhere: they
+// are read here, in chat. A server that cannot answer leaves the text as it was.
+const noticesText = (as) => request("GET", "/notices", undefined, as).then((r) => noticeLines(r).join("\n"), () => "");
+const withNotices = (text, notices) => (notices ? `${notices}\n\n${text}` : text);
 
 // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
 export default async function statusCommand() {
@@ -89,7 +94,7 @@ export default async function statusCommand() {
     // warning's init names the checkout to run it in, for status runs from
     // anywhere and init reads the project from the checkout alone.
     const gate = deployGateLines(record?.project?.policy, packageScripts(path), path);
-    console.log(withOverdueTick(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (criteriaText ? "\n\n" + criteriaText : "") + (gate.length ? "\n\n" + gate.join("\n") : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), overdueTick(stuck)));
+    console.log(withOverdueTick(withNotices(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (criteriaText ? "\n\n" + criteriaText : "") + (gate.length ? "\n\n" + gate.join("\n") : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), mine ? await noticesText(as) : ""), overdueTick(stuck)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
@@ -139,7 +144,7 @@ export default async function statusCommand() {
   // of the per-project listing; a server without the route leaves it out.
   const now = await request("GET", "/now", undefined, OWNER).catch(() => null);
   if (Array.isArray(now?.groups)) console.log(`${nowText(now)}\n`);
-  console.log(withOverdueTick(withUsage(tokenExpiryWarningsText(formatStatus(views, { queue, offers, allRunners: args["all-runners"], server: server(), overdueApart: true }) + (decisions ? "\n\n" + decisions : "") + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")), await usageWarnings(OWNER)), views.flatMap((v) => overdueTick(v.stuck))));
+  console.log(withOverdueTick(withNotices(withUsage(tokenExpiryWarningsText(formatStatus(views, { queue, offers, allRunners: args["all-runners"], server: server(), overdueApart: true }) + (decisions ? "\n\n" + decisions : "") + (branches ? "\n\n" + branches : "") + (strays ? "\n\n" + strays : "")), await usageWarnings(OWNER)), await noticesText(OWNER)), views.flatMap((v) => overdueTick(v.stuck))));
   console.log(liveText(liveHere()));
   console.log(formatSlots(await slotStatus()));
   pointToGuide(chosen.map((p) => p.name));

@@ -60,15 +60,9 @@ Atelier reads the fact back through the path that matters before using it.
 Accept and review verify the revision against the task's branch as the server's
 repository reports it (`verifyRevision` and `headOf` in src/index.ts,
 `assertRevision` in src/rules.ts); the review route re-reads the branch's head
-and refuses when it moved. The links a reader is handed are built from the origin that actually
-reached the server (`setNotificationOrigin` in src/ledger.ts,
-`notificationRequest` in src/notify.ts), and every former project name still
-resolves and redirects (`resolveProject` in src/ledger.ts, `movedTo` in
+and refuses when it moved. A notice carries no link built from the request origin: it is a ledger event, recorded once per task and head (`inbox.notice`) and read through `atelier status`; a repeat records none (test/notify.spec.ts, "submission records one notice per revision, durably, and sends nothing"). Every former project name still resolves and redirects (`resolveProject` in src/ledger.ts, `movedTo` in
 src/index.ts). Tests: test/ledger.spec.ts, "HTTP approval rejects missing and
-stale revisions before reading the repository"; test/notify.spec.ts, "cloud results
-notify after a waiting submission using the saved origin"; test/notify.test.ts,
-"notification uses the existing decision brief, encoded title and absolute task
-URL"; test/rename.spec.ts, "pages under a former name redirect to the current
+stale revisions before reading the repository"; test/rename.spec.ts, "pages under a former name redirect to the current
 one with their path and query, and a form posted under it acts". Not covered by a test: the comparison against the repository in
 `verifyRevision` and the review route's re-read of the branch's head; the tests
 above stop at `assertRevision`, before the repository is read.
