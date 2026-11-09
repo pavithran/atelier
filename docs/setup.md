@@ -400,30 +400,29 @@ or the developer allows the address with `--agent-email`.
 
 ## Notifications
 
-Set `NTFY_TOPIC` to receive an ntfy notification when submission, review or
-check results put a submitted task in the developer's inbox:
+Nothing is sent to a phone or any outside service, and there is nothing to
+set up. A notice is a ledger event, and the orchestrating session reports it
+in chat: notices are read in chat through `atelier status`, which lists those
+of the last 24 hours, newest first, and an outside reader such as atelier-pulse may read them.
+Three things record one:
 
-```sh
-printf 'TOPIC' > SECRETS/NTFY_TOPIC
-```
+- **A decision waiting.** When submission, review or check results put a
+  submitted task in the developer's inbox, or a task is held after the round
+  cap, one `inbox.notice` event is recorded for the task and head, with the
+  task's title and its one-line decision brief. A repeat at the same head
+  records none, across restarts. A push that withdraws acceptance records
+  none.
+- **A usage alert.** When a report first shows a figure past its threshold,
+  one `usage.alert` event is recorded for the crossing (see
+  [models and usage](models-and-usage.md)).
+- **Stuck episodes (t199).** On each 10 minute tick, a project's episodes
+  that have been open for 60 minutes since they were first seen are recorded
+  together as one `stuck.digest_notice` event, once per episode. An episode
+  that cleared before the hour is not recorded, and a recurrence is a new
+  episode that is recorded again.
 
-Topics on ntfy.sh are readable by anyone who knows the name. Use a long,
-random topic. The notification carries the task title and the task page's
-one-line decision brief, capped at 500 characters, with a link to that page.
-See [ntfy publishing](https://docs.ntfy.sh/publish/) for topic and header details.
-
-Without the setting, nothing is sent. The Ledger records at most one attempt
-per task and head, including failed attempts, across restarts. Delivery runs
-in the background; failures do not fail the action and are logged without
-the topic. A push that withdraws acceptance does not send a notification.
-
-The same topic carries stuck episodes (t199). On each 10 minute tick, a
-project's episodes that have been open for 60 minutes since they were first
-seen go out together, split into several messages when the batch is large, and each is recorded as told only when ntfy
-answers with success; a failed send is repeated on the next tick. A request
-that fails after ntfy received it, such as a timeout, is repeated too, so
-the message may arrive twice. An episode that cleared before the hour is not
-sent, and a recurrence is a new episode that is told again.
+The developer reads them with `GET /api/notices`, which only the developer
+may call; a project the server could not read is named as not read.
 
 ## Push events
 

@@ -329,10 +329,10 @@ from that token; a conflicting `X-Atelier-Runner` is refused. A developer
 token can still report with that header. It keeps one report per tool and
 runner. Runner tokens cannot read the global reports.
 
-Alerts go through the `NTFY_TOPIC` notification already used for decisions,
+Alerts are `usage.alert` ledger events, read in chat through `atelier status`,
 once per crossing: when a report first shows a figure past its threshold
-the server sends one message and records the crossing; later reports
-showing the same figure still past it send nothing, and a report showing it
+the server records one event and the crossing; later reports
+showing the same figure still past it record nothing, and a report showing it
 back under clears the crossing, so the next time it is passed alerts
 again. The thresholds are settings with defaults, each a number or `off`.
 The server reads each setting at start, from the process environment or from a

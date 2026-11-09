@@ -5,18 +5,27 @@ import { expect, it, vi } from "./support/vitest.ts";
 import { Ledger } from "../src/ledger.ts";
 import worker from "../src/index.ts";
 
+// t533: a decision waiting on the developer is one inbox.notice event per head,
+// recorded through the real senders (the evidence, review and submit routes),
+// and nothing is sent anywhere, with NTFY_TOPIC set or not.
+
 const A = "codex/gpt-6-astra", H0 = "0".repeat(40), H1 = "a".repeat(40), H2 = "b".repeat(40);
 const TOPIC = "notification-test-secret";
+const SINCE = new Date(0).toISOString();
 
-// Construct with test secrets against real Durable Object SQLite. Reconstructing
-// the Ledger below keeps only storage, not instance fields.
 async function fixture(name: string, test: (state: DurableObjectState) => Promise<void>) {
   const stub = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await runInDurableObject(stub, async (_instance, state) => test(state));
 }
-function ledger(state: DurableObjectState, topic: string | undefined = TOPIC) {
-  return new Ledger(state, { ...env, NTFY_TOPIC: topic } as typeof env);
+// The environment with NTFY_TOPIC set, or without the key at all.
+function envOf(configured: boolean) {
+  const { NTFY_TOPIC: _drop, ...rest } = env as unknown as Record<string, unknown>;
+  return (configured ? { ...rest, NTFY_TOPIC: TOPIC } : rest) as unknown as typeof env;
 }
+function ledger(state: DurableObjectState, configured = true) {
+  return new Ledger(state, envOf(configured));
+}
+const notices = (L: Ledger) => L.notices(SINCE).filter((e) => e.kind === "inbox.notice");
 function setup(L: Ledger, name: string) {
   L.setProject({ name, repo: name, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() }, "owner");
   L.newItem("Decision waiting", ["src/**"], "owner");
@@ -27,85 +36,89 @@ function setup(L: Ledger, name: string) {
 function evidence(L: Ledger, head = H1) {
   L.addEvidence({ itemId: "t1", head, claim: "npm test", grade: "observed", passed: true, by: A, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" });
 }
-function submit(L: Ledger, name: string) {
+function submit(L: Ledger, name: string, configured = true) {
   const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/submit`, {
     method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": A, "content-type": "application/json" }, body: "{}",
-  }), { ...env, LEDGER, ATELIER_TOKEN: "test-token" } as typeof env);
+  }), { ...envOf(configured), LEDGER, ATELIER_TOKEN: "test-token" } as typeof env);
 }
 
-it("submission notifies once per revision, with durable deduplication and no push notification", async () => {
+it("submission records one notice per revision, durably, and sends nothing", async () => {
   await fixture("notify-revisions", async (state) => {
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
       let L = ledger(state);
       setup(L, "notify-revisions"); evidence(L);
       expect((await submit(L, "notify-revisions")).status).toBe(200);
-      expect(send).toHaveBeenCalledTimes(1);
-      expect((send.mock.calls[0][0] as Request).headers.get("Click")).toBe("https://atelier.test/p/notify-revisions/t1");
+      expect(notices(L)).toHaveLength(1);
+      expect(notices(L)[0]).toMatchObject({ itemId: "t1", data: { head: H1, reason: "submitted", title: "Decision waiting" } });
+      expect(typeof notices(L)[0].data.brief).toBe("string");
       L = ledger(state);
       await Promise.all([submit(L, "notify-revisions"), submit(L, "notify-revisions")]);
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(notices(L)).toHaveLength(1);
       expect(state.storage.sql.exec("SELECT * FROM notifications").toArray()).toEqual([{ item_id: "t1", head: H1 }]);
       L.addReview({ itemId: "t1", criteria: L.criteria("t1"), by: "claude-code/opus-5.5", head: H1, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
       L.accept("t1", "owner", H1);
       L.observePush("t1", H2, H1);
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(notices(L)).toHaveLength(1);
       evidence(L, H2);
-      expect(send).toHaveBeenCalledTimes(2);
+      expect(notices(L).map((e) => e.data.head)).toEqual([H2, H1]);
       L.observePush("t1", H1, H2);
       evidence(L);
       await submit(L, "notify-revisions");
-      expect(send).toHaveBeenCalledTimes(2);
+      expect(notices(L)).toHaveLength(2);
+      expect(send).not.toHaveBeenCalled();
     } finally { send.mockRestore(); }
   });
 });
 
-it("cloud results notify after a waiting submission using the saved origin", async () => {
+it("cloud results record the notice after a waiting submission", async () => {
   await fixture("notify-cloud", async (state) => {
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
       const L = ledger(state); setup(L, "notify-cloud");
       await submit(L, "notify-cloud");
-      expect(send).not.toHaveBeenCalled();
+      expect(notices(L)).toHaveLength(0);
       evidence(ledger(state));
-      expect(send).toHaveBeenCalledTimes(1);
-    } finally { send.mockRestore(); }
-  });
-});
-
-it("unset topic sends nothing and reserves no revision", async () => {
-  await fixture("notify-unset", async (state) => {
-    const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
-    try {
-      const L = new Ledger(state, env); setup(L, "notify-unset"); evidence(L);
-      expect((await submit(L, "notify-unset")).status).toBe(200);
+      expect(notices(ledger(state))).toHaveLength(1);
       expect(send).not.toHaveBeenCalled();
-      expect(state.storage.sql.exec("SELECT * FROM notifications").toArray()).toEqual([]);
     } finally { send.mockRestore(); }
   });
 });
 
-it("a slow failing fetch does not delay or fail submission or expose the topic", async () => {
-  await fixture("notify-failure", async (state) => {
-    let fail!: (error: Error) => void;
-    const pending = new Promise<Response>((_resolve, reject) => { fail = reject; });
-    const send = vi.spyOn(globalThis, "fetch").mockReturnValue(pending);
+it("an unset topic records the same notice as a set one, and neither sends", async () => {
+  const seen: unknown[] = [];
+  for (const configured of [false, true]) {
+    await fixture(`notify-topic-${configured ? "set" : "unset"}`, async (state) => {
+      const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+      try {
+        const L = ledger(state, configured); setup(L, `notify-topic-${configured ? "set" : "unset"}`); evidence(L);
+        expect((await submit(L, `notify-topic-${configured ? "set" : "unset"}`, configured)).status).toBe(200);
+        expect(send).not.toHaveBeenCalled();
+        seen.push(notices(L).map((e) => [e.kind, e.itemId, e.data]));
+        expect(state.storage.sql.exec("SELECT * FROM notifications").toArray()).toEqual([{ item_id: "t1", head: H1 }]);
+      } finally { send.mockRestore(); }
+    });
+  }
+  expect(seen[0]).toEqual(seen[1]);
+  expect(JSON.stringify(seen)).not.toContain(TOPIC);
+});
+
+it("a crash before the notice leaves its marker unset", async () => {
+  await fixture("notify-atomic", async (state) => {
+    const L = ledger(state); setup(L, "notify-atomic"); evidence(L);
+    // The event cannot be written: the marker row must not stay behind, or the notice would never be recorded.
+    state.storage.sql.exec("CREATE TRIGGER no_events BEFORE INSERT ON events WHEN NEW.kind = 'inbox.notice' BEGIN SELECT RAISE(ABORT, 'crash'); END");
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const L = ledger(state); setup(L, "notify-failure"); evidence(L);
-      expect((await submit(L, "notify-failure")).status).toBe(200);
-      expect(send).toHaveBeenCalledTimes(1);
-      fail(new Error(`Network failure https://ntfy.sh/${TOPIC}`));
-      await vi.waitFor(() => expect(log).toHaveBeenCalled());
-      expect(JSON.stringify(log.mock.calls)).not.toContain(TOPIC);
-      await submit(L, "notify-failure");
-      expect(send).toHaveBeenCalledTimes(1);
-    } finally { fail(new Error("finished")); send.mockRestore(); log.mockRestore(); }
+    try { await submit(L, "notify-atomic"); } finally { log.mockRestore(); }
+    expect(state.storage.sql.exec("SELECT * FROM notifications").toArray()).toEqual([]);
+    state.storage.sql.exec("DROP TRIGGER no_events");
+    await submit(L, "notify-atomic");
+    expect(notices(L)).toHaveLength(1);
   });
 });
 
-it("a review that clears a rejection notifies through the review route", async () => {
+it("a review that clears a rejection records the notice through the review route", async () => {
   await fixture("notify-review", async (state) => {
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
@@ -113,7 +126,7 @@ it("a review that clears a rejection notifies through the review route", async (
       L.addReview({ itemId: "t1", criteria: L.criteria("t1"), by: "claude-code/opus-5.5", head: H1, approve: true, note: "Fixture prerequisite", at: new Date().toISOString() }, undefined, true);
       L.addReview({ itemId: "t1", criteria: await L.criteria("t1"), by: "owner", head: H1, approve: false, note: "Revise", at: new Date().toISOString() });
       await submit(L, "notify-review");
-      expect(send).not.toHaveBeenCalled();
+      expect(notices(L)).toHaveLength(0);
       const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
       const REPOS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Repos;
       const response = await worker.fetch(new Request("https://atelier.test/api/projects/notify-review/items/t1/review", {
@@ -121,31 +134,19 @@ it("a review that clears a rejection notifies through the review route", async (
         body: JSON.stringify({ head: H1, criteria: NO_CRITERIA, approve: true }),
       }), { ...env, LEDGER, REPOS, ATELIER_TOKEN: "test-token" } as typeof env);
       expect(response.status).toBe(200);
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(notices(L)).toHaveLength(1);
+      expect(send).not.toHaveBeenCalled();
     } finally { send.mockRestore(); }
   });
 });
 
-it("an HTTP delivery failure is logged without its response body or topic", async () => {
-  await fixture("notify-http-failure", async (state) => {
-    const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(TOPIC, { status: 503 }));
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const L = ledger(state); setup(L, "notify-http-failure"); evidence(L);
-      expect((await submit(L, "notify-http-failure")).status).toBe(200);
-      await vi.waitFor(() => expect(log).toHaveBeenCalledWith("Atelier notification failed", 503));
-      expect(JSON.stringify(log.mock.calls)).not.toContain(TOPIC);
-    } finally { send.mockRestore(); log.mockRestore(); }
-  });
-});
-
-it("local check results notify through the evidence route", async () => {
+it("local check results record the notice through the evidence route", async () => {
   await fixture("notify-local", async (state) => {
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
       const L = ledger(state); setup(L, "notify-local");
       await submit(L, "notify-local");
-      expect(send).not.toHaveBeenCalled();
+      expect(notices(L)).toHaveLength(0);
       const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
       const REPOS = { get: async () => ({ log: async () => [{ hash: H1 }], [Symbol.dispose]() {} }) } as unknown as Repos;
       const response = await worker.fetch(new Request("https://atelier.test/api/projects/notify-local/items/t1/evidence", {
@@ -153,7 +154,8 @@ it("local check results notify through the evidence route", async () => {
         body: JSON.stringify({ kind: "check", head: H1, claim: "npm test", passed: true, changedPaths: ["src/a.ts"] }),
       }), { ...env, LEDGER, REPOS, ATELIER_TOKEN: "test-token" } as typeof env);
       expect(response.status).toBe(200);
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(notices(L)).toHaveLength(1);
+      expect(send).not.toHaveBeenCalled();
     } finally { send.mockRestore(); }
   });
 });

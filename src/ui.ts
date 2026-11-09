@@ -98,24 +98,27 @@ const icon = (name: string) =>
   `<svg aria-hidden="true" width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ""}</svg>`;
 
 // One bar in two rows for every owner page (docs/design/plan.md §2, P1; the
-// canvas in docs/design/reimagined/). Row 1 says where in Atelier: Decisions
-// with the count waiting on the owner, Projects, Activity, the project
-// switcher and the owner's menu. Row 2, under /p/NAME only, says where in the
-// project: Project › page, and the five tabs. The brand leads to Decisions,
-// the owner's first question.
+// canvas in docs/design/reimagined/; docs/design/today/design-note.md M2).
+// Row 1 says where in Atelier: Today, Projects, History, Process, Models, the
+// project switcher and the owner's menu. Row 2, under /p/NAME only, says where
+// in the project: Project › page, and the tabs. The brand leads to Today.
+// Process leads to the current project's process inside /p/NAME and to
+// PROCESS_HOME's elsewhere (the design note's Open 1).
+const PROCESS_HOME = "/p/atelier/process";
 const NAV: [label: string, url: string][] = [
-  ["Decisions", "/decisions"],
-  ["Now", "/now"],
-  ["Projects", "/home"],
-  ["Activity", "/studio"],
+  ["Today", "/"],
+  ["Projects", "/projects"],
+  ["History", "/studio"],
+  ["Process", PROCESS_HOME],
+  ["Models", "/models"],
 ];
-// Which row-1 item each page's `active` makes current: Home and every page in
-// a project's area are Projects; the Studio, Flow and History are Activity's
-// Now, Flow and Merges.
-const NAV_OF: Record<string, string> = { Decisions: "Decisions", Now: "Now", Home: "Projects", Projects: "Projects", Studio: "Activity", Flow: "Activity", History: "Activity", Activity: "Activity" };
+// Which row-1 item each page's `active` makes current: Today and the Decisions
+// and Now it replaced are Today; Home and every page in a project's area are
+// Projects; the Studio, Flow and History pages are History. Usage and the
+// error page name no item.
+const NAV_OF: Record<string, string> = { Today: "Today", Decisions: "Today", Now: "Today", Home: "Projects", Projects: "Projects", Studio: "History", Flow: "History", History: "History", Activity: "History", Process: "Process", Models: "Models" };
 
 const ACCOUNT: [string, string][] = [
-  ["Models", "/models"],
   ["Usage", "/usage"],
 ];
 
@@ -153,6 +156,13 @@ export function fillShell(html: string, s: Shell): string {
     out = out.replace(MARK.row, projectRow(s.here.project, s.here.active, s.here.crumb)).replace(`${MARK.title}Project`, e(titleOf(s.here.project)));
   }
   out = out.replaceAll(MARK.row, "").replaceAll(MARK.title, "");
+  // A page that drew no row, under /p/NAME: Process leads into that project,
+  // and the page is Projects (or Process, under /p/NAME/process).
+  if (s.here) {
+    out = out.replace(`href="${PROCESS_HOME}" data-nav="process"`, `href="/p/${encodeURIComponent(s.here.project.name)}/process" data-nav="process"`);
+    out = out.replace(s.here.active === "Process" ? ' data-nav="process"' : ' data-nav="projects"', ' aria-current="page"');
+  }
+  out = out.replaceAll(' data-nav="projects"', "").replaceAll(' data-nav="process"', "");
   for (const p of s.projects) out = out.replaceAll(MARK.tasks(p.name), p.tasks === null ? "" : ` (${p.tasks})`);
   return out;
 }
@@ -183,11 +193,19 @@ export const FONTS = "https://fonts.googleapis.com/css2?family=Bricolage+Grotesq
 // widened on hover, says when this copy was drawn. On a phone the two menus
 // stack under the brand and the three destinations, and open in the page's
 // flow (layout.css), so nothing scrolls sideways.
-export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live, own: { css?: string; device?: boolean } = {}): string {
+export function page(title: string, body: string, active = "Decisions", ownerName: string | null = null, refreshSeconds = 0, signedIn = true, live?: Live, own: { css?: string } = {}): string {
   const lifted = liftProjectRow(body);
   const current = NAV_OF[active] ?? "";
   const cur = (on: boolean) => (on ? ' aria-current="page"' : "");
-  const nav = NAV.map(([label, url]) => `<a href="${url}"${cur(label === current)}>${label}${label === "Decisions" ? `<span data-shell="waiting">${MARK.waiting}</span>` : ""}</a>`).join("");
+  // Process leads into the project the page's row names; a page with no row
+  // yet (an error under /p/NAME) is given its link, and its current item, by
+  // fillShell from the address, through the data-nav marks.
+  const inProject = /<p class="crumb"><a href="(\/p\/[^"]+)"/.exec(lifted.row)?.[1];
+  const nav = NAV.map(([label, url]) => {
+    const to = label === "Process" && inProject ? `${inProject}/process` : url;
+    const mark = label === "Process" ? ' data-nav="process"' : label === "Projects" && !current ? ' data-nav="projects"' : "";
+    return `<a href="${to}"${cur(label === current)}${mark}>${label}${label === "Today" ? `<span data-shell="waiting">${MARK.waiting}</span>` : ""}</a>`;
+  }).join("");
   const account = ACCOUNT.map(([label, url]) => `<a href="${url}"${cur(label === active)}>${label}</a>`).join("");
   const signout = signedIn ? `<form method="post" action="/logout" class="signout"><button type="submit" class="quiet">Sign out</button></form>` : "";
   const who = e(ownerName || "Developer");
@@ -196,21 +214,21 @@ export function page(title: string, body: string, active = "Decisions", ownerNam
     ? `<p class="meta live-note" hidden><span class="pulse" aria-hidden="true"></span>Live<span class="live-when"> · this copy is from ${e(clock(new Date().toISOString()))}; it refreshes every ${live.refresh} seconds.</span></p>`
     : "";
   const script = live ? `\n<script nonce="${e(live.nonce)}" src="/live.js" defer></script>` : "";
-  // The owner's pages stay in Night; one that sets `device` follows the
-  // device's scheme as the public pages do (no data-scheme pins it).
-  return `<!doctype html><html lang="en" data-theme="night"${own.device ? "" : ' data-scheme="night"'}><head><meta charset="utf-8">
+  // Every owner page follows the device's scheme, as the public pages do: no
+  // data-scheme pins Night, and the browser is told it may draw either.
+  return `<!doctype html><html lang="en" data-theme="night"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="${own.device ? "dark light" : "dark"}">
+<meta name="color-scheme" content="dark light">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="${FONTS}">${refreshSeconds ? `\n<meta http-equiv="refresh" content="${refreshSeconds}">` : ""}
 <title>${e(title)} · Atelier</title><style>${theme}\n${layout}${own.css ? `\n${own.css}` : ""}</style></head><body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="owner-bar">
   <div class="bar-row">
-    <a class="brand" href="/decisions">Atelier</a>
+    <a class="brand" href="/">Atelier</a>
     <nav class="bar-nav" aria-label="Atelier">${nav}</nav>
     ${liveNote}
-    <details class="bar-menu switcher"><summary>${lifted.title === null ? `${MARK.title}Project` : e(lifted.title)}</summary><div data-shell="projects"><a href="/home">All projects</a>${MARK.projects}</div></details>
+    <details class="bar-menu switcher"><summary>${lifted.title === null ? `${MARK.title}Project` : e(lifted.title)}</summary><div data-shell="projects"><a href="/projects">All projects</a>${MARK.projects}</div></details>
     <details class="bar-menu account"><summary>${who}</summary><div>${account}${signout}</div></details>
   </div>${lifted.title === null ? MARK.row : lifted.row}
 </header>
@@ -1826,7 +1844,7 @@ export function renderProjectFlow(p: ProjectRecord, story: Story, owner: string,
 // Process (t558): the task flow as a flowchart, drawn by src/process.ts into
 // `body` with its own `css`. Like Now it follows the device's colour scheme.
 export function renderProjectProcess(p: ProjectRecord, body: string, css: string, ownerName: string | null = null): string {
-  return page(`Process · ${titleOf(p)}`, `${projectTabs(p, "Process")}${body}`, "Home", ownerName, 0, true, undefined, { css, device: true });
+  return page(`Process · ${titleOf(p)}`, `${projectTabs(p, "Process")}${body}`, "Process", ownerName, 0, true, undefined, { css });
 }
 
 // A project's showcase (t757): the page its record is proud of, for the
@@ -2887,7 +2905,7 @@ function renderMergedChecks(merged: MergedCheckView | undefined, m: MainPreview,
 // The Now page (t525): every live task across projects, and what landed today.
 // It follows the device's colour scheme, and the live script refreshes it.
 export function renderNow(view: NowView, ownerName: string | null = null, live?: Live): string {
-  return page("Now", nowBody(view), "Now", ownerName, 0, true, live, { css: nowCss, device: true });
+  return page("Now", nowBody(view), "Now", ownerName, 0, true, live, { css: nowCss });
 }
 
 // The confirmation behind a Revert link: nothing is changed by opening it.
@@ -2897,5 +2915,5 @@ export function renderRevert(project: ProjectRecord, item: Item, ownerName: stri
     ? `<p class="lead">This makes a new task, in ${e(name)}, that reverts the merge of <code>${e(item.id)}</code> by its recorded merge commit. It goes through the normal checks and independent review before it lands.</p>
   <form method="post" action="${href("ui", project.name, item.id, "revert")}"><button type="submit">Create the revert task</button> <a class="button quiet" href="${href("p", project.name, item.id)}">Cancel</a></form>`
     : `<p class="lead" role="alert">${e(item.id)} is ${e(item.state)}, not merged, so there is nothing to revert.</p><p><a class="button" href="${href("p", project.name, item.id)}">Go to ${e(item.id)}</a></p>`;
-  return page(`Revert ${item.id}`, `<section class="page-width"><h1>Revert ${e(item.id)}: ${e(item.title)}</h1>${body}</section>`, "Now", ownerName);
+  return page(`Revert ${item.id}`, `<section class="page-width"><h1>Revert ${e(item.id)}: ${e(item.title)}</h1>${body}</section>`, "Home", ownerName);
 }

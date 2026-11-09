@@ -443,8 +443,7 @@ export function todayBody(v: TodayView): string {
 
 // Today follows the device's colour scheme, as Now does. The page draws no
 // form or button, so it is drawn without the owner menu's sign-out form
-// (page's signedIn = false): Today is read-only. The bar marks Decisions, the
-// nearest of its items, until the bar names Today.
+// (page's signedIn = false): Today is read-only.
 export function renderToday(v: TodayView, ownerName: string | null = null, live?: Live): string {
-  return page("Today", todayBody(v), "Decisions", ownerName, 0, false, live, { css: todayCss, device: true });
+  return page("Today", todayBody(v), "Today", ownerName, 0, false, live, { css: todayCss });
 }

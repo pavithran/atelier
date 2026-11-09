@@ -63,7 +63,7 @@ for (const [path, title, h1] of PAGES) {
     assert.ok(shown?.includes(title), `${path} has title ${shown}, not one naming ${title}`);
     if (h1) assert.match(html, new RegExp(`<h1[^>]*>${h1}</h1>`), `${path} has no <h1>${h1}</h1>`);
     // The switcher lists the project, as the server's bar does.
-    assert.match(html, /data-shell="projects"><a href="\/home">All projects<\/a><a href="\/p\/atelier">atelier/);
+    assert.match(html, /data-shell="projects"><a href="\/projects">All projects<\/a><a href="\/p\/atelier">atelier/);
   });
 }
 
