@@ -95,8 +95,8 @@ it("a signed-in GET / answers 200 with the headline, four tiles and four section
   // The design fixture records no ship, so no deploy is counted.
   expect(tile(html, "deploys")).toBe("0");
   expect(rows("needs-you").length).toBeGreaterThan(0);
-  // Criterion 8: read-only; each Needs you card links to its task page.
-  expect(html).not.toMatch(/<form|<button|method="post"|formaction|<input/i);
+  // Criterion 8: read-only but for Land (t594), which test/page-actions.spec.ts covers; each Needs you card links to its task page.
+  expect(html.replace(/<form class="land-form"[\s\S]*?<\/form>/g, "")).not.toMatch(/<form|<button|method="post"|formaction|<input/i);
   expect(html.toLowerCase()).not.toContain("main green");
   const links = [...section(html, "needs-you").matchAll(/<a class="today-title" href="([^"]+)"/g)].map((m) => m[1]);
   expect(links.sort()).toEqual(rows("needs-you").map((r) => r.href).sort());
