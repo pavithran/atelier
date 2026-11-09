@@ -84,10 +84,10 @@ test('setup installs the module and browsers, names them in every harness env, a
   assert.ok(zsh.indexOf('export PLAYWRIGHT_MODULE') > zsh.indexOf('export PATH') && zsh.indexOf('export PLAYWRIGHT_MODULE') < zsh.indexOf('exec atelier'));
   assert.equal(statSync(join(f.conf, 'build.json')).mode & 0o777, 0o600);
   // Chromium launches from the installed pair, now and as a later --check (after a restart).
-  const check = f.run(['--check']);
+  const check = f.run(['--check'], { PLAYWRIGHT_MODULE: join(f.root, 'node_modules/playwright'), PLAYWRIGHT_BROWSERS_PATH: join(f.root, 'browsers') });
   assert.equal(check.status, 0, check.stderr);
   assert.match(check.stderr, /about:blank/);
-  assert.deepEqual(readdirSync(f.base).filter((n) => /\.(lock|staging|old)$/.test(n) || n.endsWith('.new')), []);
+  assert.deepEqual(readdirSync(f.base).filter((n) => /\.(lock|staging|old)$/.test(n)), []);
 });
 
 test('--check names the missing executable when the browsers are gone', () => {
@@ -95,7 +95,7 @@ test('--check names the missing executable when the browsers are gone', () => {
   assert.equal(f.run().status, 0);
   const gone = spawnSync('/bin/sh', ['-c', `mv "${f.root}/browsers/chromium-1" "${f.root}/browsers/moved"`]);
   assert.equal(gone.status, 0);
-  const check = f.run(['--check']);
+  const check = f.run(['--check'], { PLAYWRIGHT_MODULE: join(f.root, 'node_modules/playwright'), PLAYWRIGHT_BROWSERS_PATH: join(f.root, 'browsers') });
   assert.notEqual(check.status, 0);
   assert.match(check.stderr, /Executable doesn't exist/);
 });
@@ -119,7 +119,7 @@ test('a rerun after an interruption completes the install', () => {
   mkdirSync(join(f.root + '.staging', 'node_modules/half'), { recursive: true });
   mkdirSync(f.root + '.old/node_modules/playwright', { recursive: true });
   writeFileSync(join(f.root + '.old/node_modules/playwright/package.json'), '{"version":"0.0.1"}');
-  writeFileSync(join(f.conf, 'build.json.new'), 'garbage');
+  writeFileSync(join(f.conf, 'build.json.setup-browsers.new'), 'garbage');
   mkdirSync(f.root + '.lock');
   const dead = spawnSync('/bin/sh', ['-c', 'echo $$'], { encoding: 'utf8' }).stdout.trim();
   writeFileSync(join(f.root + '.lock', 'pid'), dead + '\n');
@@ -128,7 +128,7 @@ test('a rerun after an interruption completes the install', () => {
   assert.match(ran.stderr, new RegExp(`pid ${dead}, which is gone`));
   assert.ok(existsSync(join(f.root, 'browsers/chromium-1')));
   assert.ok(!existsSync(f.root + '.staging') && !existsSync(f.root + '.old') && !existsSync(f.root + '.lock'));
-  assert.ok(!existsSync(join(f.conf, 'build.json.new')));
+  assert.ok(!existsSync(join(f.conf, 'build.json.setup-browsers.new')));
   assert.deepEqual(parseConfig(files(f).json, { configPath: 'x' }).errors, []);
 });
 
@@ -178,4 +178,70 @@ test('a config that cannot take the variables fails before anything is moved', (
   assert.match(ran.stderr, /step prepare-configs failed/);
   assert.deepEqual(files(f), before);
   assert.ok(!existsSync(f.root));
+});
+
+test('files named *.new that the script did not make survive a run and a failed run', () => {
+  const f = fixture('foreign-new');
+  writeFileSync(join(f.conf, 'foo.new'), 'mine');
+  writeFileSync(join(f.conf, 'build.json.new'), 'someone else');
+  assert.equal(f.run().status, 0);
+  assert.equal(readFileSync(join(f.conf, 'foo.new'), 'utf8'), 'mine');
+  assert.equal(readFileSync(join(f.conf, 'build.json.new'), 'utf8'), 'someone else');
+  const g = fixture('foreign-new-fail');
+  writeFileSync(join(g.conf, 'foo.new'), 'mine');
+  const failed = g.run([g.conf], { SETUP_BROWSERS_LIMIT: '1', FAKE_NPM_HANG: '1' });
+  assert.equal(failed.status, 124);
+  assert.equal(readFileSync(join(g.conf, 'foo.new'), 'utf8'), 'mine');
+});
+
+test('a lock folder with a live pid is never removed, and a lock is never seen without its pid', () => {
+  const f = fixture('livelock');
+  mkdirSync(f.root + '.lock');
+  writeFileSync(join(f.root + '.lock', 'pid'), `${process.pid}\n`);
+  assert.equal(f.run().status, 75);
+  assert.ok(existsSync(join(f.root + '.lock', 'pid')));
+  // The script makes the lock by renaming a folder that already holds the pid.
+  assert.match(readFileSync(script, 'utf8'), /mv "\$LOCK\.\$\$" "\$LOCK"/);
+  // A lock folder with no pid is not ours to judge: it is not taken over.
+  const g = fixture('nopid');
+  mkdirSync(g.root + '.lock');
+  assert.equal(g.run().status, 75);
+  assert.ok(existsSync(g.root + '.lock'));
+});
+
+test('an existing-module launch check that hangs past the limit exits nonzero naming the step and changes nothing', () => {
+  const f = fixture('launch-hang');
+  assert.equal(f.run().status, 0);
+  writeFileSync(join(f.root, 'node_modules/playwright/index.js'), 'exports.chromium = { launch: () => new Promise(() => setInterval(() => {}, 1000)) };\n');
+  const before = files(f);
+  const ran = f.run([f.conf], { SETUP_BROWSERS_LIMIT: '1' });
+  assert.equal(ran.status, 124, ran.stderr);
+  assert.match(ran.stderr, /step check-existing exceeded its 1s limit/);
+  assert.deepEqual(files(f), before);
+  assert.ok(existsSync(join(f.root, 'browsers/chromium-1')));
+  assert.deepEqual(readdirSync(f.base).filter((n) => /\.(lock|staging|old)$/.test(n)), []);
+});
+
+test('--check requires PLAYWRIGHT_MODULE and launches that module', () => {
+  const f = fixture('check-env');
+  assert.equal(f.run().status, 0);
+  const none = f.run(['--check']);
+  assert.notEqual(none.status, 0);
+  assert.match(none.stderr, /PLAYWRIGHT_MODULE is not set/);
+  const mod = join(f.root, 'node_modules/playwright');
+  const ok = f.run(['--check'], { PLAYWRIGHT_MODULE: mod, PLAYWRIGHT_BROWSERS_PATH: join(f.root, 'browsers') });
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stderr, /about:blank/);
+  const bad = f.run(['--check'], { PLAYWRIGHT_MODULE: join(f.base, 'nowhere') });
+  assert.notEqual(bad.status, 0);
+});
+
+test('atelier guide --role build says browser tests run with PLAYWRIGHT_MODULE and how', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'guide-'));
+  made.push(dir);
+  const r = spawnSync(process.execPath, [new URL('../cli/atelier.mjs', import.meta.url).pathname, 'guide', '--role', 'build'],
+    { cwd: dir, encoding: 'utf8', env: { ...process.env, ATELIER_CONFIG_DIR: dir } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /PLAYWRIGHT_MODULE/);
+  assert.match(r.stdout, /-browser\.cjs/);
 });

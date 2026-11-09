@@ -6,8 +6,9 @@
 # each build*.json in it gets PLAYWRIGHT_MODULE and PLAYWRIGHT_BROWSERS_PATH in
 # every harness entry's env, and each start-build*.zsh exports them, so a
 # build's workspace sees them (cli/runner.mjs harnessEnv). Restart the runners
-# afterwards. With --check, only launch chromium from the installed module and
-# load about:blank (run it after a restart); nothing is changed.
+# afterwards. With --check, only launch chromium from the module PLAYWRIGHT_MODULE names
+# (it must be set, as it is in a build) and load about:blank; run it in a
+# runner's environment after a restart. Nothing is changed.
 #
 # Layout under SETUP_BROWSERS_ROOT (default ~/playwright-runner):
 #   node_modules/playwright   the module PLAYWRIGHT_MODULE names
@@ -25,7 +26,7 @@
 #
 # Each step runs under a time limit, SETUP_BROWSERS_LIMIT seconds (default
 # 900). A step past it is killed and the script exits 124 naming the step;
-# every timed step works in staging or on .new copies, so nothing in place has
+# every timed step works in staging or on .setup-browsers.new copies, so nothing in place has
 # changed. The moves into place are not timed steps: they are renames.
 set -eu
 
@@ -33,6 +34,8 @@ VERSION=${SETUP_BROWSERS_VERSION:-1.61.1}
 ROOT=${SETUP_BROWSERS_ROOT:-$HOME/playwright-runner}
 LIMIT=${SETUP_BROWSERS_LIMIT:-900}
 LOCK=$ROOT.lock
+# The copies of configs this script prepares; no other *.new file is touched.
+NEW=.setup-browsers.new
 STAGE=$ROOT.staging
 OLD=$ROOT.old
 say() { echo "setup-browsers: $*" >&2; }
@@ -58,22 +61,38 @@ launch_check() {
 module_version() { node -e 'process.stdout.write(require(process.argv[1] + "/package.json").version)' "$1" 2>/dev/null || true; }
 
 if [ "$check_only" = 1 ]; then
-  launch_check "$ROOT/node_modules/playwright" "$ROOT/browsers" || die "chromium did not launch from $ROOT/node_modules/playwright"
-  say "chromium launched from $ROOT/node_modules/playwright and loaded about:blank"
+  # The module the runners were told about, as a build sees it.
+  [ -n "${PLAYWRIGHT_MODULE:-}" ] || die "PLAYWRIGHT_MODULE is not set; --check launches the module it names"
+  launch_check "$PLAYWRIGHT_MODULE" "${PLAYWRIGHT_BROWSERS_PATH:-$ROOT/browsers}" || die "chromium did not launch from $PLAYWRIGHT_MODULE"
+  say "chromium launched from $PLAYWRIGHT_MODULE and loaded about:blank"
   exit 0
 fi
 
-# The lock: a folder holding the owner's pid.
+# The lock: a folder holding the owner's pid. It is made as a private folder
+# that already holds the pid and then renamed to LOCK, so LOCK never exists
+# without its pid. If LOCK already exists the rename would put our folder
+# inside it; that is detected and undone, and the existing lock is left alone.
 mkdir -p "$(dirname "$ROOT")"
 acquire() {
-  mkdir "$LOCK" 2>/dev/null && { echo $$ > "$LOCK/pid"; return 0; }
+  mkdir "$LOCK.$$" || return 1
+  echo $$ > "$LOCK.$$/pid"
+  mv "$LOCK.$$" "$LOCK" 2>/dev/null || true
+  if [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ]; then return 0; fi
+  rm -rf "$LOCK.$$" "$LOCK/${LOCK##*/}.$$"
   return 1
 }
 if ! acquire; then
   holder=$(cat "$LOCK/pid" 2>/dev/null || true)
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then die "another run holds $LOCK (pid $holder)" 75; fi
-  say "taking over $LOCK left by pid ${holder:-unknown}, which is gone"
-  rm -rf "$LOCK"
+  # A lock with no readable pid is not judged stale: only a dead pid is.
+  if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then die "another run holds $LOCK (pid ${holder:-unknown})" 75; fi
+  say "taking over $LOCK left by pid $holder, which is gone"
+  # Move it aside first, so a lock a third run made in the meantime is not deleted.
+  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null || die "another run holds $LOCK" 75
+  if [ "$(cat "$LOCK.stale.$$/pid" 2>/dev/null)" != "$holder" ]; then
+    mv "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
+    die "another run holds $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null || echo unknown))" 75
+  fi
+  rm -rf "$LOCK.stale.$$"
   acquire || die "another run holds $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null || echo unknown))" 75
 fi
 swapped=0 committed=0 DIRS=$*
@@ -85,7 +104,7 @@ cleanup() {
     rm -rf "$ROOT"; [ ! -e "$OLD" ] || mv "$OLD" "$ROOT"
   fi
   rm -rf "$STAGE"
-  [ "$committed" = 1 ] || for d in $DIRS; do rm -f "$d"/*.new; done
+  [ "$committed" = 1 ] || for d in $DIRS; do rm -f "$d"/*"$NEW"; done
   [ "$(cat "$LOCK/pid" 2>/dev/null)" != "$$" ] || rm -rf "$LOCK"
   exit "$rc"
 }
@@ -125,8 +144,18 @@ install_browsers() {
 }
 stage_check() { launch_check "$STAGE/node_modules/playwright" "$STAGE/browsers"; }
 
-if [ -d "$ROOT/node_modules/playwright" ] && [ "$(module_version "$ROOT/node_modules/playwright")" = "$VERSION" ] \
-   && launch_check "$ROOT/node_modules/playwright" "$ROOT/browsers" >/dev/null 2>&1; then
+# Whether the module in place is current and launches is itself a timed step.
+# run_step fails a step that exits nonzero, so this one always exits 0 and
+# records a yes as a file in the lock folder.
+check_existing() {
+  [ -d "$ROOT/node_modules/playwright" ] && [ "$(module_version "$ROOT/node_modules/playwright")" = "$VERSION" ] \
+    && launch_check "$ROOT/node_modules/playwright" "$ROOT/browsers" >/dev/null 2>&1 \
+    && : > "$LOCK/existing-ok"
+  return 0
+}
+rm -f "$LOCK/existing-ok"
+run_step check-existing check_existing
+if [ -e "$LOCK/existing-ok" ]; then
   say "playwright $VERSION in $ROOT already launches chromium; not reinstalling"
   need_swap=0
 else
@@ -152,8 +181,8 @@ prepare_one_config() {
       const next = [...have, ...want.filter((n) => !have.includes(n))];
       if (next.length !== have.length) { entry.env = next; changed = true; }
     }
-    if (changed) fs.writeFileSync(file + ".new", JSON.stringify(config, null, 2) + "\n", { mode: fs.statSync(file).mode & 0o777 });
-  ' "$1"
+    if (changed) fs.writeFileSync(file + process.argv[2], JSON.stringify(config, null, 2) + "\n", { mode: fs.statSync(file).mode & 0o777 });
+  ' "$1" "$NEW"
 }
 prepare_one_start() {
   file=$1
@@ -162,8 +191,8 @@ prepare_one_start() {
     /^export PLAYWRIGHT_(MODULE|BROWSERS_PATH)=/ { next }
     { print }
     /^export PATH=/ { print m; print b }
-  ' "$file" > "$file.new"
-  if cmp -s "$file" "$file.new"; then rm -f "$file.new"; else chmod "$(stat -f %Lp "$file" 2>/dev/null || stat -c %a "$file")" "$file.new"; fi
+  ' "$file" > "$file$NEW"
+  if cmp -s "$file" "$file$NEW"; then rm -f "$file$NEW"; else chmod "$(stat -f %Lp "$file" 2>/dev/null || stat -c %a "$file")" "$file$NEW"; fi
 }
 prepare_configs() {
   for dir in "$@"; do
@@ -174,7 +203,7 @@ prepare_configs() {
     [ "$found" = 1 ] || { say "no build*.json or start-build*.zsh in $dir"; return 1; }
   done
 }
-cleanup_new() { for dir in "$@"; do rm -f "$dir"/*.new; done; }
+cleanup_new() { for dir in "$@"; do rm -f "$dir"/*"$NEW"; done; }
 # Leftovers from an earlier interrupted run are discarded before preparing.
 cleanup_new "$@"
 run_step prepare-configs prepare_configs "$@"
@@ -186,7 +215,7 @@ if [ "$need_swap" = 1 ]; then
   mv "$STAGE" "$ROOT"
 fi
 for dir in "$@"; do
-  for new in "$dir"/*.new; do [ -f "$new" ] && mv -f "$new" "${new%.new}"; done
+  for new in "$dir"/*"$NEW"; do [ -f "$new" ] && mv -f "$new" "${new%"$NEW"}"; done
 done
 committed=1
 if [ "$need_swap" = 1 ]; then rm -rf "$OLD"; fi

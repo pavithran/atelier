@@ -71,11 +71,12 @@ Restart the runners afterwards. The script:
   `cli/runner.mjs`): the runner copies the named variables from its own
   environment to the harness, so a test reads `require(process.env.PLAYWRIGHT_MODULE)`.
 
-`sh scripts/studio/setup-browsers.sh --check` changes nothing: it launches
-chromium from the installed module and loads `about:blank`. Run it after setup
+`sh scripts/studio/setup-browsers.sh --check` changes nothing: it requires
+`PLAYWRIGHT_MODULE` in its environment, launches chromium from the module that
+names and loads `about:blank`. Run it in the runner's environment after setup
 and after a restart.
 
-Rerunning is safe. An interrupted run leaves only its staging folder, `.new`
+Rerunning is safe. An interrupted run leaves only its staging folder, `.setup-browsers.new`
 copies beside the configs, or (killed between the two renames) the old module
 in `~/playwright-runner.old`; the next run discards or restores these and
 finishes. A module that is the pinned version and launches is left alone, and
@@ -87,18 +88,17 @@ taken over.
 Every step (install the module, install the browsers, launch check, prepare the
 configs) has a time limit, `SETUP_BROWSERS_LIMIT` seconds, 900 unless set. A step past it is killed and
 the script exits 124 naming the step. The steps work only in staging and on
-`.new` copies, so the module, browsers and configs are as they were and the next
+`.setup-browsers.new` copies, so the module, browsers and configs are as they were and the next
 run starts clean.
 
-The project's build guide should tell builders. For tapestries, add to its
-`.atelier/prompts/build.md` (a protected path, so another family reviews it):
-"Browser tests run in this workspace: `PLAYWRIGHT_MODULE` names Playwright
-1.61.1 with chromium installed. Start the project's local Vite server, then run
-`node tests/NAME-browser.cjs`. Say so if the variable is unset."
-`atelier guide --role build --project tapestries` prints that file.
+The built-in build guide (`atelier guide --role build`) tells builders: when
+`PLAYWRIGHT_MODULE` is set, browser tests run with it. A project's own
+`.atelier/prompts/build.md` replaces that text, so tapestries' file must keep
+the paragraph if it has one.
 
 Local tests run the script with a stand-in `npm` and Playwright
-(`test/setup-browsers.test.mjs`). They cannot show the real npm download, the
+(`test/setup-browsers.test.mjs`); that fake module only checks that a browser
+folder exists. The tests cannot show the real npm download, the
 real chromium launching, launchd passing the exports to the runner, or a
 build on `home:studio-tapestries-build` running `tests/gathering-browser.cjs`
 against Vite. After deploy, on the Studio: run the script, restart the

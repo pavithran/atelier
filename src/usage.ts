@@ -274,7 +274,8 @@ export type Role = (typeof ROLES)[number];
 // its reply format out of the agent's context window; the runner refuses one
 // over this instead of silently degrading the run.
 // Raised from 4000 to 4400 for the builder's process v3 rules (t541).
-export const ROLE_PROMPT_MAX = 4400;
+// Raised from 4400 to 4800 for the browser-test paragraph (t605).
+export const ROLE_PROMPT_MAX = 4800;
 
 export const ROLE_PROMPTS: Record<Role, string> = {
   build: `## Building
@@ -311,6 +312,12 @@ Else omit the line.
 
 Name platform limits or runtime behaviour local tests cannot reproduce in the
 task; the project declares a remote smoke check run before and after deploy.
+
+Browser tests: when PLAYWRIGHT_MODULE is set (the Tapestries build runner sets
+it), Playwright and chromium are installed. Start the project's local dev
+server, then run \`node tests/NAME-browser.cjs\`; the test reads
+\`require(process.env.PLAYWRIGHT_MODULE)\`. If it is unset, say so; do not
+install Playwright.
 
 ${OWNER_LANDING}
 `,
