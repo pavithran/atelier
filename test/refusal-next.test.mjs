@@ -62,6 +62,7 @@ const EXEMPT = {
 // they raise. Any other such site fails the scan.
 const COMPUTED = {
   "src/index.ts": { code: ["override_unconfirmed", "fast_mode_unconfirmed"], "rule.code": ["fast_mode_unconfirmed", "override_unconfirmed"], AREAS_REMOVED: ["areas_removed"] },
+  "src/ledger.ts": { "proof.code": ["tests_missing", "tests_failed", "tests_not_run", "tests_uncovered"] },
   "src/rules.ts": { AREAS_REMOVED: ["areas_removed"] },
 };
 
@@ -160,12 +161,16 @@ test("the counts: strict codes, codes with a next, exempt codes", () => {
   console.log(`# strict ${STRICT.length}, with next ${withNext}, exempt ${exempt.size}, codes ${sites.size}`);
   // Server-index validation and conflicts add two guided refusals (t7), and
   // t504's criteriaReview check one more (bad_policy); t505's repair link adds
-  // a second not_merged site, a code already counted with a next.
+  // a second not_merged site, a code already counted with a next. t522 adds
+  // private_project and no_land_reviewer.
   assert.equal(STRICT.length, 78);
   // t518 removed the tier review's refusals (bad_review_tier, not_tier, tier_refused).
-  assert.equal(withNext, 228);
+  // t523 adds five guided refusals: four review-proof codes and bad_tests.
+  assert.equal(withNext, 239);
+  // t536 adds four guided refusals: bad_cause, bad_failure, no_failure and not_blocking.
+
   assert.equal(exempt.size, 124);
-  assert.equal(sites.size, 352);
+  assert.equal(sites.size, 363);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });

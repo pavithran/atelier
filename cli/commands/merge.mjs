@@ -11,6 +11,7 @@ import { releaseSequence } from "../load.mjs";
 import { prepareChecks } from "../../src/check-preparation.ts";
 import { refusalOf, refusalText } from "../../src/checks.ts";
 import { stopLine } from "../../src/check-limit.ts";
+import { failedTestNames } from "../failed-names.mjs";
 import { REAL_HISTORY_ENV, carryTask, loadPairs, rebuild, savePairs } from "../fresh.mjs";
 import { provenanceNote } from "../provenance.mjs";
 import { guardedPush, privateGuardFor, privateRefusal } from "../private-guard.mjs";
@@ -659,7 +660,7 @@ async function checkMergedTree({ name, id, cwd, policy, identity, commit, secret
       console.log(`${r.passed ? "PASS" : r.stopped ? "STOP" : "FAIL"}  ${cmd}  @ ${short(checked)} (the merge of ${id} into main)`);
       if (!r.passed) {
         const why = r.stopped ? stopLine(r.stopped) : r.error ? r.error.message : `exit ${r.status ?? "by a signal"}`;
-        await stop(`the check \`${cmd}\` failed on the merged tree (${why}), so nothing was pushed to main; ${id} stays accepted with its approvals, and is not rejected. Its output ends:\n${tailOf(r.output)}`, { failedCheck: cmd, tail: tailOf(r.output), mergeCommit: checked });
+        await stop(`the check \`${cmd}\` failed on the merged tree (${why}), so nothing was pushed to main; ${id} stays accepted with its approvals, and is not rejected. Its output ends:\n${tailOf(r.output)}`, { failedCheck: cmd, tail: tailOf(r.output), mergeCommit: checked, ...failedTestNames(r.output, secrets) });
       }
     }
     await unchanged(previous);

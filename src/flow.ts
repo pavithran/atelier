@@ -224,7 +224,7 @@ export interface Bar {
 export interface BarScope { scope: string; merges: number; sound: number; bars: Bar[] }
 export interface BarsReport { windowDays: number; since: string; observedAt: string; scopes: BarScope[] }
 
-interface Merge { key: string; sound: boolean; red: boolean; escaped: boolean; tokens: number | null; filedToDeployed: number | null; deployed: boolean; timed: boolean }
+export interface Merge { key: string; sound: boolean; red: boolean; escaped: boolean; tokens: number | null; filedToDeployed: number | null; mergeToDeployed: number | null; deployed: boolean; timed: boolean }
 interface Measures { merges: Merge[]; unnamed: string[]; unlinked: string[]; sessionRecords: number }
 
 const NAMED_WAITS = new Set(["item.dispatched", "item.claimed", "item.handoff", "item.submitted", "review.approved", "item.accepted", "item.blocked", "item.blocked_by", "criteria_review.requested", "landing.begun", "landing.queued"]);
@@ -232,8 +232,8 @@ const UNNAMED_STATES = new Set(["item.created", "item.released", "item.undispatc
 const ENDED = new Set(["item.merged", "item.abandoned", "item.merge_recorded", "item.landed_fast"]);
 const SESSION_RECORDS = new Set(["session.wrapped", "decision.recorded", "assignment.recorded"]);
 
-function measure(name: string, input: readonly BarEvent[], now: number, tokens: Record<string, number>): Measures {
-  const from = now - BARS_WINDOW_DAYS * DAY_MS;
+function measure(name: string, input: readonly BarEvent[], now: number, tokens: Record<string, number>, windowDays = BARS_WINDOW_DAYS): Measures {
+  const from = now - windowDays * DAY_MS;
   const events = [...input].sort((a, b) => a.seq - b.seq);
   const byItem = new Map<string, BarEvent[]>();
   for (const e of events) if (e.itemId) (byItem.get(e.itemId) ?? byItem.set(e.itemId, []).get(e.itemId)!).push(e);
@@ -274,6 +274,7 @@ function measure(name: string, input: readonly BarEvent[], now: number, tokens: 
       tokens: tokens[`${name}/${id}`] ?? tokens[id] ?? null,
       deployed: deployedAt !== null, timed: created !== null,
       filedToDeployed: created !== null && deployedAt !== null ? Math.max(0, deployedAt - created) / 60_000 : null,
+      mergeToDeployed: deployedAt !== null ? Math.max(0, deployedAt - at) / 60_000 : null,
     });
   }
 
@@ -295,17 +296,17 @@ function measure(name: string, input: readonly BarEvent[], now: number, tokens: 
   return { merges, unnamed, unlinked, sessionRecords };
 }
 
-const midpoint = (values: readonly number[]) => {
+export const midpoint = (values: readonly number[]) => {
   const s = [...values].sort((a, b) => a - b);
   return s.length ? (s[Math.floor(s.length / 2)] + s[Math.floor((s.length - 1) / 2)]) / 2 : null;
 };
-const nearestRank = (values: readonly number[], p: number) => {
+export const nearestRank = (values: readonly number[], p: number) => {
   const s = [...values].sort((a, b) => a - b);
   return s.length ? s[Math.max(0, Math.ceil(p * s.length) - 1)] : null;
 };
 
-function barsOf(scope: string, m: Measures, haveTokens: boolean): BarScope {
-  const n = m.merges.length, none = `no merges in the last ${BARS_WINDOW_DAYS} days`;
+function barsOf(scope: string, m: Measures, haveTokens: boolean, windowDays = BARS_WINDOW_DAYS): BarScope {
+  const n = m.merges.length, none = `no merges in the last ${windowDays} days`;
   const sound = m.merges.filter((x) => x.sound);
   const make = (id: string, label: string, value: number | null, display: string, target: string, status: BarStatus, source: string, detail = ""): Bar =>
     ({ id, label, value, display, target, status, source, detail });
@@ -354,8 +355,8 @@ function barsOf(scope: string, m: Measures, haveTokens: boolean): BarScope {
 }
 
 // `tokens` maps an item id (or "project/id") to its weighted token use.
-export function computeBars(projects: readonly { name: string; events: readonly BarEvent[] }[], now: number, tokens?: Record<string, number>): BarsReport {
-  const per = projects.map((p) => ({ name: p.name, m: measure(p.name, p.events, now, tokens ?? {}) }));
+export function computeBars(projects: readonly { name: string; events: readonly BarEvent[] }[], now: number, tokens?: Record<string, number>, windowDays = BARS_WINDOW_DAYS): BarsReport {
+  const per = projects.map((p) => ({ name: p.name, m: measure(p.name, p.events, now, tokens ?? {}, windowDays) }));
   const overall: Measures = {
     merges: per.flatMap((p) => p.m.merges.map((x) => ({ ...x, key: `${p.name}/${x.key}` }))),
     unnamed: per.flatMap((p) => p.m.unnamed.map((id) => `${p.name}/${id}`)),
@@ -363,9 +364,16 @@ export function computeBars(projects: readonly { name: string; events: readonly 
     sessionRecords: per.reduce((s, p) => s + p.m.sessionRecords, 0),
   };
   return {
-    windowDays: BARS_WINDOW_DAYS, since: new Date(now - BARS_WINDOW_DAYS * DAY_MS).toISOString(), observedAt: new Date(now).toISOString(),
-    scopes: [...per.map((p) => barsOf(p.name, p.m, tokens !== undefined)), barsOf("overall", overall, tokens !== undefined)],
+    windowDays, since: new Date(now - windowDays * DAY_MS).toISOString(), observedAt: new Date(now).toISOString(),
+    scopes: [...per.map((p) => barsOf(p.name, p.m, tokens !== undefined, windowDays)), barsOf("overall", overall, tokens !== undefined, windowDays)],
   };
+}
+
+// The merges of one project in the last `windowDays` days with the deploy each
+// reached, counted as --bars counts deploys. The Process page (src/process.ts)
+// reads merge-to-deploy and the merged-not-deployed tasks from here.
+export function deployedMerges(events: readonly BarEvent[], now: number, windowDays = BARS_WINDOW_DAYS): Merge[] {
+  return measure("", events, now, {}, windowDays).merges;
 }
 
 export function formatBars(report: BarsReport): string[] {

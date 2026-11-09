@@ -16,7 +16,7 @@ export const ORIGIN = "https://atelier.test";
 const ISS = "https://atelier-design.cloudflareaccess.com";
 const AUD = "d3519n0000000000000000000000c0de";
 const EMAIL = "owner@example.com";
-const TOKEN = "design-capture-token";
+export const TOKEN = "design-capture-token";
 
 // Who asks: nobody signed in; Access's sign-in without an Atelier session,
 // which behind Access starts one (t534); the owner with both; and nobody
@@ -90,10 +90,12 @@ export function pageStates(s: Seeded): PageState[] {
     { id: "public-owner-route", path: "/p/ledger-core", audience: "public", status: 401, marker: "behind Cloudflare Access", state: "A visitor on an owner URL without Access's sign-in" },
     { id: "signin", path: "/login", audience: "token", status: 200, marker: "Sign in to Atelier", state: "Sign-in" },
     // Cross-project
-    { id: "home", path: "/home", audience: "owner", status: 200, marker: "Ledger Core", state: "Portfolio: dense, empty and unavailable projects" },
-    { id: "decisions", path: "/decisions", audience: "owner", status: 200, marker: "aria-labelledby=\"sel-h\"", state: "Inbox with the first decision selected" },
-    { id: "decisions-sent-back", path: `/decisions?project=ledger-core&task=${lc("sentBack")}`, audience: "owner", status: 200, marker: "Changes requested", state: "A sent-back task selected" },
-    { id: "decisions-blocked", path: `/decisions?project=ledger-core&task=${lc("blocked")}`, audience: "owner", status: 200, marker: "Blocked", state: "A blocked task selected" },
+    // Today (t562) took the places of Home, Now and Decisions: their addresses redirect (ALIASES below), so the
+    // ids the brief lists draw where each now leads.
+    { id: "home", path: "/", audience: "owner", status: 200, marker: "Ledger Core", state: "Today: the portfolio's project cards, dense, empty and unavailable" },
+    { id: "decisions", path: "/", audience: "owner", status: 200, marker: "id=\"needs-you\"", state: "Today: what waits on the owner" },
+    { id: "decisions-sent-back", path: `/p/ledger-core/${lc("sentBack")}`, audience: "owner", status: 200, marker: "Changes requested", state: "A sent-back task, where /decisions leads" },
+    { id: "decisions-blocked", path: `/p/ledger-core/${lc("blocked")}`, audience: "owner", status: 200, marker: "Blocked", state: "A blocked task, where /decisions leads" },
     { id: "studio", path: "/studio", audience: "owner", status: 200, marker: "at work", state: "The floor with live, stale and overlapping work" },
     { id: "flow", path: "/flow", audience: "owner", status: 200, marker: "every project", state: "Every project's flow, all time" },
     { id: "flow-filtered", path: "/flow?since=1d&family=anthropic", audience: "owner", status: 200, marker: "every project", state: "Flow filtered to the last day and one family" },
@@ -138,12 +140,17 @@ export function pageStates(s: Seeded): PageState[] {
   ];
 }
 
-// Addresses that answer with a redirect, asserted by fixture.spec.ts and
-// listed in the brief, not captured: the page they lead to is.
-export const ALIASES: { path: string; audience: Audience; status: number; location: string }[] = [
-  { path: "/", audience: "public", status: 302, location: "/home" },
+// Addresses that answer with a redirect, or refuse, asserted by fixture.spec.ts
+// and listed in the brief, not captured: the page they lead to is. `location`
+// is the end of the Location header, empty where there is none.
+export const ALIASES = (s: Seeded): { path: string; audience: Audience; status: number; location: string }[] => [
+  { path: "/", audience: "public", status: 401, location: "" },
   { path: "/showcase", audience: "public", status: 302, location: "/home" },
   { path: "/projects", audience: "owner", status: 301, location: "/home" },
+  { path: "/home", audience: "owner", status: 302, location: "/" },
+  { path: "/now", audience: "owner", status: 302, location: "/" },
+  { path: "/decisions", audience: "owner", status: 302, location: "/" },
+  { path: `/decisions?project=ledger-core&task=${s.byShape["ledger-core"].blocked![0]}`, audience: "owner", status: 302, location: `/p/ledger-core/${s.byShape["ledger-core"].blocked![0]}` },
   { path: "/flow?project=ledger-core", audience: "owner", status: 301, location: "/p/ledger-core/flow" },
   { path: "/home", audience: "token", status: 303, location: "/login" },
 ];

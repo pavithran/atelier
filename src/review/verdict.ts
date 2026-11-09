@@ -12,9 +12,22 @@
 // the reason, and the caller asks again or stops.
 
 import { TEXT_CONTROLS } from "../text.ts";
-import { CHECK_BY, type Finding, type PostDeployCheck } from "../rules.ts";
+import { CHECK_BY, type Finding as BaseFinding, type PostDeployCheck } from "../rules.ts";
 
-export type { Finding, PostDeployCheck };
+import { FINDING_CAUSES, isKnownCause, type FindingCause, type KnownCause } from "../usage/finding-causes.ts";
+
+export type { PostDeployCheck };
+
+export { FINDING_CAUSES, isKnownCause, type FindingCause, type KnownCause };
+
+// A finding with the tags a code review's blocking findings carry. `criterion`
+// is the criterion's number as the brief numbers them, null when the reviewer
+// said it concerns none, absent when the reply did not say; `cause` is absent
+// on findings recorded before the tags were asked for.
+export interface Finding extends BaseFinding {
+  criterion?: number | null;
+  cause?: FindingCause;
+}
 
 // Blocking findings are what the review bar in force allows to block; every
 // other finding is a follow-up and never holds a change back.
@@ -114,7 +127,7 @@ const COUNT_RULE = "Write one BLOCKING line with the number of blocking findings
 const examples = (counted: boolean) => counted
   ? [...FORMAT_EXAMPLES.slice(0, 4), COUNT_EXAMPLE, ...FORMAT_EXAMPLES.slice(4)]
   : FORMAT_EXAMPLES;
-const rules = (counted: boolean) => counted ? [...FORMAT_RULES, COUNT_RULE] : FORMAT_RULES;
+const rules = (counted: boolean) => [...FORMAT_RULES, ...(counted ? [COUNT_RULE] : []), TAG_RULE];
 
 const FORMAT_RULES = [
   "The VERDICT line says APPROVE or REJECT and nothing else. Do not write APPROVE, APPROVED, REJECT or REJECTED in capitals anywhere else in your reply: a reply that says both is not read as a verdict.",
@@ -122,9 +135,15 @@ const FORMAT_RULES = [
   "REJECT needs at least one blocking finding, and APPROVE allows none.",
 ];
 
+// The tag on a blocking finding (t536): the criterion it concerns and why it
+// happened, so a rejection is data about the criteria as well as the code.
+// Only a code review's format asks for it; a reply missing either is recorded
+// with cause unknown and counted, never refused.
+const TAG_RULE = `Every blocking FINDING line carries a tag in square brackets right after its file and line: criterion-N, the number of the acceptance criterion it concerns as the brief numbers them, or none when it concerns no criterion, then a comma and its cause, one of ${FINDING_CAUSES.join(", ")}. Write it as FINDING: blocking src/example.ts:12 [criterion-2, wiring] What is wrong. The causes are spec (the criteria left it undecided or impossible as written), wiring (built but not connected to its callers, routes or pages), failure-path (a crash, retry or error path that is wrong), coding (a logic error), tests (the tests miss or misjudge the behaviour) and docs (docs or help that contradict the code). A blocking finding missing either is recorded with cause unknown and counted, not refused.`;
+
 const FORMAT_END = "Prose around these lines is allowed and is not read, apart from the rule on APPROVE and REJECT above.";
 
-export const REPLY_FORMAT = [...FORMAT_EXAMPLES, "", ...FORMAT_RULES, FORMAT_END].join("\n");
+export const REPLY_FORMAT = [...FORMAT_EXAMPLES, "", ...FORMAT_RULES, TAG_RULE, FORMAT_END].join("\n");
 
 // The format a criteria review is asked for (src/review/criteria.ts, t457):
 // the same lines, no CRITERION line (the review judges the criteria, it
@@ -236,8 +255,11 @@ function read(raw: unknown, asked: number, options: VerdictOptions): Statement {
   const withChecks = options.checks === true;
   const deferrable = new Set((options.deferred ?? []).filter((n) => Number.isSafeInteger(n) && n >= 1));
 
-  const json = jsonStatements(reply, withChecks);
-  const lines = lineStatements(reply, criteria, withChecks);
+  // A criteria review judges the criteria themselves, so its findings are not
+  // tagged with a criterion and a cause (t536).
+  const tagged = !withChecks;
+  const json = jsonStatements(reply, withChecks, tagged);
+  const lines = lineStatements(reply, criteria, withChecks, tagged);
   const verdicts = new Set([...json.map((s) => s.verdict), ...lines.verdicts]);
   // The criteria a post-merge reply declares unmet, as the brief numbers them.
   const declared = options.postMerge && criteria ? [...lines.criteria].filter(([n, state]) => state === "unmet" && n <= criteria).map(([n]) => n).sort((a, b) => a - b) : [];
@@ -378,7 +400,7 @@ function collect(value: unknown, found: Record<string, unknown>[], depth = 0): n
   return own + Object.values(record).reduce((n: number, v) => n + collect(v, found, depth + 1), 0);
 }
 
-function jsonStatements(reply: string, withChecks: boolean): Statement[] {
+function jsonStatements(reply: string, withChecks: boolean, tagged: boolean): Statement[] {
   const found: Record<string, unknown>[] = [];
   const keys = jsonValues(reply).reduce((n: number, v) => n + collect(v, found), 0);
   // Every verdict key written in the reply must have been read from valid
@@ -387,7 +409,7 @@ function jsonStatements(reply: string, withChecks: boolean): Statement[] {
   // last value.
   const written = reply.match(/"(?:verdict|approve)"\s*:/gi)?.length ?? 0;
   if (written !== keys) refuse(`the reply writes ${written} "verdict" or "approve" ${written === 1 ? "field" : "fields"} and ${keys} could be read from valid JSON`);
-  return found.map((o, i) => statementFrom(o, found.length > 1 ? `JSON verdict ${i + 1}` : "the JSON verdict", withChecks));
+  return found.map((o, i) => statementFrom(o, found.length > 1 ? `JSON verdict ${i + 1}` : "the JSON verdict", withChecks, tagged));
 }
 
 // One field by any of its names, in any case. Two names given different
@@ -398,7 +420,7 @@ function field(o: Record<string, unknown>, names: string[], at: string): unknown
   return values[0];
 }
 
-function statementFrom(o: Record<string, unknown>, at: string, withChecks: boolean): Statement {
+function statementFrom(o: Record<string, unknown>, at: string, withChecks: boolean, tagged: boolean): Statement {
   const said = field(o, ["verdict"], at);
   const approve = field(o, ["approve"], at);
   let verdict: Statement["verdict"] | undefined;
@@ -418,7 +440,7 @@ function statementFrom(o: Record<string, unknown>, at: string, withChecks: boole
   if (typeof summary !== "string") refuse(`${at}: "summary" must be text`);
   const list = field(o, ["findings"], at) ?? [];
   if (!Array.isArray(list)) refuse(`${at}: "findings" must be a list`);
-  const findings = list.map((entry: unknown, i) => findingFrom(entry, `${at}, finding ${i + 1}`));
+  const findings = list.map((entry: unknown, i) => findingFrom(entry, `${at}, finding ${i + 1}`, tagged));
   // A "checks" list is read only from a criteria review's reply; elsewhere
   // the field is not the reply's to give, and is left unread.
   const flagged = withChecks ? field(o, ["checks"], at) ?? [] : [];
@@ -456,19 +478,36 @@ function checkByFrom(value: unknown, at: string): PostDeployCheck["by"] {
   return named;
 }
 
-function findingFrom(entry: unknown, at: string): Finding {
+function findingFrom(entry: unknown, at: string, tagged: boolean): Finding {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) refuse(`${at} is not an object`);
   const o = entry as Record<string, unknown>;
   const severity = field(o, ["severity"], at);
   const text = field(o, ["text", "note"], at);
   const line = field(o, ["line"], at);
   if (typeof text !== "string" || !plain(text)) refuse(`${at} has no text`);
+  const severityNamed = severityFrom(severity, at);
+  const said = field(o, ["criterion"], at);
   return {
     file: fileFrom(field(o, ["file", "path"], at), at),
     line: lineFrom(line, at),
-    severity: severityFrom(severity, at),
+    severity: severityNamed,
     text: clip(plain(text), VERDICT_LIMITS.text),
+    ...(tagged ? tagsOf(said === undefined ? undefined : said === null ? "none" : String(said), field(o, ["cause"], at), severityNamed) : {}),
   };
+}
+
+// The criterion and cause a finding states, from the words the reply gave
+// (t536). criterion: a number from 1, null for "none", undefined when it was
+// not stated or not readable. A blocking finding that lacks either the
+// criterion or a cause from the list gets cause "unknown": counted, not
+// refused. A follow-up keeps what it states and is never stamped unknown.
+function tagsOf(criterionWord: string | undefined, causeWord: unknown, severity: Severity): Pick<Finding, "criterion" | "cause"> {
+  const text = criterionWord?.trim().replace(/^[`'"]+|[`'"]+$/g, "").toLowerCase();
+  const m = text === undefined ? null : /^(?:criterion[-\s]*)?(?:\[?(\d+)\]?|(none))$/.exec(text);
+  const criterion = m ? (m[2] ? null : Number(m[1])) : undefined;
+  const named = typeof causeWord === "string" ? causeWord.trim().toLowerCase() : "";
+  const cause: FindingCause | undefined = isKnownCause(named) && criterion !== undefined && (criterion === null || criterion >= 1) ? named : severity === "blocking" ? "unknown" : undefined;
+  return { ...(criterion !== undefined && (criterion === null || criterion >= 1) ? { criterion } : {}), ...(cause ? { cause } : {}) };
 }
 
 // ── Findings, as either encoding gives them ─────────────────────────────
@@ -518,6 +557,9 @@ const FINDING_LINE = new RegExp(`^finding${E}\\s*:?\\s*${E}\\s*\\[?([a-z_-]+)\\]
 // closing full stop allowed. "FINDING: blocking ..." starts with FINDING and
 // is read as a finding before this is tried.
 const COUNT_LINE = new RegExp(`^blocking${E}\\s*:\\s*${E}\\s*(\\d{1,6})\\s*${E}\\s*[.!]?\\s*${E}\\s*$`, "i");
+// The tag after a blocking finding's file (t536): [criterion-2, wiring].
+const TAG = /^\[([^\]]*)\]\s*/;
+const CRITERION_WORD = /^(?:criterion[-\s]*)?(?:\[?\d+\]?|none)$/i;
 const SUMMARY_LINE = new RegExp(`^summary${E}\\s*:\\s*${E}\\s*(.*?)\\s*${E}\\s*$`, "i");
 // A CRITERION line gives a number followed by a colon or a state, in any
 // case and with optional markdown. Numbered prose such as "Criterion 3 is
@@ -545,7 +587,7 @@ const CHECK_LINE = new RegExp(`^check${E}\\s*:?\\s*${E}\\s*(?:criterion[-\\s]*)?
 // check after deploy (t457).
 type CriterionState = "met" | "unmet" | "deferred";
 
-function lineStatements(reply: string, criteria: number, withChecks: boolean): { verdicts: Statement["verdict"][]; findings: Finding[]; checks: PostDeployCheck[]; summary: string[]; counts: number[]; criteria: Map<number, CriterionState> } {
+function lineStatements(reply: string, criteria: number, withChecks: boolean, tagged: boolean): { verdicts: Statement["verdict"][]; findings: Finding[]; checks: PostDeployCheck[]; summary: string[]; counts: number[]; criteria: Map<number, CriterionState> } {
   const counts: number[] = [];
   const verdicts: Statement["verdict"][] = [];
   const findings: Finding[] = [];
@@ -561,7 +603,7 @@ function lineStatements(reply: string, criteria: number, withChecks: boolean): {
     // A heading such as "## Verdict" is not a statement; any other text after
     // "Verdict:" must be the verdict alone, or the reply is refused.
     else if (VERDICT_HEAD.test(line) && !VERDICT_TITLE.test(line)) refuse(`${at}: a VERDICT line says APPROVE or REJECT and nothing else`);
-    else if (findingHead(line)) findings.push(findingLine(line, at));
+    else if (findingHead(line)) findings.push(findingLine(line, at, tagged));
     else if (COUNT_LINE.test(line)) counts.push(Number(COUNT_LINE.exec(line)![1]));
     else if (withChecks && checkHead(line)) checks.push(checkLine(line, at));
     else if (criteria && criterionHead(line)) {
@@ -605,18 +647,27 @@ function checkLine(line: string, at: string): PostDeployCheck {
   return { criterion: criterionFrom(m[1], at), by: checkByFrom(m[2], at), text: clip(text, VERDICT_LIMITS.text) };
 }
 
-function findingLine(line: string, at: string): Finding {
+function findingLine(line: string, at: string, tagged: boolean): Finding {
   const m = FINDING_LINE.exec(line);
   if (!m) refuse(`${at}: a FINDING line gives a severity, a file and the finding`);
   const [, severity, token, rest] = m;
   // The file may carry :line or :start-end, and a trailing colon or comma.
   const place = /^(.+?)(?::(\d+)(?:-\d+)?)?$/.exec(token.replace(/^[`'"]+|[`'"]+$/g, "").replace(/[:,]$/, ""));
-  const text = plain(rest.replace(/^[-–—:]\s*/, ""));
+  // The tag is read off the front of the finding's text, only when the reply
+  // was asked for one and the brackets hold a criterion or a cause.
+  const tag = tagged ? TAG.exec(rest) : null;
+  const words = tag ? tag[1].split(/[\s,;]+/).filter(Boolean) : [];
+  const criterionWord = words.find((w) => CRITERION_WORD.test(w));
+  const causeWord = words.find((w) => isKnownCause(w.toLowerCase()));
+  const tagText = tag && (criterionWord !== undefined || causeWord !== undefined) ? tag : null;
+  const text = plain((tagText ? rest.slice(tagText[0].length) : rest).replace(/^[-–—:]\s*/, ""));
   if (!text) refuse(`${at} has no text`);
+  const severityNamed = severityFrom(severity, at);
   return {
     file: fileFrom(place?.[1], at),
     line: place?.[2] ? lineFrom(place[2], at) : null,
-    severity: severityFrom(severity, at),
+    severity: severityNamed,
     text: clip(text, VERDICT_LIMITS.text),
+    ...(tagged ? tagsOf(criterionWord, causeWord, severityNamed) : {}),
   };
 }

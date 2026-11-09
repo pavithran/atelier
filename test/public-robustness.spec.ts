@@ -19,10 +19,11 @@ it("HEAD on public routes answers like GET, not redirecting", async () => {
     expect(res.status).toBe(200);
     expect(res.status).toBe((await call("GET", path)).status);
   }
-  // The front door redirects the same way for HEAD as for GET (t758).
-  for (const path of ["/", "/showcase"]) {
+  // The front door answers the same way for HEAD as for GET: /showcase still
+  // redirects to /home (t758), and / (Today) sends a signed-out visitor to sign in (t562).
+  for (const [path, status] of [["/", 303], ["/showcase", 302]] as const) {
     const head = await call("HEAD", path), get = await call("GET", path);
-    expect(head.status).toBe(302);
+    expect(head.status).toBe(status);
     expect(head.status).toBe(get.status);
     expect(head.headers.get("location")).toBe(get.headers.get("location"));
   }

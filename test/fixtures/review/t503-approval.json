@@ -1,0 +1,18 @@
+{
+  "about": "The real t503 approval. The change is git 3ada95f1 (the merge of main fe536bab into t503): the diff fe536bab..3ada95f1 is t503's own files. The note is Sonnet's approval at 3ada95f1 as the ledger records it. test/review-tests-proof.test.mjs rebuilds the change from those two commits and replays the note.",
+  "base": "fe536bab",
+  "commit": "3ada95f1",
+  "changed": [
+    "cli/commands/decide.mjs",
+    "cli/commands/decisions.mjs",
+    "src/dispatch/on-criteria.ts",
+    "src/ledger.ts",
+    "src/situation.ts",
+    "src/standing.ts",
+    "src/usage/commands/decide.ts",
+    "test/fixtures/cli/usage.json",
+    "test/standing-dispatch.test.ts"
+  ],
+  "approve": true,
+  "note": "I read the dispatch trigger paths, the transaction and re-entry guard, the standing key parsing, and the help and fixture changes against the five criteria, and the 8 clean-clone tests pass; I found no blocking defect, only speed and clarity follow-ups."
+}

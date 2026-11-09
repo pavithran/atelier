@@ -6,7 +6,7 @@ import { signIn } from "./signin.ts";
 // The owner's bar (t543; docs/design/reimagined/, plan.md P1) through the
 // Worker's own fetch handler: every owner route served today answers with
 // the bar, its current item marked, every link in it leads to a page that
-// answers, and the Decisions count is the number the Decisions list counts.
+// answers, and the Decisions count is the number Today's Need you tile counts.
 // The browsing routes (code, log, commit, path history) need Artifacts; the
 // design fixture draws those (test/fixtures/design/fixture.spec.ts).
 
@@ -30,8 +30,7 @@ const badge = (html: string) => /<span class="badge"><span class="visually-hidde
 // and the project tab it makes current (null: none), as plan.md §2 maps them.
 const NAME = "shell-area";
 const ROUTES: [path: string, nav: string | null, tab: string | null][] = [
-  ["/home", "/home", null],
-  ["/decisions", "/decisions", null],
+  ["/", "/decisions", null],
   ["/studio", "/studio", null],
   ["/flow", "/studio", null],
   ["/history", "/studio", null],
@@ -45,6 +44,9 @@ const ROUTES: [path: string, nav: string | null, tab: string | null][] = [
   [`/p/${NAME}/settings`, "/home", `/p/${NAME}/settings`],
   [`/p/${NAME}/t1`, "/home", `/p/${NAME}/tasks`],
 ];
+
+// The addresses Today replaced (t562): each redirects, and the bar's links to them are these.
+const MOVED: Record<string, string> = { "/home": "/", "/now": "/", "/decisions": "/" };
 
 it("every owner route answers with the bar, its own item current, and every link in the bar answers", async () => {
   await project(NAME, "Shell Area");
@@ -76,14 +78,20 @@ it("every owner route answers with the bar, its own item current, and every link
   // Each link answers; Code reads Artifacts, which this pool has no repository in, so it is drawn by the design fixture.
   for (const link of links) {
     if (link.endsWith("/code")) continue;
-    expect((await get(link)).status, link).toBe(200);
+    const res = await get(link);
+    if (link in MOVED) expect([res.status, res.headers.get("location")], link).toEqual([302, MOVED[link]]);
+    else expect(res.status, link).toBe(200);
   }
   // The addresses that moved still answer with their redirect.
+  for (const [from, to] of Object.entries(MOVED)) {
+    const res = await get(from);
+    expect([res.status, res.headers.get("location")], from).toEqual([302, to]);
+  }
   expect((await get("/projects")).headers.get("location")).toBe("/home");
   expect((await get(`/flow?project=${NAME}`)).headers.get("location")).toBe(`/p/${NAME}/flow`);
 });
 
-it("the Decisions badge is the number the Decisions list says waits on the owner, on every page", async () => {
+it("the Decisions badge is the number Today's Need you tile says waits on the owner, on every page", async () => {
   const name = "shell-count";
   await project(name);
   for (const t of ["One", "Two", "Three"]) await L(name).newItem(t, ["src/**"], "owner");
@@ -92,17 +100,17 @@ it("the Decisions badge is the number the Decisions list says waits on the owner
   const cookie = await signIn(TOKEN, testEnv);
   const html = async (path: string) => (await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie } }), testEnv)).text();
 
-  const decisions = await html("/decisions");
-  const listed = Number(/<h1 id="dec-h">Decisions · (\d+)<\/h1>/.exec(decisions)?.[1]);
+  const decisions = await html("/");
+  const listed = Number(/data-tile="need"[^>]*><span class="n">(\d+)<\/span>/.exec(decisions)?.[1]);
   expect(listed).toBeGreaterThanOrEqual(2);
   expect(badge(decisions)).toBe(String(listed));
-  for (const path of ["/home", "/studio", `/p/${name}`, `/p/${name}/settings`, "/models"]) expect(badge(await html(path)), path).toBe(String(listed));
+  for (const path of ["/studio", `/p/${name}`, `/p/${name}/settings`, "/models"]) expect(badge(await html(path)), path).toBe(String(listed));
   // The switcher says what waits in this project beside its name.
   expect(bar(decisions)).toContain(`<a href="/p/${name}">${name} <span class="meta">2 waiting</span></a>`);
 
   // One more waiting, and the count follows on the next page drawn.
   await L(name).block("t3", "owner", "needs the owner");
-  expect(badge(await html("/home"))).toBe(String(listed + 1));
+  expect(badge(await html("/"))).toBe(String(listed + 1));
 });
 
 // The shell's pre-review: the pages a tab holds (Plans, Log, Ship) must stay

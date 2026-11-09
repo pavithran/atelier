@@ -74,6 +74,12 @@ export function fixture(options = {}) {
       async writeHarnessFailure(cwd, failure) { calls.push({ wrote: failure, cwd }); options.marker = failure; },
       async clearHarnessFailure() { calls.push({ cleared: true }); options.marker = null; },
     } : {}),
+    // The marker of a build's committed result (t335), kept in memory when a
+    // test asks: options.runResult is what an earlier run left, or null.
+    ...(options.runResult !== undefined ? {
+      async readRunResult() { if (options.runResult instanceof Error) throw options.runResult; return options.runResult; },
+      async writeRunResult(cwd, result) { calls.push({ wroteResult: result, cwd }); options.runResult = result; },
+    } : {}),
     async removeBrief(brief) { calls.push({ removed: brief.file }); },
     // The builder's commit identity (t451): allowed unless the test says otherwise.
     async identityRefusals() { return options.identityRefusals ?? []; },

@@ -74,8 +74,9 @@ count as merged.
 JSON retains the existing task phases, totals and rates, adding
 `medianMinutesToMerge`, `medianReviewRounds`, and `phaseShares` (fractions from
 zero to one). Each task also has `minutesToMerge`, null until a merge is recorded.
-The only production caller is `cli/commands/flow.mjs`; it uses the same report
-for text and JSON. No generated page consumes this report.
+Production callers are `cli/commands/flow.mjs`, which uses the same report for
+text and JSON, and the Process tab (`GET /p/NAME/process`, `src/process.ts`),
+which draws it as a flowchart: see [process.md](process.md).
 
 ## Attempts and rates
 
@@ -111,3 +112,52 @@ merges to count prints "no merges in the last 7 days" and is not scored.
 A sound merge has no `item.fix_of` linked to it and no red main it caused
 within seven days. The figures come from this ledger's events; the Nov 1-6
 measurements and the plan are not read by the command.
+
+## How the criteria were written (t536)
+
+`atelier flow --bars` also prints, per project and overall, what the findings
+of the last seven days say about the criteria. These figures have no target; they measure
+criteria writing the way the bars measure code. Each line names its source.
+
+Every blocking finding carries the criterion it concerns (a number, or none) and
+a cause from a fixed list:
+
+| Cause | Meaning |
+| --- | --- |
+| `spec` | the criteria left it undecided or impossible as written |
+| `wiring` | built but not connected to its callers, routes or pages |
+| `failure-path` | a crash, retry or error path that is wrong |
+| `coding` | a logic error in the code |
+| `tests` | the tests miss or misjudge the behaviour |
+| `docs` | docs or help that contradict the code |
+
+The reviewer states both in the reply, on the finding line, at no extra call:
+`FINDING: blocking src/example.ts:12 [criterion-2, wiring] What is wrong.` A
+blocking finding missing either is recorded with cause `unknown` and counted,
+not refused. `atelier finding ID --index N --cause CAUSE` corrects a cause
+(`--head` is optional; `--review-seq` or `--reviewer` names the review as for a
+verdict) and records who changed it and from what; the reviewer's record is not edited.
+
+A required check that fails at landing, or on main after a merge, records the
+names of its failing tests against the task as a `check.failed_tests` event,
+with cause `unknown`. The CLI reads the names from the whole output of the
+check, for a landing and for a post-merge check step alike, before any cut of
+the text it sends. The event keeps at most 200 names, the total the output named
+and, beyond 200, `and N more`. Output that no test
+reporter format fits records no names and says so (`namesRead: false`). The
+orchestrator sets the cause with `atelier finding ID --failure N --cause
+CAUSE`, N the event's sequence; a `check.cause` event records the cause it was,
+the cause it is and who set it.
+
+| Figure | Source |
+| --- | --- |
+| findings by cause | `review.rejected` events' blocking findings, a `review.finding_cause` correction in place of the reviewer's cause |
+| spec share | spec findings over the findings whose cause is known |
+| criteria with two or more findings | blocking findings grouped by task and criterion number |
+| repeats | a blocking finding with the file and text (as `findingKey` reads them) of an earlier blocking finding of the same task |
+| failed required checks, by cause | `check.failed_tests` events, with `check.cause` events |
+| tasks whose criteria passed their first criteria review | each task's first `criteria_review.approved` or `criteria_review.rejected` event, in the window |
+
+Findings recorded before causes were asked for show cause `unknown`, are
+counted, and are left out of every share; the report says how many. A criteria
+review's findings are about the criteria themselves and carry neither tag.

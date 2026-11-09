@@ -5,8 +5,9 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
+import { testRunsFor, runReview, runOutcome, verifyBlockers, runRunner, commandFor, execute, prepareReviewDependencies } from "../cli/runner.mjs";
 import { BRIEF_LIMITS } from "../src/review/brief.ts";
+import { cleanTestRuns, testEvidenceVerdict } from "../src/review/verify.ts";
 import { VERDICT_LIMITS } from "../src/review/verdict.ts";
 import { REVIEW_RENEW_MS, cleanVerification } from "../src/rules.ts";
 // What a run report's facts point to: the run's text, kept in a log on the runner's own machine (round 10).
@@ -141,7 +142,7 @@ test("runReview posts a rejection with its findings, and releases the request wh
   const posted = calls.find((c) => c.argv && c.argv[0] === "review").argv;
   assert.ok(posted.includes("--reject"));
   assert.ok(posted.includes("--findings"));
-  assert.ok(posted.includes(JSON.stringify([{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." }])));
+  assert.ok(posted.includes(JSON.stringify([{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried.", cause: "unknown" }])));
 
   // A harness that writes no valid verdict keeps the reply on the task (t407)
   // and releases the request.
@@ -154,6 +155,120 @@ test("runReview posts a rejection with its findings, and releases the request wh
 // t325: the claim's part carries acceptance criteria, so the reply must prove
 // each with a CRITERION line; an approval without the proofs is not a verdict,
 // and the request is released with the reason for another reviewer to take.
+// t523: the server refuses an approval without a result for each covering test
+// at the head, so the runner's review job posts the results its own run of
+// them produced, or says they could not run.
+test("runReview posts an approval with the results of its own run of the covering tests (t523)", async () => {
+  const required = { names: ["test/a.test.mjs", "test/b.test.mjs"], why: "the declared map selects them", full: false, run: "node --test {tests}", check: "npm test" };
+  const run = (status) => ({ status, command: "x", files: [] });
+  const approve = async (evidence, over = {}) => {
+    const { io, calls } = fixture({ claim: { ...claimed, required, ...over } });
+    io.runnerEvidence = async (args) => { calls.push({ evidenceArgs: args }); return evidence; };
+    const state = await runReview(assignment, config, "home:studio", io);
+    const argv = calls.find((c) => c.argv?.[0] === "review")?.argv;
+    return { state, calls, tests: argv && argv.includes("--tests") ? JSON.parse(argv[argv.indexOf("--tests") + 1]) : undefined, argv };
+  };
+  const result = (test, r, head = H1) => ({ test, head, result: r });
+
+  const passed = await approve({ head: H1, tests: { status: "pass", files: ["test/c.test.mjs"] }, typecheck: run("pass"), covering: run("pass") });
+  assert.equal(passed.state.phase, "reviewed");
+  assert.deepEqual(passed.tests, [result("test/a.test.mjs", "passed"), result("test/b.test.mjs", "passed"), result("test/c.test.mjs", "passed")]);
+  assert.deepEqual(passed.calls.find((c) => c.evidenceArgs).evidenceArgs.required, required, "the run is told which tests cover the change");
+
+  const failed = await approve({ head: H1, tests: { status: "none" }, typecheck: run("pass"), covering: run("fail") });
+  assert.deepEqual(failed.tests, [result("test/a.test.mjs", "failed"), result("test/b.test.mjs", "failed")]);
+
+  const unrun = await approve({ head: H1, tests: { status: "none" }, typecheck: run("pass"), covering: run("not-run") });
+  assert.deepEqual(unrun.tests, [result("test/a.test.mjs", "could-not-run"), result("test/b.test.mjs", "could-not-run")]);
+
+  const lost = await approve(null);
+  assert.deepEqual(lost.tests, [result("test/a.test.mjs", "could-not-run"), result("test/b.test.mjs", "could-not-run")], "no run at all is said, not left out");
+  const other = await approve({ head: H0, tests: { status: "pass", files: [] }, typecheck: run("pass"), covering: run("pass") });
+  assert.deepEqual(other.tests, [result("test/a.test.mjs", "could-not-run"), result("test/b.test.mjs", "could-not-run")], "a run of another head proves nothing");
+
+  const full = await approve({ head: H1, tests: { status: "none" }, typecheck: run("pass"), covering: run("pass") }, { required: { ...required, names: ["npm test"], full: true } });
+  assert.deepEqual(full.tests, [result("npm test", "passed")]);
+
+  // A project that declares nothing: the changed tests the run found are the results.
+  const bare = await approve({ head: H1, tests: { status: "pass", files: ["test/c.test.mjs"] }, typecheck: run("pass") }, { required: { names: null, why: "none declared", full: false, run: null, check: null } });
+  assert.deepEqual(bare.tests, [result("test/c.test.mjs", "passed")]);
+
+  // A rejection and a claim with no requirement post no results.
+  assert.equal((await approve({ head: H1, tests: { status: "pass", files: [] }, typecheck: run("pass") }, { required: undefined })).tests, undefined);
+});
+
+test("runReview with the full-suite fallback posts only the full-suite result, however many test files changed (t523)", async () => {
+  const files = Array.from({ length: 201 }, (_, i) => `test/f${String(i).padStart(3, "0")}.test.mjs`);
+  const required = { names: ["npm test"], why: "the map selects over 200 tests", full: true, run: "node --test {tests}", check: "npm test" };
+  const { io, calls } = fixture({ claim: { ...claimed, required } });
+  io.runnerEvidence = async () => ({ head: H1, tests: { status: "pass", files }, typecheck: { status: "pass", command: "x", files: [] }, covering: { status: "pass", command: "npm test", files: [] } });
+  const state = await runReview(assignment, config, "home:studio", io);
+  assert.equal(state.phase, "reviewed");
+  const argv = calls.find((c) => c.argv?.[0] === "review").argv;
+  const sent = JSON.parse(argv[argv.indexOf("--tests") + 1]);
+  assert.deepEqual(sent, [{ test: "npm test", head: H1, result: "passed" }]);
+  assert.equal(cleanTestRuns(sent).length, 1);
+});
+
+test("testRunsFor keeps every required name and stays within the evidence cap in mapped mode (t523)", () => {
+  const names = (n) => Array.from({ length: n }, (_, i) => `test/r${String(i).padStart(3, "0")}.test.mjs`);
+  const extra = (n) => Array.from({ length: n }, (_, i) => `test/x${i}.test.mjs`);
+  const evidence = (files, status = "pass") => ({ head: H1, tests: { status, files }, covering: { status: "pass" } });
+  const req = (n) => ({ names: names(n), full: false });
+  const sentFor = (n, e, status) => testRunsFor(evidence(e, status), H1, req(n));
+
+  for (const [n, e] of [[200, 1], [200, 3], [199, 1], [199, 3], [10, 2]]) {
+    const sent = sentFor(n, extra(e));
+    assert.ok(sent.length <= 200, `${n}+${e}: ${sent.length} entries`);
+    assert.equal(cleanTestRuns(sent).length, sent.length);
+    for (const name of names(n)) assert.ok(sent.some((s) => s.test === name && s.result === "passed"), `${n}+${e}: ${name} sent`);
+    assert.ok(sent.every((s) => s.result === "passed"));
+  }
+  // Under the cap nothing changes: one entry per changed test.
+  assert.equal(sentFor(10, extra(2)).length, 12);
+  assert.ok(sentFor(10, extra(2)).some((s) => s.test === "test/x0.test.mjs"));
+  // Past the cap with room for one: the extras are one entry carrying their status.
+  const folded = sentFor(199, extra(3), "fail");
+  assert.equal(folded.length, 200);
+  assert.equal(folded.filter((s) => s.result === "failed").length, 1);
+  // With no room at all, a failing extra run still keeps the approval from passing.
+  const full = sentFor(200, extra(1), "fail");
+  assert.equal(full.length, 200);
+  assert.ok(full.every((s) => s.result === "failed"));
+});
+
+test("testRunsFor never lets a pass hide a failed result for the same test at that head, and the server refuses it (t523)", () => {
+  const ns = (n, p = "r") => Array.from({ length: n }, (_, i) => `test/${p}${String(i).padStart(3, "0")}.test.mjs`);
+  const map = (names) => ({ check: "npm test", map: [{ paths: ["src/**"], tests: names }] });
+  const rows = [
+    // [label, required, changed-test files, changed-test status, covering status, expected per-name results, server accepts]
+    ["overlap fail+pass", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "fail", "pass", { "test/a.test.mjs": "failed" }, false],
+    ["overlap pass+fail", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "pass", "fail", { "test/a.test.mjs": "failed" }, false],
+    ["overlap pass+pass", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "pass", "pass", { "test/a.test.mjs": "passed" }, true],
+    ["overlap not-run+pass", { names: ["test/a.test.mjs"], full: false }, ["test/a.test.mjs"], "not-run", "pass", { "test/a.test.mjs": "could-not-run" }, false],
+    ["partial overlap", { names: ["test/a.test.mjs", "test/b.test.mjs"], full: false }, ["test/a.test.mjs", "test/c.test.mjs"], "fail", "pass", { "test/a.test.mjs": "failed", "test/b.test.mjs": "passed", "test/c.test.mjs": "failed" }, false],
+    ["disjoint fail", { names: ["test/a.test.mjs"], full: false }, ["test/c.test.mjs"], "fail", "pass", { "test/a.test.mjs": "passed", "test/c.test.mjs": "failed" }, false],
+    ["disjoint pass", { names: ["test/a.test.mjs"], full: false }, ["test/c.test.mjs"], "pass", "pass", { "test/a.test.mjs": "passed", "test/c.test.mjs": "passed" }, true],
+    ["200 covering + 1 outside, fail", { names: ns(200), full: false }, ["test/x.test.mjs"], "fail", "pass", Object.fromEntries(ns(200).map((n) => [n, "failed"])), false],
+    ["200 covering + 1 outside, pass", { names: ns(200), full: false }, ["test/x.test.mjs"], "pass", "pass", Object.fromEntries(ns(200).map((n) => [n, "passed"])), true],
+    ["200 covering, one overlapping + 1 outside, fail", { names: ns(200), full: false }, [ns(200)[7], "test/x.test.mjs"], "fail", "pass", Object.fromEntries(ns(200).map((n) => [n, "failed"])), false],
+    ["full suite, changed test failed", { names: ["npm test"], full: true }, ["test/a.test.mjs"], "fail", "pass", { "npm test": "failed" }, false],
+    ["full suite, all passed", { names: ["npm test"], full: true }, ns(201, "f"), "pass", "pass", { "npm test": "passed" }, true],
+  ];
+  for (const [label, required, files, status, covering, expected, accepts] of rows) {
+    const sent = testRunsFor({ head: H1, tests: { status, files }, covering: { status: covering } }, H1, required);
+    assert.ok(sent.length <= 200, `${label}: ${sent.length} entries`);
+    assert.equal(cleanTestRuns(sent).length, sent.length, label);
+    const got = {};
+    for (const s of sent) { assert.ok(!(s.test in got), `${label}: ${s.test} sent twice`); got[s.test] = s.result; }
+    for (const [name, result] of Object.entries(expected)) assert.equal(got[name], result, `${label}: ${name}`);
+    const verdict = required.full
+      ? testEvidenceVerdict({ approve: true, head: H1, runs: sent, affected: undefined, changed: ["src/a.ts"], checks: ["npm test"] })
+      : testEvidenceVerdict({ approve: true, head: H1, runs: sent, affected: map(required.names), changed: ["src/a.ts"] });
+    assert.equal(verdict.ok, accepts, `${label}: ${JSON.stringify(verdict)}`);
+  }
+});
+
 test("runReview releases the request when an approval proves no acceptance criterion, and posts one that does", async () => {
   const bare = fixture({ verdict: "VERDICT: APPROVE\nSUMMARY: Read the diff; it looks right.\nBLOCKING: 0" });
   const state = await runReview(assignment, config, "home:studio", bare.io);
@@ -2013,7 +2128,7 @@ test("a blocking finding the check does not confirm is recorded as unverified an
     assert.equal(state.verdict, "approve", "no blocking finding stood");
     const argv = posted(calls);
     assert.ok(argv.includes("--approve") && !argv.includes("--reject"));
-    assert.deepEqual(findingsOf(argv), [{ file: "src/review/needed.ts", line: 11, severity: "follow-up", text: "A lapsed claim is never retried.", label: "unverified" }]);
+    assert.deepEqual(findingsOf(argv), [{ file: "src/review/needed.ts", line: 11, severity: "follow-up", text: "A lapsed claim is never retried.", cause: "unknown", label: "unverified" }]);
     const note = argv[argv.indexOf("--note") + 1];
     assert.match(note, /The reviewer rejected, but no blocking finding stood \(0 already answered, 0 pre-existing, 1 unverified\)/);
     assert.match(note, /The reviewer's summary: One bug\./);
@@ -2148,7 +2263,7 @@ test("the check is run by another model of another family when the runner has on
 // developer already answered.
 const H_EARLIER = "c".repeat(40);
 const earlier = { itemId: "t21", by: "codex/gpt-6-astra", head: H_EARLIER, approve: false, note: "One bug.", at: "2026-10-05T10:00:00.000Z", criteria: "c",
-  findings: [{ file: "src/review/needed.ts", line: 11, severity: "blocking", text: "A lapsed claim is never retried." }] };
+  findings: [{ file: "src/review/needed.ts", line: 11, severity: "blocking", text: "A lapsed claim is never retried.", cause: "unknown" }] };
 const reReviewClaim = (verdicts = []) => ({ ...claimed, need: { ...claimed.need, kind: "re-review", round: 2, previous: [earlier], previousReviewer: earlier.by },
   events: verdicts.map((v, i) => ({ seq: 5 + i, itemId: "t21", at: "2026-10-05T11:00:00.000Z", actor: "owner", kind: "review.finding", data: v })) });
 

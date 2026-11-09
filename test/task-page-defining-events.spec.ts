@@ -103,24 +103,28 @@ const spy = () => {
   return { opened, read, env: { ...env, ATELIER_TOKEN: TOKEN, REPOS } as unknown as typeof env };
 };
 const get = async (path: string, bindings: typeof env, cookie: string) => (await worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie } }), bindings)).text();
-// What each page says of a diff it could not read.
-const UNREAD = { task: "The diff could not be read from the repository just now", decisions: "Could not be read just now" };
+// The old Decisions address leads to the task page (t562).
+const decisionsLeads = async (name: string, id: string, cookie: string) => {
+  const res = await worker.fetch(new Request(`https://atelier.test/decisions?project=${name}&task=${id}`, { headers: { cookie }, redirect: "manual" }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+  return [res.status, res.headers.get("location")];
+};
+// What the task page says of a diff it could not read.
+const UNREAD = "The diff could not be read from the repository just now";
 
-it("the task page and the decisions page diff a merged task from its merge beyond the window", async () => {
+it("the task page diffs a merged task from its merge beyond the window, and the decisions address leads to it", async () => {
   const name = "defining-pages-merged";
   const L = await project(name);
   const item = await L.newItem("Merged long ago", ["src/**"], "owner", { accept: ["Works"] });
   await seed(name, item.id, [{ kind: "item.merged", data: { mergeCommit: M1, head: C1 } }], { state: "merged", head: C1, accepted_head: C1 });
   const cookie = await signIn(TOKEN, { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
-  for (const [path, said] of [[`/p/${name}/${item.id}`, UNREAD.task], [`/decisions?project=${name}&task=${item.id}`, UNREAD.decisions]]) {
-    const s = spy();
-    expect(await get(path, s.env, cookie), path).toContain(said);
-    expect(s.opened, path).toContain(`${name}--baseline`);
-    expect(s.read, path).toContain(M1);
-  }
+  const s = spy();
+  expect(await get(`/p/${name}/${item.id}`, s.env, cookie)).toContain(UNREAD);
+  expect(s.opened).toContain(`${name}--baseline`);
+  expect(s.read).toContain(M1);
+  expect(await decisionsLeads(name, item.id, cookie)).toEqual([302, `/p/${name}/${item.id}`]);
 });
 
-it("a plan part integrated beyond the window is diffed from the plan branch at the commit it went in as, on both pages", async () => {
+it("a plan part integrated beyond the window is diffed from the plan branch at the commit it went in as, and the decisions address leads to that page", async () => {
   const name = "defining-pages-part";
   const L = await project(name);
   const plan = await L.newItem("The plan", ["src/**"], "owner", { accept: ["Works"] });
@@ -142,18 +146,14 @@ it("a plan part integrated beyond the window is diffed from the plan branch at t
 
   const task = spy();
   const page = await get(`/p/${name}/${part.id}`, task.env, cookie);
-  expect(page).toContain(UNREAD.task);
+  expect(page).toContain(UNREAD);
   expect(task.opened).toContain(`${name}--plan`);
   expect(task.read).toContain(M2);
   expect(task.read).not.toContain(M1);
   // The review of the landed head, beside the reviews of the item's own.
   expect(page).toContain("Audit of the landed integration");
 
-  const decisions = spy();
-  expect(await get(`/decisions?project=${name}&task=${part.id}`, decisions.env, cookie)).toContain(UNREAD.decisions);
-  expect(decisions.opened).toContain(`${name}--plan`);
-  expect(decisions.read).toContain(M2);
-  expect(decisions.read).not.toContain(M1);
+  expect(await decisionsLeads(name, part.id, cookie)).toEqual([302, `/p/${name}/${part.id}`]);
 });
 
 it("a ready report stale by an event after it stays hidden once both are buried", async () => {

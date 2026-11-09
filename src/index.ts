@@ -16,14 +16,14 @@ import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type Ledg
 import { accessConfig, accessSettings, accessVouches } from "./access.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "./route-level.ts";
 import { appliesReason, parseCheckPaths, parseDeclarations, receiptBinding, refusalOf, refusalText } from "./checks.ts";
-import { parseAffectedTests } from "./affected-tests.ts";
+import { parseAffectedTests, requiredTests } from "./affected-tests.ts";
 import { checkRemote, agentLine, branchHost, DEFAULT_OWNER, DEVELOPER_BRANCH_PREFIX, developerBranch, parseRiskReviews, assertRevision, parseRuleError, repoName, RuleError, sameActor, validActor, itemFields, titleLine, cleanVerification, overrideConfirmationHint, fastModeConfirmationHint, fastModePageHint, STANDARD_REVIEWER_PROJECT, standardAdmissions, type ReviewerAdmission, type AcceptedAgainstMain, type Evidence, type Item, type OwnerFactor, type RetentionRead } from "./rules";
 import { briefFor, cleanSummary } from "./brief.ts";
 import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
-import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
+import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectProcess, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderAccessRefusal, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
 import { cleanEntry, cleanModelSet, cleanNote, cleanStatus, POOL_FAMILIES, redactKeys, type ModelEntry, type PoolFamily } from "./models/pool";
@@ -59,6 +59,7 @@ import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaime
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor, type Attention } from "./attention.ts";
+import { buildToday, renderToday, todayInputsOf, type TodayLedger } from "./today.ts";
 import { readAccepted } from "./accepted-main.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -72,6 +73,7 @@ import { csp, LIVE_SCRIPT, LIVE_SCRIPT_TYPE, newNonce } from "./live.ts";
 import { actionForm, actionsApi } from "./actions-api.ts";
 import { errorLine, RETRY_AFTER, retryableByRuntime } from "./transient.ts";
 import { renderActions } from "./actions-page.ts";
+import { buildProcess, parseStat, parseWindow, readProcessEvents, renderProcess, PROCESS_CSS } from "./process.ts";
 import { buildNow, readEvents, type NowProject } from "./now.ts";
 
 export { Ledger };
@@ -653,6 +655,9 @@ function assertNewName(name: string): void {
 // A page reached through a name the project no longer has moves to the name
 // it has now, with the rest of its path and its query. Permanent, but not
 // cached: a rename can be reversed, and a cached redirect each way would loop.
+// A temporary redirect to a path of this site.
+const sentTo = (path: string) => new Response(null, { status: 302, headers: { location: path, "cache-control": "no-store" } });
+
 function movedTo(url: URL, parts: string[]): Response {
   return new Response(null, {
     status: 301,
@@ -951,6 +956,35 @@ export async function changedSinceBase(env: Env, workspace: string, head: string
     return await changedPaths(pairReader(r, against), from.treeHash, tip.treeHash);
   } catch (err) {
     console.error(errorLine(`changed files of ${workspace}`, err));
+    return null;
+  }
+}
+
+// The files tracked at `head` in a workspace, which a declared test glob is
+// expanded against when an approval's test results are judged (t523). Null
+// when the commit or a tree cannot be read, or the tree is past the cap: the
+// approval then needs the full suite rather than a guess at the glob.
+const HEAD_FILES_MAX = 50_000;
+const hasTestGlob = (a: { map?: { tests: string[] }[] } | undefined) => !!a?.map?.some((e) => e.tests.some((t) => /[*?[]/.test(t)));
+export async function filesAtHead(env: Env, workspace: string, head: string): Promise<string[] | null> {
+  try {
+    using r = await env.REPOS.get(workspace);
+    const [tip] = await r.log({ ref: head, limit: 1 });
+    if (!tip || tip.hash !== head) return null;
+    const out: string[] = [];
+    const walk = async (tree: string, prefix: string): Promise<boolean> => {
+      const entries = await r.readTree(tree);
+      if (!entries) return false;
+      for (const e of entries) {
+        if (e.type === "tree") { if (!await walk(e.hash, `${prefix}${e.name}/`)) return false; }
+        else out.push(`${prefix}${e.name}`);
+        if (out.length > HEAD_FILES_MAX) return false;
+      }
+      return true;
+    };
+    return await walk(tip.treeHash, "") ? out : null;
+  } catch (err) {
+    console.error(errorLine(`files of ${workspace} at ${head}`, err));
     return null;
   }
 }
@@ -1851,9 +1885,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       catch { unreadable.push(p.name); return []; }
     }));
     const read = Date.now();
-    // A runner's own held jobs lead, then the waiting work by dispatch age:
+    // A runner's own held jobs lead, then the waiting work by dispatch age,
+    // a fix round (a task claimed before) ahead of never-built work (t539):
     // the claim a dead run left behind is settled before new work starts.
+    const fixRound = (item: object) => Number((item as { everClaimed?: boolean }).everClaimed === true);
     const queued = lists.flat().sort((a, b) => Number(isHeld(b.item)) - Number(isHeld(a.item)) ||
+      fixRound(b.item) - fixRound(a.item) ||
       (a.item.dispatch?.at ?? "").localeCompare(b.item.dispatch?.at ?? ""));
     const result = offer && body.why !== true
       ? queued.flatMap(({ project, item, ...mark }) => {
@@ -2346,6 +2383,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     requireOwner(env, actor);
     return json(await L.recordDeploy(actor, body), 201);
   }
+  // The notice of an automatic revert (t524): one revert.notice event per
+  // reverted merge, however often it is posted.
+  if (parts[2] === "revert-notices" && parts.length === 3 && m === "POST") {
+    requireOwner(env, actor);
+    return json(await L.recordRevertNotice(actor, body), 201);
+  }
   if (parts[2] === "post-merge" && parts.length === 4) {
     const item = parts[3];
     if (m === "GET") return json({ run: await L.postMergeRun(item) });
@@ -2383,7 +2426,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!response.ok || v.commit !== run.after || !Number.isInteger(v.routeLevel) || Number(v.routeLevel) < requiredLevel) throw new RuleError("deployment_unverified", "deployment does not report the pinned commit and required route level", 409);
       deployment = { commit: String(v.commit), routeLevel: Number(v.routeLevel) };
     }
-    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
+    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, failingTests: body.failingTests, failedTotal: body.failedTotal, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
   }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
   // in progress carried between the developer's Macs, as dev/NAME in the
@@ -2880,14 +2923,19 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         assertRevision(item, String(body.head ?? ""));
         if (item.workspace && await headOf(env, item.workspace) !== item.head) throw new RuleError("stale_head", "the workspace changed; record the push and review again", 409, "run atelier push, then ask for the review again");
       }
+      // The head's files are read here, from the repository, only when the
+      // declared map has a glob to expand; never from the request.
+      const needsFiles = !!body.approve && item.state !== "merged" && !!item.workspace && hasTestGlob((await L.project()).policy.affectedTests);
       await L.addReview({
         itemId: id, by: actor, head: String(body.head ?? item.head ?? ""),
+        ...(needsFiles ? { headFiles: await filesAtHead(env, item.workspace!, String(item.head)) } : {}),
         // The criteria binding is the reviewer's own, as given; never the item's.
         ...(body.criteria !== undefined ? { criteria: String(body.criteria) } : {}),
         ...(body.request !== undefined ? { request: Number(body.request) } : {}),
         approve: Boolean(body.approve), note: String(body.note ?? ""), at: new Date().toISOString(),
         ...(body.findings !== undefined ? { findings: body.findings } : {}),
         ...(body.verification !== undefined ? { verification: cleanVerification(body.verification) } : {}),
+        ...(body.tests !== undefined ? { tests: body.tests as never } : {}),
         // A pre-review verdict is judged against main's head as the baseline
         // holds it now, which only the Worker can read (t524).
         ...(isPrereviewRequest(Number(body.request)) ? { mainNow: await mainHeadOf(env, L) } : {}),
@@ -2913,6 +2961,12 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // runner, and the brief carries it instead of the diff's text. The
       // reviewer reads the whole diff in the clone as ever (.scratch/, t244).
       const diffRef = await storedReviewDiff(env, L, claim, ref.key, actor, !!c.token);
+      // The tests an approval of this head must show passing, so the runner
+      // runs and reports them (t523). A post-merge audit is asked for none.
+      const affected = (await L.project()).policy.affectedTests;
+      const need = claim.item.state === "merged" ? null : requiredTests(affected, claim.need?.changedPaths, hasTestGlob(affected) && claim.item.workspace ? await filesAtHead(env, claim.item.workspace, claim.head) : null, (await L.project()).policy.checks);
+      const required = need ? { names: need.names, why: need.why, full: need.full, run: affected?.run ?? null, check: need.check ?? affected?.check ?? null } : undefined;
+      claim = { ...claim, ...(required ? { required } : {}) };
       // The review job clones the task read-only, so the claim also carries a
       // read grant, which reads both its branch (or, once landed, the branch
       // it landed on) and the branch it merges into (the plan's integration
@@ -3451,6 +3505,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { head, index, verdict, note } = cleanFinding(body);
       const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
       return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
+    }
+    // The cause of a blocking finding, corrected (t536). Owner only, like a
+    // verdict on a finding; the cause is the caller's word, never read from
+    // the review, and the review's own record is not edited.
+    case "finding-cause": {
+      requireOwner(env, actor);
+      return json({ id, ...await L.setFindingCause(id, actor, body.head === undefined ? null : String(body.head), Number(body.index), String(body.cause ?? ""), { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null), ...(c.acting ? { acting: c.acting } : {}) }, 201);
+    }
+    // The cause of a failed required check (t536), set by the orchestrator.
+    case "check-cause": {
+      requireOwner(env, actor);
+      return json({ id, ...await L.setCheckCause(id, actor, Number(body.failure), String(body.cause ?? ""), c.acting ?? null), ...(c.acting ? { acting: c.acting } : {}) }, 201);
     }
     // Criteria review (t438, src/review/criteria.ts): the owner asks for a
     // review of the task's acceptance criteria, naming the reviewer or
@@ -4326,12 +4392,21 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const name = c.url.searchParams.get("project") ?? "";
     return new Response(null, { status: 301, headers: { location: `/p/${encodeURIComponent(name)}/flow` } });
   }
-  if (parts[0] === "home" && parts.length === 1) return await homePage(c);
+  // Today (t562) is the front page; Home, Now and Decisions lead to it, a task's decision to its page.
+  if (parts.length === 0) {
+    const now = new Date();
+    const projects = await index(env).projects();
+    const inputs = await todayInputsOf({ projects: projects.map((p) => ({ name: p.name, title: titleOf(p), ledger: ledgerOf(env, p) as unknown as TodayLedger })), pool: await poolOf(env), offers: await offersOf(env), owner: ownerActor(env) }, now);
+    return html(renderToday(buildToday(inputs, now), ownerName(env), live), 200, live.nonce);
+  }
+  if ((parts[0] === "home" || parts[0] === "now") && parts.length === 1) return sentTo("/");
   if (parts[0] === "history") return await historyPage(c);
   if (parts[0] === "studio") return await studioPage(c);
-  if (parts[0] === "now" && parts.length === 1) return html(renderNow(await nowViewOf(env, new Date()), ownerName(env), live), 200, live.nonce);
   if (parts[0] === "flow") return await flowPage(c, live);
-  if (parts[0] === "decisions") return await decisionsPage(c, live);
+  if (parts[0] === "decisions") {
+    const [project, task] = [c.url.searchParams.get("project") ?? "", c.url.searchParams.get("task") ?? ""];
+    return sentTo(project && project !== "." && project !== ".." && /^t\d+$/.test(task) ? `/p/${encodeURIComponent(project)}/${task}` : "/");
+  }
   if (parts[0] === "p" && parts.length >= 2) return await projectArea(c, parts, live, nonce);
   return html("Not found.", 404);
 }
@@ -4592,7 +4667,7 @@ async function decisionsPage(c: Ctx, live: { nonce: string; refresh: number }): 
 
 // The tabs a project's area holds beyond the pages that browse it. A task id
 // cannot clash with one (tN), so the order here decides.
-const PROJECT_AREA_TABS = new Set(["tasks", "flow", "plans", "ship", "settings", "showcase"]);
+const PROJECT_AREA_TABS = new Set(["tasks", "flow", "process", "plans", "ship", "settings", "showcase"]);
 
 async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refresh: number }, nonce: string): Promise<Response> {
   const { env } = c;
@@ -4632,6 +4707,14 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
         const story = buildStory(p.name, items, events, ownerActor(env), events.length >= STORY_EVENTS, titleOf(p));
         const imported = await importedFor(env, p, firstTaskAt(items));
         return html(renderProjectFlow(p, story, ownerActor(env), ownerName(env), imported ? new Map([[p.name, imported]]) : new Map(), live), 200, nonce);
+      }
+      case "process": {
+        // The developer's page, like the rest of the area. ?since and ?stat
+        // choose the window and the statistic; any other value is the default.
+        const windowId = parseWindow(c.url.searchParams.get("since")), now = Date.now();
+        const events = await readProcessEvents((before) => L.events(undefined, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, (id) => readEvents((before) => L.events(id, EVENTS_PAGE, before) as unknown as Promise<LedgerEvent[]>, EVENTS_PAGE), EVENTS_PAGE, now, windowId);
+        const model = buildProcess(p.name, events, now, windowId);
+        return html(renderProjectProcess(p, renderProcess(model, parseStat(c.url.searchParams.get("stat")), `/p/${encodeURIComponent(p.name)}/process`), PROCESS_CSS, ownerName(env)), 200, nonce);
       }
       case "plans": {
         const items = await L.items();
@@ -4754,10 +4837,9 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      // The front door and the old /showcase lead to the projects list at
-      // /home, answered before the sign-in check; a visitor who is not signed
-      // in meets the sign-in there, as at any owner page (t758).
-      if ((pathname === "/" || pathname === "/showcase") && (req.method === "GET" || req.method === "HEAD")) return Response.redirect(new URL("/home", url).toString(), 302);
+      // The old /showcase leads to /home (and so to Today), answered before
+      // the sign-in check. The front door is Today itself, behind the check.
+      if (pathname === "/showcase" && (req.method === "GET" || req.method === "HEAD")) return Response.redirect(new URL("/home", url).toString(), 302);
       // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
       if (pathname === "/live.js" && (req.method === "GET" || req.method === "HEAD")) {
         return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });
@@ -4781,11 +4863,11 @@ export default {
       const accessConfigured = accessConfig(env as unknown as Record<string, string | undefined>);
       const guarded = parts[0] !== "api" && pathname !== "/logout";
       if (accessConfigured.state === "broken" && guarded) {
-        return html(renderError(`This server's Cloudflare Access settings are incomplete or unusable, so the developer's pages are refused until they are fixed: ${accessConfigured.problem}`, ""), 503);
+        return html(renderAccessRefusal(`This server's Cloudflare Access settings are incomplete or unusable, so the developer's pages are refused until they are fixed: ${accessConfigured.problem}`), 503);
       }
       const access = accessConfigured.state === "on" ? accessConfigured.settings : null;
       if (access && guarded && !(await accessVouches(req, access))) {
-        return html(renderError("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", ""), 401);
+        return html(renderAccessRefusal("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry."), 401);
       }
       if (pathname === "/login") {
         // Behind Access the assertion just verified is the owner's sign-in,

@@ -17,6 +17,14 @@ export default async function reviewCommand() {
     if (typeof args.verification !== "string" || !args.verification.trim()) die("--verification needs a JSON object");
     try { verification = JSON.parse(args.verification); } catch { die("--verification is not valid JSON"); }
   }
+  // The tests the approval rests on (t523): what the reviewer ran at the head
+  // and what happened, as {test, head, result} entries. The server decides
+  // whether they cover the change; an approval without them is refused.
+  let tests;
+  if (args.tests !== undefined) {
+    if (typeof args.tests !== "string" || !args.tests.trim()) die("--tests needs a JSON list of {test, head, result}");
+    try { tests = JSON.parse(args.tests); } catch { die("--tests is not valid JSON"); }
+  }
   // The criteria binding is the one the reviewer read, never the task's
   // now: a verdict without it is refused by the server, with how to refresh.
   if (args.criteria !== undefined && !/^[a-f0-9]{64}$/.test(String(args.criteria))) die("--criteria needs the 64-digit binding atelier show prints");
@@ -32,12 +40,19 @@ export default async function reviewCommand() {
       console.log(`Answering review request ${requestNumber}, the one this machine last claimed for ${id} as ${as} (at ${remembered.at}); name another with --request N.`);
     }
   }
-  await call("POST", `${I(name, id)}/review`, {
+  const answer = await call("POST", `${I(name, id)}/review`, {
     approve: args.approve === true, note: args.note ?? "", head: args.head ?? d.item.head,
     ...(args.criteria !== undefined ? { criteria: String(args.criteria) } : {}),
     ...(requestNumber !== undefined ? { request: requestNumber } : {}),
     ...(findings !== undefined ? { findings } : {}),
     ...(verification !== undefined ? { verification } : {}),
+    ...(tests !== undefined ? { tests } : {}),
   }, as);
+  // Tests that could not run record no verdict: the task waits for a review that ran them.
+  const unrun = args.approve === true && (answer?.events ?? []).filter((e) => e.kind === "review.tests_unrun" && e.actor === as && e.data?.head === d.item.head).at(-1);
+  if (unrun) {
+    console.log(`Recorded that the tests could not run for ${id} @ ${short(d.item.head)} as ${as} (${(unrun.data.tests ?? []).join(", ")}). No approval is recorded and the task waits for a review that ran them.`);
+    return;
+  }
   console.log(`${args.approve ? "Approved" : "Rejected"} ${id} @ ${short(d.item.head)} as ${as}.`);
 }

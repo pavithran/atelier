@@ -17,6 +17,7 @@ import { after, before, test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { ledgerFile } from "../src/runtime/ledger-file.mjs";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-proof.ts";
 import { makeV1History } from "./helpers/v1-history.mjs";
 import { criteriaOf } from "../src/criteria.ts";
 import { dumpChecksum } from "../src/rules.ts";

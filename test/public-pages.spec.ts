@@ -18,9 +18,9 @@ const time = "2026-10-03T12:00:00Z";
 // Seen on 2026-10-17: the front door served a public showcase page; PAVI
 // retired it. A visitor to / or /showcase is sent to /home (302), and /home
 // shows the sign-in to anyone not signed in.
-it("/ and /showcase answer 302 to /home, for GET and HEAD, signed in or not", async () => {
+it("/showcase answers 302 to /home, for GET and HEAD, signed in or not; / is Today, behind sign-in", async () => {
   const cookie = await signIn(TOKEN, testEnv);
-  for (const path of ["/", "/showcase", "/showcase/"]) {
+  for (const path of ["/showcase", "/showcase/"]) {
     for (const method of ["GET", "HEAD"]) {
       for (const headers of [{} as Record<string, string>, { cookie }]) {
         const res = await worker.fetch(new Request(`https://atelier.test${path}`, { method, headers }), testEnv);
@@ -29,11 +29,23 @@ it("/ and /showcase answer 302 to /home, for GET and HEAD, signed in or not", as
       }
     }
   }
+  // / is no longer a redirect to /home: this server has no Access, so a visitor
+  // with no session is sent to sign in, and a signed-in session gets Today.
+  for (const method of ["GET", "HEAD"]) {
+    const out = await worker.fetch(new Request("https://atelier.test/", { method }), testEnv);
+    expect(out.status, `${method} / signed out`).toBe(303);
+    expect(out.headers.get("location")).toBe("https://atelier.test/login");
+  }
+  // (A signed-in HEAD is not probed: no owner page answers one with 200 today.)
+  const inn = await worker.fetch(new Request("https://atelier.test/", { headers: { cookie } }), testEnv);
+  expect(inn.status).toBe(200);
+  expect(await inn.text()).toContain("<title>Today · Atelier</title>");
 });
 
 it("a visitor who follows the redirect meets the sign-in, with no showcase in it and no link to /showcase", async () => {
-  const home = await worker.fetch(new Request("https://atelier.test/home"), testEnv);
-  expect(home.status).toBeLessThan(400);
+  const home = await worker.fetch(new Request("https://atelier.test/home", { redirect: "manual" }), testEnv);
+  expect(home.status).toBe(303);
+  expect(home.headers.get("location")).toBe("https://atelier.test/login");
   const login = await worker.fetch(new Request("https://atelier.test/login"), testEnv);
   const body = await login.text();
   expect(body).not.toContain("login-backdrop");
@@ -45,7 +57,9 @@ it("a visitor who follows the redirect meets the sign-in, with no showcase in it
 
 it("the showcase setting is gone: no Projects page form, no API route, no form post", async () => {
   const cookie = await signIn(TOKEN, testEnv);
-  const home = await (await worker.fetch(new Request("https://atelier.test/home", { headers: { cookie } }), testEnv)).text();
+  const homeRes = await worker.fetch(new Request("https://atelier.test/", { headers: { cookie } }), testEnv);
+  expect(homeRes.status).toBe(200);
+  const home = await homeRes.text();
   expect(home).not.toContain("/projects/showcase");
   expect(home).not.toContain("Public showcase");
   const api = (method: string, path: string) => worker.fetch(new Request(`https://atelier.test/api${path}`, {

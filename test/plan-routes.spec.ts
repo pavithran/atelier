@@ -150,15 +150,15 @@ it("the holder posts its plan through the route, and an invalid one is a 422 tha
   expect(brief).toMatchObject({ title: "Ship the feature", decided: `Approve plan ${id}'s split of: Ship the feature`, recommendation: { verdict: "decide" } });
   const inbox = await (await call("GET", "/inbox", "owner")).json() as { project: string; itemId: string; kind: string }[];
   expect(inbox.filter((e) => e.project === name).map((e) => `${e.itemId}:${e.kind}`)).toEqual([`${id}:approve-plan`]);
-  // The Decisions page draws the entry with its state, and its detail gives the entry's reason, not a task's brief.
+  // The old Decisions address sends the entry to its task page (t562); Today draws it under Needs you with its state.
   const cookie = await signIn(TOKEN, testEnv);
-  const page = await worker.fetch(new Request(`https://atelier.test/decisions?project=${name}&task=${id}`, { headers: { cookie } }), testEnv);
-  expect(page.status).toBe(200);
-  const html = await page.text();
-  expect(html).toContain('<p class="dec-word signal">Plan to approve</p>');
-  expect(html).toContain("Read the planner&#39;s split, then approve it by its hash or send it back with a note.");
-  const because = /<p class="dec-because">(.*?)<\/p>/s.exec(html)?.[1] ?? "";
-  expect(because).toContain(`atelier plan show ${id} --project ${name}`);
+  const old = await worker.fetch(new Request(`https://atelier.test/decisions?project=${name}&task=${id}`, { headers: { cookie }, redirect: "manual" }), testEnv);
+  expect(old.status).toBe(302);
+  expect(old.headers.get("location")).toBe(`/p/${name}/${id}`);
+  const today = await (await worker.fetch(new Request("https://atelier.test/", { headers: { cookie } }), testEnv)).text();
+  const needs = /<section id="needs-you".*?<\/section>/s.exec(today)?.[0] ?? "";
+  expect(needs).toContain(`<a class="today-title" href="/p/${name}/${id}">Ship the feature</a>`);
+  expect(needs).toContain("Approve plan");
 });
 
 // The reviewer an approval routes counts only when a live runner offers it

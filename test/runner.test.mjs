@@ -9,9 +9,9 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, lostToHold, giveUpClaim, unfinishedReport } from "../cli/runner.mjs";
+import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, taskRevisionKey, WORK_IN_PROGRESS, lostToHold, giveUpClaim, unfinishedReport } from "../cli/runner.mjs";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
-import { MAX_HARNESS_RERUNS } from "../cli/runner-failure.mjs";
+import { MAX_HARNESS_RERUNS, runKeyOf } from "../cli/runner-failure.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
 import { RUNNER_COMMANDS, declaredHelperCall, terminalTaskExit } from "../src/tokens.ts";
 import { entry, config, assignment, untilExits, UNTIL_TEST_EXITS, fixture, heldItem, gitWorkspace, KILL_GRACE_MS } from "./runner-shared.mjs";
@@ -355,14 +355,30 @@ test("a resumed finish failure preserves an ordinary claim and releases a part",
 // sent it back, say) with its pushed head ahead of its base, and the builder
 // finds nothing to add: its harness exits 0 and commits nothing. The work is
 // complete, so the runner runs the checks and submits that head instead of
-// releasing the task as stalled.
+// releasing the task as stalled. t335: when the fork also holds the marker of
+// the run that committed that head, for the task as it is now, the builder is
+// not started at all; any change to the dispatch makes it run again.
+const keyOf = (item) => runKeyOf(taskRevisionKey(item), item);
+const markerFor = (item, change = {}) => ({ actor: assignment.actor, head: "before", key: keyOf(item), ...change });
+const BUILD = { job: "build", latestVerdict: null, text: "", hash: "h" };
+// A run at the pushed head, with the marker an earlier run left (or the one
+// given: null for none) and the server's job brief.
+async function pushedRun(item, { marker, brief = BUILD, ...options } = {}) {
+  const f = fixture({ head: "before", runResult: marker === undefined ? markerFor(item) : marker, ...options });
+  f.io.jobBrief = async () => { f.calls.push({ jobBrief: true }); return brief; };
+  f.io.prepare = async () => { f.calls.push({ prepared: true }); return null; };
+  return { ...f, state: await runTask({ ...assignment, item }, config, "home:studio", f.io) };
+}
+const pushedItem = (change = {}) => ({ ...heldItem({ head: "before", base: "base" }), ...change });
+
 test("a harness that changes nothing on the task's pushed head, ahead of its base, submits that head", async () => {
   for (const item of [
     { ...assignment.item, head: "before", base: "base" },
     { ...assignment.item, state: "open", owner: null, head: "before", base: "base", dispatch: { note: "address the findings" } },
-    // Held by this actor at the recorded head: the harness runs again (the
-    // dead run committed nothing) and, changing nothing, still submits.
-    heldItem({ head: "before", base: "base" }),
+    // The task as an earlier run left it, but with a dispatch note it has not
+    // seen: the marker is for another key, the harness runs, and, changing
+    // nothing, still submits.
+    pushedItem({ dispatch: { at: "2026-10-26T08:00:00.000Z", note: "now also log it" } }),
   ]) {
     const { io, calls, logs } = fixture({ head: "before" });
     const state = await runTask({ ...assignment, item }, config, "home:studio", io);
@@ -378,6 +394,140 @@ test("a harness that changes nothing on the task's pushed head, ahead of its bas
     assert.equal(runOutcome(state), null, "an already-complete run is not reported as stalled");
     assert.equal(failureCount(0, state), 0);
   }
+  // The dispatch-note input, with a marker written for the task without the note.
+  const before = pushedItem({ dispatch: { at: "2026-10-26T08:00:00.000Z", note: "" } });
+  const noted = { ...before, dispatch: { ...before.dispatch, note: "now also log it" } };
+  assert.ok((await pushedRun(noted, { marker: markerFor(before) })).calls.some((c) => c.harness), "a new note starts the builder");
+  assert.ok(!(await pushedRun(before)).calls.some((c) => c.harness), "the same dispatch does not");
+});
+
+test("a build at the pushed head with this run's marker starts no harness and no brief, and finishes that head", async () => {
+  const item = pushedItem();
+  const { calls, logs, state } = await pushedRun(item);
+  assert.equal(state.phase, "submitted");
+  assert.equal(state.head, "before");
+  assert.ok(!calls.some((c) => c.harness || c.brief), "no harness and no brief");
+  assert.ok(calls.some((c) => c.jobBrief), "the server is asked what the job is");
+  assert.ok(calls.some((c) => c.prepared), "the workspace is prepared");
+  assert.ok(calls.some((c) => c.argv?.[0] === "claim"));
+  assert.ok(!calls.some((c) => c.argv?.[0] === "release"));
+  assert.deepEqual(calls.find((c) => c.argv?.[0] === "finish").argv, ["finish", "t13", "--project", "atelier", "--as", assignment.actor]);
+  assert.equal(logs.filter((l) => l.startsWith("skipped the builder:")).length, 1, logs.join("\n"));
+  const line = logs.find((l) => l.startsWith("skipped the builder:"));
+  assert.ok(line.includes("before") && line.includes(keyOf(item).slice(0, 12)), line);
+  assert.ok(!logs.some((l) => l.startsWith("already complete:") || l.startsWith("resumed:")));
+  assert.equal(runOutcome(state), null);
+  assert.equal(failureCount(0, state), 0);
+  assert.ok(!calls.some((c) => c.wroteResult), "a skipped run writes no new marker");
+});
+
+test("a marker is written when the harness exits 0 and moves the head, before finish, and a failed run writes none", async () => {
+  const wrote = async (options, item = assignment.item) => {
+    const f = fixture({ runResult: null, ...options });
+    const state = await runTask({ ...assignment, item }, config, "home:studio", f.io);
+    return { ...f, state, written: f.calls.filter((c) => c.wroteResult) };
+  };
+  const ok = await wrote({});
+  assert.equal(ok.state.phase, "submitted");
+  assert.equal(ok.written.length, 1);
+  assert.deepEqual(ok.written[0].wroteResult, { actor: assignment.actor, head: "after", key: keyOf(assignment.item) });
+  assert.equal(ok.written[0].cwd, "/cache/work/atelier/t13");
+  assert.ok(ok.calls.indexOf(ok.written[0]) < ok.calls.findIndex((c) => c.argv?.[0] === "finish"), "the marker comes before finish");
+  // A finish that fails leaves the committed result recorded.
+  assert.equal((await wrote({ failCommand: "finish" })).written.length, 1);
+  // Nothing is written by a failed run, a crash, a harness that moved nothing, or a stop.
+  for (const options of [{ code: 1 }, { code: null }, { timedOut: true }, { throwHarness: true }, { head: "before" }, { stopped: true }]) {
+    const run = await wrote(options);
+    assert.equal(run.written.length, 0, JSON.stringify(options));
+    assert.equal(run.io.readRunResult && await run.io.readRunResult(), null);
+  }
+  // A marker that cannot be written costs the saving, not the run.
+  const f = fixture({ runResult: null });
+  f.io.writeRunResult = async () => { throw new Error("read-only"); };
+  const state = await runTask(assignment, config, "home:studio", f.io);
+  assert.equal(state.phase, "submitted");
+  assert.ok(f.logs.some((l) => l.includes("run-result marker could not be written: read-only")));
+});
+
+test("the run key is the task revision, the dispatch time and note and the criteria review count, each of which starts the builder", async () => {
+  const item = pushedItem({ dispatch: { at: "2026-10-26T08:00:00.000Z", note: "fix it" }, criteriaReviews: 1, scope: ["cli/runner.mjs"], accept: ["It works; tested."], brief: "Do it." });
+  assert.equal(keyOf(item), runKeyOf(taskRevisionKey(item), item));
+  assert.equal(keyOf({ ...item, title: "Another", head: "x", state: "open", owner: null }), keyOf(item), "nothing else is in the key");
+  assert.ok(!(await pushedRun(item)).calls.some((c) => c.harness), "the same task is skipped");
+  for (const [field, change] of [
+    ["scope", { scope: ["cli/runner.mjs", "docs/runners.md"] }],
+    ["criteria", { accept: ["It works; tested.", "Docs say so."] }],
+    ["brief", { brief: "Do it twice." }],
+    ["dispatch.at", { dispatch: { ...item.dispatch, at: "2026-10-26T09:00:00.000Z" } }],
+    ["dispatch.note", { dispatch: { ...item.dispatch, note: "fix it again" } }],
+    ["criteriaReviews", { criteriaReviews: 2 }],
+  ]) {
+    const changed = { ...item, ...change };
+    assert.notEqual(keyOf(changed), keyOf(item), field);
+    const run = await pushedRun(changed, { marker: markerFor(item) });
+    assert.ok(run.calls.some((c) => c.harness), `a changed ${field} starts the builder`);
+    assert.ok(!run.logs.some((l) => l.startsWith("skipped the builder:")), field);
+  }
+});
+
+test("a rejecting review, a pre-review or a scope gap at the head starts the builder", async () => {
+  const item = pushedItem();
+  for (const brief of [
+    { job: "rework", latestVerdict: "reject", text: "Rejected at before", hash: "h" },
+    { job: "rework", latestVerdict: null, text: "Pre-review found a gap", hash: "h" },
+    { job: "rework", latestVerdict: "approve", text: "A scope gap", hash: "h" },
+    { job: "plan", text: "", hash: "h" },
+    { text: "", hash: "h" },
+  ]) {
+    const run = await pushedRun(item, { brief });
+    assert.ok(run.calls.some((c) => c.harness), JSON.stringify(brief));
+    assert.ok(run.calls.some((c) => c.brief), "and it is briefed");
+    assert.ok(!run.logs.some((l) => l.startsWith("skipped the builder:")));
+  }
+});
+
+test("no marker, a marker for another actor, head or key, or an unreadable marker starts the builder as today", async () => {
+  const item = pushedItem();
+  for (const marker of [null, markerFor(item, { actor: "codex/other" }), markerFor(item, { head: "elsewhere" }), markerFor(item, { key: "0".repeat(64) }), "not an object", {}, new Error("EACCES")]) {
+    const run = await pushedRun(item, { marker });
+    assert.ok(run.calls.some((c) => c.harness), String(marker?.message ?? JSON.stringify(marker)));
+    assert.equal(run.state.phase, "submitted");
+    assert.ok(!run.logs.some((l) => l.startsWith("skipped the builder:")));
+  }
+  // A runner with no way to read a marker is the same.
+  const f = fixture({ head: "before" });
+  f.io.jobBrief = async () => BUILD;
+  await runTask({ ...assignment, item }, config, "home:studio", f.io);
+  assert.ok(f.calls.some((c) => c.harness));
+});
+
+test("a harness-failure obligation, work in progress, a part, a merge job and a plan merge each run or refuse as today", async () => {
+  const item = pushedItem();
+  const ran = (run) => run.calls.some((c) => c.harness);
+  const skipped = (run) => run.logs.some((l) => l.startsWith("skipped the builder:"));
+  assert.ok(skipped(await pushedRun(item)), "the control skips");
+  // A failed harness in this workspace must run again, whoever's commit is at the head.
+  const owing = fixture({ head: "before", marker: { actor: assignment.actor, head: "before", from: "base", reason: "harness exited 1", reruns: 0 }, runResult: markerFor(item) });
+  owing.io.jobBrief = async () => BUILD;
+  await runTask({ ...assignment, item }, config, "home:studio", owing.io);
+  assert.ok(ran(owing) && !skipped(owing), "an obligation runs the harness");
+  // Work in progress at the head is never a complete commit.
+  const progress = fixture({ head: "before", runResult: markerFor(item) });
+  progress.io.jobBrief = async () => BUILD;
+  progress.io.headMessage = async () => `WIP\n\n${WORK_IN_PROGRESS}`;
+  await runTask({ ...assignment, item }, config, "home:studio", progress.io);
+  assert.ok(ran(progress) && !skipped(progress), "work in progress runs the harness");
+  // A part builds from its plan; a head that is not pushed, not ahead of its base, or has no base is not complete.
+  assert.ok(ran(await pushedRun({ ...item, kind: "part", plan: "t1" }, { marker: markerFor(item) })), "a part builds");
+  assert.ok(ran(await pushedRun(item, { ancestor: false })), "a head not ahead of its base");
+  const resumed = await pushedRun({ ...item, head: "recorded" }, { marker: markerFor(item) });
+  assert.ok(!skipped(resumed) && resumed.logs.some((l) => l.startsWith("resumed:")), "a head the server never recorded is finished as a resumed run, as today");
+  assert.ok(ran(await pushedRun({ ...item, base: undefined })), "a task with no base");
+  // A merge-main job and a plan merge have the merge as their work.
+  const merge = pushedItem({ dispatch: { job: "merge-main", head: "a".repeat(40), at: "2026-10-26T08:00:00.000Z" } });
+  assert.ok(!skipped(await pushedRun(merge)), "a merge-main job never skips");
+  const plan = pushedItem({ kind: "part", plan: "t1", dispatch: { planHead: "b".repeat(40) } });
+  assert.ok(!skipped(await pushedRun(plan)), "a plan merge never skips");
 });
 
 
