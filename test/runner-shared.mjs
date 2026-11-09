@@ -62,12 +62,15 @@ export function fixture(options = {}) {
       if (options.failBrief) throw new Error("cannot write brief");
       return { file: "/cache/work/atelier/brief.txt" };
     },
-    async harness(argv, cwd, env) {
-      calls.push({ harness: argv, cwd, env });
+    async harness(argv, cwd, env, opts) {
+      calls.push({ harness: argv, cwd, env, timeoutMs: opts?.timeoutMs });
       homes.push({ ran: env?.XDG_DATA_HOME });
       if (options.throwHarness) throw new Error("ENOENT");
-      return { code: "code" in options ? options.code : 0, timedOut: options.timedOut };
+      // A run that takes longer than the ceiling it was given is stopped at it.
+      const stopped = options.runsForMs !== undefined && opts?.timeoutMs !== undefined && options.runsForMs > opts.timeoutMs;
+      return { code: "code" in options ? options.code : 0, timedOut: options.timedOut || stopped };
     },
+    ...(options.jobBrief ? { async jobBrief(project, id, actor) { return options.jobBrief(project, id, actor); } } : {}),
     // The failed harness's marker (t363), kept in memory when a test asks.
     ...(options.marker !== undefined ? {
       async readHarnessFailure() { return options.marker; },

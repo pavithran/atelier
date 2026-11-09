@@ -177,6 +177,7 @@ export default async function initCommand() {
     ...(args["silence-limit"] !== undefined ? { silenceLimitMinutes: args["silence-limit"] } : {}),
     ...(args["startup-limit"] !== undefined ? { startupLimitMinutes: args["startup-limit"] } : {}),
     ...(args["slot-wait-limit"] !== undefined ? { slotWaitLimitMinutes: args["slot-wait-limit"] } : {}),
+    ...(args["build-limit"] !== undefined ? { buildLimitMinutes: args["build-limit"] } : {}),
     ...(args.multi["check-silence"] ? { checkSilence: args.multi["check-silence"].length === 1 && args.multi["check-silence"][0] === "" ? [] : args.multi["check-silence"] } : {}),
     // The model that triages a landing's diff against the task's criteria
     // before its review (t475), harness/model; omitted keeps it, "" clears it.

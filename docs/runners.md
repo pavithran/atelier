@@ -663,7 +663,9 @@ runner's variables this harness also gets, such as a provider key it reads or
 from a LaunchAgent has only the variables the LaunchAgent sets, so a key named
 here must be set there too. Atelier login and credentials are shared
 with the ordinary CLI. Set `taskTimeoutMs` in the config to change the harness
-deadline from 45 minutes, and `finishTimeoutMs` to change the whole finish
+deadline from 45 minutes (a project's `atelier init --build-limit MINUTES`
+overrides it for that project's builds, read from the claim's job brief at each
+run; every build brief states the minutes applied), and `finishTimeoutMs` to change the whole finish
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
 

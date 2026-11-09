@@ -738,6 +738,9 @@ export interface ProjectPolicy {
   silenceLimitMinutes?: number;
   startupLimitMinutes?: number;
   slotWaitLimitMinutes?: number;
+  // The build limit (t588): how long a builder's harness may run, in minutes,
+  // stated in its brief. Absent, a runner keeps its own task timeout.
+  buildLimitMinutes?: number;
   checkSilence?: CheckSilence[];
   // The ship order as the policy records it (cli/ship.mjs shipPolicy, sent at
   // init and sync): the commands its runs execute, whose files changeClass
