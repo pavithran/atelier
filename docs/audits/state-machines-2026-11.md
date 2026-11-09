@@ -507,7 +507,7 @@ None found.
 | latest observation | `stuck_ticks (project, at)` (`:2256`) |
 | cause | `stuck_episodes.cause`, from `causeOf` `src/stuck/episodes.ts:15-18`: `ship`, `task-idle`, `orphan-lease`, `core-hold`, `runner-skip`, `orphaned-claim`, `runner-give-up`, `review-input-size`, `idle-runner`, and `task:`, `review:`, `review-unoffered:`, `review-skipped:` with the reason (`src/stuck/report.ts:86-251`) |
 
-Until t533 (merged 2026-11-09, `b91b451d`) the digest went to ntfy and left
+Until t533 (merged 2026-11-09, `b91b451d`) the digest went out as a push notification and left
 no event; t518 (2026-11-07) deleted the older stuck-stage events. So the
 ledger's events hold stuck episodes only from 2026-11-09, and the table is
 the only record before that.
