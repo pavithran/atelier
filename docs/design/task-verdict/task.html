@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task verdict</title>
+<link rel="stylesheet" href="theme.css">
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--shell);
+  color: var(--text);
+  font: 15px/1.5 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 860px; margin: 0 auto; padding: 28px 24px 72px; }
+.mono { font-family: var(--font-mono); font-size: 0.88em; }
+svg { display: block; }
+
+/* State label between the two drawings */
+.state + .state { margin-top: 72px; }
+.state-label {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 0 14px; font: 500 12.5px/1 var(--font-sans); color: var(--text-dim);
+}
+.state-label::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* Cards */
+.card {
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-large);
+}
+
+/* Hero: title, state, verdict, action, track */
+.hero { padding: 22px 26px 24px; box-shadow: 0 1px 0 rgba(var(--lift-rgb), .04) inset, 0 18px 40px -28px rgba(var(--shadow-rgb), .55); }
+.hero-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.crumbs { color: var(--text-dim); font-size: 12.5px; }
+.crumbs span { margin: 0 6px; opacity: .6; }
+.pill {
+  display: inline-flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px;
+  border-radius: var(--radius-pill); font-size: 13px; font-weight: 600; white-space: nowrap;
+}
+.pill-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.pill-ready { color: var(--observed); background: rgba(var(--observed-rgb), .12); box-shadow: inset 0 0 0 1px rgba(var(--observed-rgb), .28); }
+.pill-back { color: var(--caution); background: rgba(var(--caution-rgb), .12); box-shadow: inset 0 0 0 1px rgba(var(--caution-rgb), .3); }
+
+h1 {
+  margin: 14px 0 0; font: 650 27px/1.22 var(--font-display); letter-spacing: -0.015em;
+  color: var(--text-bright); text-wrap: balance;
+}
+.verdict {
+  display: flex; align-items: center; gap: 24px; margin-top: 18px;
+  padding: 18px 0 22px; border-top: 1px solid var(--line);
+}
+.verdict p { flex: 1; margin: 0; font-size: 18.5px; line-height: 1.45; color: var(--text); text-wrap: pretty; }
+
+.land {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  height: var(--ctl-h-lead); padding: 0 28px 0 22px; border: 0; border-radius: var(--radius-medium);
+  background: var(--signal); color: var(--on-accent); font: 650 17px/1 var(--font-sans); cursor: pointer;
+  box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 8px 22px -10px rgba(var(--signal-rgb), .7);
+  transition: transform var(--motion-tap) var(--curve-tap), box-shadow var(--motion-tap) var(--curve-tap), background var(--motion-tap);
+}
+.land svg { width: 20px; height: 20px; transition: transform var(--motion-move) var(--curve-bounce); }
+.land:hover { background: var(--signal-hot); transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 12px 26px -10px rgba(var(--signal-rgb), .8); }
+.land:hover svg { transform: translateX(3px); }
+.land:active { transform: translateY(0) scale(.98); }
+.land:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+
+.fixing {
+  flex: none; max-width: 300px; display: flex; gap: 12px; align-items: flex-start;
+  padding: 12px 16px; border-radius: var(--radius-medium); font-size: 14px; line-height: 1.45; color: var(--text-muted);
+  background: var(--inset);
+}
+.fixing strong { color: var(--text); font-weight: 600; display: block; }
+.pulse { position: relative; flex: none; width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: var(--caution); }
+.pulse::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--caution); animation: ping 1.8s var(--curve-breathe) infinite; }
+@keyframes ping { 0% { transform: scale(1); opacity: .55; } 80%, 100% { transform: scale(2.6); opacity: 0; } }
+
+/* Stage track */
+.track {
+  --n: 5; list-style: none; margin: 0; padding: 20px 0 0; border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: repeat(var(--n), 1fr); position: relative;
+}
+.track::before, .track::after {
+  content: ""; position: absolute; top: 33px; height: 2px; border-radius: 2px;
+  left: calc(100% / var(--n) / 2);
+}
+.track::before { right: calc(100% / var(--n) / 2); background: var(--line-bright); opacity: .55; }
+.track::after { width: calc(100% / var(--n) * var(--done)); background: var(--observed); }
+.st { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; }
+.node {
+  width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--surface-raised); border: 2px solid var(--line-bright);
+}
+.node svg { width: 16px; height: 16px; }
+.st-done .node { background: var(--observed); border-color: var(--observed); color: var(--surface); }
+.st-now .node { border-color: var(--signal); background: var(--surface-raised); box-shadow: 0 0 0 5px rgba(var(--signal-rgb), .16); }
+.st-now .node::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--signal); }
+.is-back .st-now .node { border-color: var(--caution); box-shadow: 0 0 0 5px rgba(var(--caution-rgb), .16); }
+.is-back .st-now .node::after { background: var(--caution); animation: breathe 2.4s var(--curve-breathe) infinite; }
+@keyframes breathe { 50% { transform: scale(.6); opacity: .6; } }
+.st-next .node { border-style: solid; }
+.was-back .node { border-color: rgba(var(--fault-rgb), .65); border-style: dashed; }
+.st-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.st-next .st-name { color: var(--text-dim); font-weight: 500; }
+.st-note { font-size: 12px; color: var(--text-dim); line-height: 1.3; }
+.st-now .st-note { color: var(--signal); }
+.is-back .st-now .st-note { color: var(--caution); }
+.was-back .st-note { color: var(--fault); }
+
+/* Blocks */
+.block { margin-top: 30px; }
+.block h3 { display: flex; align-items: center; gap: 10px; margin: 0 0 10px 2px; font: 600 15px/1.2 var(--font-sans); color: var(--text-bright); }
+
+.list { padding: 4px 0; overflow: hidden; }
+.group-h {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 14px 22px 6px; font-size: 12.5px; font-weight: 600; color: var(--text-dim);
+}
+.group-h:not(:first-child) { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 16px; }
+.count { font-weight: 600; }
+.c-ok { color: var(--observed); }
+.rows { list-style: none; margin: 0; padding: 0 0 6px; }
+.row {
+  display: grid; grid-template-columns: 24px 1fr auto; column-gap: 14px; align-items: start;
+  padding: 9px 22px;
+}
+.row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.row-main > .mono { font-size: 14px; color: var(--text-bright); }
+.row-sub { font-size: 13px; color: var(--text-muted); }
+.row-meta { font-size: 13px; color: var(--text-dim); text-align: right; white-space: nowrap; padding-top: 1px; }
+.sep { margin: 0 6px; opacity: .6; }
+.is-wait .row-main > .mono { color: var(--text-muted); }
+.co { color: var(--text-muted); font-size: 13px; margin-left: 2px; padding: 1px 7px; border-radius: var(--radius-pill); background: var(--inset); }
+
+.mark { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; margin-top: 0; }
+.mark svg { width: 15px; height: 15px; }
+.mark-ok { color: var(--observed); background: rgba(var(--observed-rgb), .14); }
+.mark-bad { color: var(--fault); background: rgba(var(--fault-rgb), .13); }
+.mark-warn { color: var(--caution); background: rgba(var(--caution-rgb), .15); }
+.mark-wait { color: var(--text-dim); box-shadow: inset 0 0 0 1.5px var(--line-bright); }
+
+.finding {
+  margin-top: 10px; padding: 14px 16px; border-radius: var(--radius-medium);
+  background: var(--surface); border: 1px solid rgba(var(--fault-rgb), .35);
+}
+.finding-top { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.finding-top .mono { color: var(--text-bright); font-size: 13px; }
+.finding p { margin: 8px 0 10px; font-size: 14.5px; line-height: 1.55; color: var(--text); }
+.confirmed { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--observed); }
+.confirmed svg { width: 15px; height: 15px; flex: none; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 6px; background: var(--inset); color: var(--text-muted); font-size: 12.5px; }
+.chip-warn { color: var(--caution); background: rgba(var(--caution-rgb), .1); }
+
+.tag {
+  display: inline-flex; align-items: center; height: 21px; padding: 0 8px; border-radius: var(--radius-pill);
+  font: 600 11.5px/1 var(--font-sans); color: var(--text-muted); background: var(--inset); white-space: nowrap;
+}
+.tag-bad { color: var(--fault); background: rgba(var(--fault-rgb), .12); }
+.tag-warn { color: var(--caution); background: rgba(var(--caution-rgb), .12); }
+.tag-unv { color: var(--caution); background: transparent; box-shadow: inset 0 0 0 1px var(--caution-line); }
+
+/* Builder's own words */
+.said {
+  margin: 0; padding: 16px 22px 16px; border-radius: var(--radius-large);
+  border: 1px dashed var(--caution-line); background: transparent;
+}
+.said p { margin: 0; font-size: 15.5px; line-height: 1.6; color: var(--text-muted); }
+.said footer { margin-top: 8px; font-size: 12.5px; color: var(--text-dim); }
+
+/* Diff */
+.diff { overflow: hidden; }
+.diff-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.diff-head > .mono { color: var(--text-bright); font-size: 13.5px; }
+.stat { margin-left: auto; font-family: var(--font-mono); font-size: 12.5px; }
+.plus { color: var(--observed); }
+.minus { color: var(--fault); }
+.dim { color: var(--text-dim); }
+.code-wrap { overflow-x: auto; background: var(--surface); }
+.code-t { border-collapse: collapse; width: 100%; font: 12.5px/1.65 var(--font-mono); }
+.code-t td { padding: 0; vertical-align: top; }
+.code-t .ln { width: 1%; padding: 0 10px 0 14px; text-align: right; color: var(--text-dim); opacity: .7; user-select: none; }
+.code-t .sg { width: 1%; padding-right: 10px; color: var(--observed); }
+.code-t .code { white-space: pre; padding-right: 18px; color: var(--text); }
+.code-t tr.add { background: rgba(var(--observed-rgb), .06); }
+.code-t tr:first-child td { padding-top: 10px; }
+.code-t tr:last-child td { padding-bottom: 10px; }
+.diff-foot { padding: 10px 18px; font-size: 12.5px; color: var(--text-dim); border-top: 1px solid var(--line); }
+.files { list-style: none; margin: 0; padding: 8px 0; background: var(--surface); }
+.files li { display: flex; align-items: center; gap: 12px; padding: 6px 18px; min-width: 0; }
+.files .mark { width: 20px; height: 20px; flex: none; }
+.files .mark svg { width: 13px; height: 13px; }
+.files .mono { color: var(--text); overflow-wrap: anywhere; }
+
+/* Folded parts */
+.folds { margin-top: 30px; border-top: 1px solid var(--line); }
+details { border-bottom: 1px solid var(--line); }
+summary {
+  list-style: none; display: flex; align-items: center; gap: 10px; min-height: var(--ctl-h);
+  padding: 0 4px; cursor: pointer; font-size: 14.5px; font-weight: 500; color: var(--text-muted);
+  transition: color var(--motion-tap);
+}
+summary::-webkit-details-marker { display: none; }
+summary svg { width: 16px; height: 16px; color: var(--text-dim); transition: transform var(--motion-move) var(--curve-move); }
+details[open] summary svg { transform: rotate(90deg); }
+summary:hover { color: var(--text-bright); }
+summary .n { font: 12px/1 var(--font-mono); color: var(--text-dim); padding: 3px 7px; border-radius: var(--radius-pill); background: var(--inset); }
+details > :not(summary) { margin: 0 0 18px 30px; }
+.thread, .rounds { list-style: none; padding: 0; }
+.thread li { display: grid; grid-template-columns: 70px 12px 1fr; gap: 10px; align-items: center; padding: 4px 0; font-size: 14px; }
+.t-at { font: 12.5px var(--font-mono); color: var(--text-dim); text-align: right; }
+.t-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-bright); }
+.rounds li { display: grid; grid-template-columns: 22px 70px 1fr auto; gap: 12px; align-items: center; padding: 5px 0; font-size: 14px; }
+.r-n { font-weight: 600; }
+.r-why { color: var(--text-muted); }
+.r-at { font: 12.5px var(--font-mono); color: var(--text-dim); }
+.tech { display: grid; grid-template-columns: 130px 1fr; gap: 8px 16px; font-size: 14px; }
+.tech dt { color: var(--text-dim); }
+.tech dd { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+
+/* Light: Night's gold in daylight, gold fill with ink text (taste AD-7) */
+@media (prefers-color-scheme: light) {
+  .land { background: #ffd166; color: var(--text-bright); box-shadow: inset 0 0 0 1px rgba(var(--signal-rgb), .35), 0 8px 20px -12px rgba(var(--signal-rgb), .6); }
+  .land:hover { background: #ffdf8f; box-shadow: inset 0 0 0 1px rgba(var(--signal-rgb), .45), 0 12px 24px -12px rgba(var(--signal-rgb), .7); }
+  .st-now .node { box-shadow: 0 0 0 5px rgba(255,209,102,.45); }
+  .st-now .node::after { background: #e0a91f; }
+  .st-now .node { border-color: #d39b12; }
+  .hero { box-shadow: 0 14px 34px -26px rgba(var(--shadow-rgb), .35); }
+  .card { background: var(--surface); }
+  .code-wrap, .files, .finding { background: var(--surface-raised); }
+}
+
+/* Phone */
+@media (max-width: 600px) {
+  main { padding: 18px 14px 56px; }
+  .hero { padding: 18px 18px 20px; }
+  h1 { font-size: 22px; }
+  .verdict { flex-direction: column; align-items: stretch; gap: 16px; }
+  .verdict p { font-size: 17px; }
+  .land { width: 100%; }
+  .fixing { max-width: none; }
+  .track::before, .track::after { top: 33px; }
+  .st-name { font-size: 12.5px; }
+  .st-note { font-size: 11px; }
+  .row { grid-template-columns: 22px 1fr; padding: 9px 16px; }
+  .row-meta { grid-column: 2; text-align: left; white-space: normal; padding-top: 2px; }
+  .group-h { padding-left: 16px; padding-right: 16px; }
+  .said { padding: 14px 16px; }
+  .diff-head { padding: 12px 14px; }
+  .stat { margin-left: 0; width: 100%; }
+  details > :not(summary) { margin-left: 4px; }
+  .rounds li { grid-template-columns: 22px 1fr auto; }
+  .rounds .r-why { grid-column: 2 / -1; grid-row: 2; }
+  .tech { grid-template-columns: 1fr; gap: 2px; }
+  .tech dd { margin-bottom: 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::after { animation: none !important; transition: none !important; }
+}
+
+</style>
+</head>
+<body>
+<main>
+<section class="state" aria-labelledby="h-ready">
+  <h2 class="state-label" id="h-ready"><span>Ready to land</span></h2>
+
+  <article class="card hero is-ready">
+    <header class="hero-top">
+      <div class="crumbs mono">atelier<span>/</span>t564</div>
+      <span class="pill pill-ready"><span class="pill-dot"></span>Ready to land</span>
+    </header>
+    <h1>Usage readers and the 6 AM job (model slate, task A)</h1>
+    <div class="verdict">
+      <p>Approved by gpt-6-astra (OpenAI). All 3 required checks passed. Ready to land.</p>
+      <button class="land" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 5.5L15.5 10 11 14.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Land</span></button>
+    </div>
+    <ol class="track" aria-label="Stages" style="--done:4"><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Claim</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Branch</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Prove</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Review</span><span class="st-note">approved 1:04 pm</span></li><li class="st st-now"><span class="node"></span><span class="st-name">Land</span><span class="st-note">waiting on you</span></li></ol>
+  </article>
+
+  <div class="block">
+    <h3>Evidence</h3>
+    <div class="card list">
+      <div class="group-h"><span>Required checks</span><span class="count c-ok">3 of 3 passed</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run typecheck</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>12:58 pm</div></li><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run test:static</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>12:59 pm</div></li><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm test</span><span class="row-sub">6,742 tests, 0 failed</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>1:02 pm</div></li></ul>
+      <div class="group-h"><span>Review</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span>Approved by <strong>gpt-6-astra</strong> <span class="co">OpenAI</span></span><span class="row-sub">Built by Sonnet 5.5 (Anthropic)</span></div><div class="row-meta">Round 4<span class="sep">·</span>1:04 pm</div></li><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span>8 of 8 criteria met</span><span class="row-sub">Criterion 9 dropped by you at 12:50 pm</span></div></li></ul>
+      <div class="group-h"><span>Scope</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-warn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.2v4.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span>2 files outside the declared scope</span>
+      <span class="chips"><span class="chip chip-warn mono">cli/atelier.mjs</span><span class="chip chip-warn mono">test/usage-cli.test.mjs</span></span></div>
+      <div class="row-meta">7 of 9 inside</div></li></ul>
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>What the builder says <span class="tag tag-unv">Not verified</span></h3>
+    <blockquote class="said"><p>Added three usage readers (Z.ai, Claude Code, Antigravity), each in its own file, a 20-second timeout per reader, the --claude-capture option, and the slate proposal at the end of each run. Tests cover each reader's missing, stale and failing cases.</p><footer>Sonnet 5.5 (Anthropic), in its own words</footer></blockquote>
+  </div>
+
+  <div class="block">
+    <h3>Changes</h3>
+    <div class="card diff">
+      <div class="diff-head"><span class="mono">9 files changed</span><span class="stat"><span class="plus">+612</span> <span class="minus">−18</span></span></div>
+      <ul class="files"><li><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="mono">cli/usage.mjs</span></li><li><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="mono">cli/usage-readers/**</span></li><li><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="mono">test/usage-readers.test.mjs</span></li><li><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="mono">docs/usage-agent.md</span></li><li><span class="mark mark-warn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.2v4.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1.1" fill="currentColor"/></svg></span><span class="mono">cli/atelier.mjs</span><span class="tag tag-warn">outside scope</span></li><li><span class="mark mark-warn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.2v4.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1.1" fill="currentColor"/></svg></span><span class="mono">test/usage-cli.test.mjs</span><span class="tag tag-warn">outside scope</span></li></ul>
+      <div class="diff-foot">No excerpt was recorded for this task. Shown: the declared scope and the files that fell outside it.</div>
+    </div>
+  </div>
+
+  <div class="folds">
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Thread of events</span><span class="n">9</span></summary><ol class="thread"><li><span class="t-at">9:34 am</span><span class="t-dot"></span><span>Dispatched to Sonnet 5.5</span></li><li><span class="t-at">10:14 am</span><span class="t-dot"></span><span>Submitted</span></li><li><span class="t-at">10:19 am</span><span class="t-dot"></span><span>Review: rejected</span></li><li><span class="t-at">11:46 am</span><span class="t-dot"></span><span>Submitted</span></li><li><span class="t-at">12:03 pm</span><span class="t-dot"></span><span>Review: rejected</span></li><li><span class="t-at">12:22 pm</span><span class="t-dot"></span><span>Submitted</span></li><li><span class="t-at">12:39 pm</span><span class="t-dot"></span><span>Review: rejected</span></li><li><span class="t-at">12:50 pm</span><span class="t-dot"></span><span>PAVI: “Yes, drop it”; criterion 9 dropped</span></li><li><span class="t-at">1:04 pm</span><span class="t-dot"></span><span>Review: approved</span></li></ol></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Earlier rounds</span><span class="n">4</span></summary><ol class="rounds"><li><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><span class="r-n">Round 1</span><span class="r-why">Per-criterion red-on-main evidence missing</span><span class="r-at">10:19 am</span></li><li><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><span class="r-n">Round 2</span><span class="r-why">Same evidence still missing</span><span class="r-at">12:03 pm</span></li><li><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><span class="r-n">Round 3</span><span class="r-why">Same evidence still missing; PAVI dropped that criterion at 12:50 pm</span><span class="r-at">12:39 pm</span></li><li><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="r-n">Round 4</span><span class="r-why">Approved</span><span class="r-at">1:04 pm</span></li></ol></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Technical details</span></summary>
+      <dl class="tech"><dt>Task</dt><dd class="mono">atelier / t564</dd><dt>Head commit</dt><dd class="mono">079257a3</dd><dt>Builder</dt><dd>Sonnet 5.5 (Anthropic)</dd><dt>Reviewer</dt><dd>gpt-6-astra (OpenAI)</dd><dt>Size</dt><dd>9 files, <span class="plus">+612</span> <span class="minus">−18</span></dd><dt>Declared scope</dt><dd><span class="chip mono">cli/usage.mjs</span><span class="chip mono">cli/usage-readers/**</span><span class="chip mono">test/usage-readers.test.mjs</span><span class="chip mono">docs/usage-agent.md</span></dd></dl>
+    </details>
+  </div>
+</section>
+<section class="state" aria-labelledby="h-sent-back">
+  <h2 class="state-label" id="h-sent-back"><span>Sent back</span></h2>
+
+  <article class="card hero is-back">
+    <header class="hero-top">
+      <div class="crumbs mono">atelier<span>/</span>t558</div>
+      <span class="pill pill-back"><span class="pill-dot"></span>Sent back, round 3 building</span>
+    </header>
+    <h1>A Process tab maps the task flow with time per phase and loop counts</h1>
+    <div class="verdict">
+      <p>Sent back by gpt-6-astra (OpenAI): one blocking finding. Sonnet 5.5 is fixing it in round 3, started 1:36 pm.</p>
+      <div class="fixing"><span class="pulse"></span><div><strong>Nothing for you to do</strong>The builder is fixing it. You will hear when round 3 is back.</div></div>
+    </div>
+    <ol class="track" aria-label="Stages" style="--done:2"><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Claim</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Branch</span></li><li class="st st-now"><span class="node"></span><span class="st-name">Prove</span><span class="st-note">round 3 building</span></li><li class="st st-next was-back"><span class="node"></span><span class="st-name">Review</span><span class="st-note">sent back 1:08 pm</span></li><li class="st st-next"><span class="node"></span><span class="st-name">Land</span></li></ol>
+  </article>
+
+  <div class="block">
+    <h3>Evidence</h3>
+    <div class="card list">
+      <div class="group-h"><span>Required checks</span><span class="count ">2 of 3 passed</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run typecheck</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>12:55 pm</div></li><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run test:static</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>12:56 pm</div></li><li class="row is-wait"><span class="mark mark-wait"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="11" cy="8" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span class="mono">npm test</span><span class="row-sub">Waiting for round 3</span></div><div class="row-meta">Studio runner<span class="sep">·</span>not started</div></li></ul>
+      <div class="group-h"><span>Review</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><div class="row-main"><span>Sent back by <strong>gpt-6-astra</strong> <span class="co">OpenAI</span></span><span class="row-sub">Built by Sonnet 5.5 (Anthropic)</span><div class="finding">
+      <div class="finding-top"><span class="tag tag-bad">Blocking</span><span class="mono">test/process.test.ts:199</span></div>
+      <p>The regression test never reaches the new recovery code: the old filing is on the last page the read returns, so the task-history call never runs. Add an older event so the read stops before the filing, and check the call happens.</p>
+      <div class="confirmed"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Confirmed by the orchestrator against the code.</span></div>
+    </div></div><div class="row-meta">Round 2<span class="sep">·</span>1:08 pm</div></li><li class="row"><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><div class="row-main"><span>11 of 12 criteria met</span><span class="row-sub">The open one is the finding above</span></div></li></ul>
+      <div class="group-h"><span>Scope</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-warn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.2v4.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span>1 file outside the declared scope</span>
+      <span class="chips"><span class="chip chip-warn mono">test/preview.mjs</span></span></div>
+      <div class="row-meta">14 of 15 inside</div></li></ul>
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>What the builder says <span class="tag tag-unv">Not verified</span></h3>
+    <blockquote class="said"><p>Fixed the read window so a task filed before the window still shows its filing and deploy time; added a regression test.</p><footer>Sonnet 5.5 (Anthropic), in its own words</footer></blockquote>
+  </div>
+
+  <div class="block">
+    <h3>Changes</h3>
+    <div class="card diff">
+    <div class="diff-head"><span class="mono">test/process.test.ts</span><span class="tag">new file</span><span class="stat"><span class="plus">+1,904</span> <span class="minus">−22</span><span class="dim"> in 15 files</span></span></div>
+    <div class="code-wrap"><table class="code-t"><tr class="add"><td class="ln">1</td><td class="sg">+</td><td class="code">import { test } from &quot;node:test&quot;;</td></tr><tr class="add"><td class="ln">2</td><td class="sg">+</td><td class="code">import assert from &quot;node:assert/strict&quot;;</td></tr><tr class="add"><td class="ln">3</td><td class="sg">+</td><td class="code">import { readFileSync } from &quot;node:fs&quot;;</td></tr><tr class="add"><td class="ln">4</td><td class="sg">+</td><td class="code">import { computeBars, computeFlow, midpoint, nearestRank, PHASES, type BarEvent, type Phase } from &quot;../src/flow.ts&quot;;</td></tr><tr class="add"><td class="ln">5</td><td class="sg">+</td><td class="code">import { buildProcess, parseStat, parseWindow, readProcessEvents, renderProcess, minutesText, PROCESS_CSS } from &quot;../src/process.ts&quot;;</td></tr><tr class="add"><td class="ln">6</td><td class="sg">+</td><td class="code">import { FIXTURE, NOW, T1_FILED_TO_DEPLOYED, T1_MERGE_TO_DEPLOY } from &quot;./fixtures/process/ledger.ts&quot;;</td></tr><tr class="add"><td class="ln">7</td><td class="sg">+</td><td class="code"> </td></tr><tr class="add"><td class="ln">8</td><td class="sg">+</td><td class="code">// The Process page's numbers (t558). Every figure is checked against what</td></tr><tr class="add"><td class="ln">9</td><td class="sg">+</td><td class="code">// src/flow.ts reports for the same events, and the empty cases against the</td></tr><tr class="add"><td class="ln">10</td><td class="sg">+</td><td class="code">// words the page must show instead of 0, NaN or an error.</td></tr><tr class="add"><td class="ln">11</td><td class="sg">+</td><td class="code"> </td></tr><tr class="add"><td class="ln">12</td><td class="sg">+</td><td class="code">const DAY = 86_400_000;</td></tr><tr class="add"><td class="ln">13</td><td class="sg">+</td><td class="code">const tasksOf = (events: readonly BarEvent[], from: number, to: number) =&gt; {</td></tr><tr class="add"><td class="ln">14</td><td class="sg">+</td><td class="code">  const by = new Map&lt;string, BarEvent[]&gt;();</td></tr><tr class="add"><td class="ln">15</td><td class="sg">+</td><td class="code">  for (const e of events) if (e.itemId) (by.get(e.itemId) ?? by.set(e.itemId, []).get(e.itemId)!).push(e);</td></tr><tr class="add"><td class="ln">16</td><td class="sg">+</td><td class="code">  return [...by].filter(([, l]) =&gt; l[0].kind === &quot;item.created&quot; &amp;&amp; Date.parse(l[0].at) &gt;= from &amp;&amp; Date.parse(l[0].at) &lt; to).map(([id, l]) =&gt; ({ id, events: l }));</td></tr><tr class="add"><td class="ln">17</td><td class="sg">+</td><td class="code">};</td></tr><tr class="add"><td class="ln">18</td><td class="sg">+</td><td class="code">const page = (events: readonly BarEvent[], window: &quot;7d&quot; | &quot;30d&quot; = &quot;7d&quot;, stat: &quot;median&quot; | &quot;p90&quot; = &quot;median&quot;) =&gt; renderProcess(buildProcess(&quot;demo&quot;, events, NOW, window), stat, &quot;/p/demo/process&quot;);</td></tr><tr class="add"><td class="ln">19</td><td class="sg">+</td><td class="code">const text = (html: string) =&gt; html.replace(/&lt;style[\s\S]*?&lt;\/style&gt;/g, &quot;&quot;).replace(/&lt;[^&gt;]+&gt;/g, &quot; &quot;).replace(/&amp;lt;/g, &quot;&lt;&quot;).replace(/&amp;gt;/g, &quot;&gt;&quot;).replace(/&amp;amp;/g, &quot;&amp;&quot;).replace(/\s+/g, &quot; &quot;);</td></tr><tr class="add"><td class="ln">20</td><td class="sg">+</td><td class="code"> </td></tr><tr class="add"><td class="ln">21</td><td class="sg">+</td><td class="code">test(&quot;criterion 3: each phase block's task count, median, p90 and share equal the flow report for the window&quot;, () =&gt; {</td></tr><tr class="add"><td class="ln">22</td><td class="sg">+</td><td class="code">  const model = buildProcess(&quot;demo&quot;, FIXTURE, NOW, &quot;7d&quot;);</td></tr></table></div>
+    <div class="diff-foot">Lines 1–22 of 231 in this file</div>
+  </div>
+  </div>
+
+  <div class="folds">
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Thread of events</span><span class="n">7</span></summary><ol class="thread"><li><span class="t-at">7:48 am</span><span class="t-dot"></span><span>Filed with 12 criteria</span></li><li><span class="t-at">10:13 am</span><span class="t-dot"></span><span>Dispatched to Sonnet 5.5</span></li><li><span class="t-at">12:09 pm</span><span class="t-dot"></span><span>Submitted</span></li><li><span class="t-at">12:26 pm</span><span class="t-dot"></span><span>Review: rejected</span></li><li><span class="t-at">12:53 pm</span><span class="t-dot"></span><span>Submitted</span></li><li><span class="t-at">1:08 pm</span><span class="t-dot"></span><span>Review: rejected</span></li><li><span class="t-at">1:36 pm</span><span class="t-dot"></span><span>Round 3 claimed</span></li></ol></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Earlier rounds</span><span class="n">2</span></summary><ol class="rounds"><li><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><span class="r-n">Round 1</span><span class="r-why">Read window dropped tasks filed before it</span><span class="r-at">12:26 pm</span></li><li><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><span class="r-n">Round 2</span><span class="r-why">Test does not reach the recovery code</span><span class="r-at">1:08 pm</span></li></ol></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Technical details</span></summary>
+      <dl class="tech"><dt>Task</dt><dd class="mono">atelier / t558</dd><dt>Head commit</dt><dd class="mono">cdb6491c</dd><dt>Builder</dt><dd>Sonnet 5.5 (Anthropic)</dd><dt>Reviewer</dt><dd>gpt-6-astra (OpenAI)</dd><dt>Size</dt><dd>15 files, <span class="plus">+1,904</span> <span class="minus">−22</span></dd><dt>Declared scope</dt><dd><span class="chip mono">src/process.ts</span><span class="chip mono">src/process.css</span><span class="chip mono">src/flow.ts</span><span class="chip mono">src/index.ts</span><span class="chip mono">src/ui.ts</span><span class="chip mono">docs/**</span><span class="chip mono">test/process*</span></dd></dl>
+    </details>
+  </div>
+</section>
+</main>
+</body>
+</html>

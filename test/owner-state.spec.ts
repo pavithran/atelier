@@ -29,8 +29,9 @@ function detail(): Detail {
 }
 const review = (o: Partial<Review>): Review => ({ itemId: "t1", head, criteria: NO_CRITERIA, approve: true, by: "pavi", note: "", at: time, ...o });
 const event = (seq: number, kind: string, data: Record<string, unknown>, at = time): LedgerEvent => ({ seq, itemId: "t1", at, actor: "pavi", kind, data });
-// The task's own header, in <main>: the owner's bar above it is a header too.
-const header = (html: string) => { const main = html.slice(html.indexOf('<main id="main"')); return main.slice(0, main.indexOf("</header>")); };
+// What leads the task's page in <main>, up to its revision line: the title and state, the verdict and track (t586), the
+// owner-state block and the actions. The owner's bar above is a header too.
+const header = (html: string) => { const main = html.slice(html.indexOf('<main id="main"')); return main.slice(0, main.indexOf('<p class="meta revision">')); };
 
 afterEach(() => { setTimeZone(undefined); });
 
@@ -113,7 +114,8 @@ it("criterion 2: the state matrix covers blockers, unavailable diffs and the ter
     // Every state draws the four rows and exactly one next line.
     const html = header(renderItem(project, d, "PAVI", visible ? diff : "unavailable"));
     expect(html.match(/<dt>/g), what).toHaveLength(4);
-    expect(html.match(/class="next-action"/g), what).toHaveLength(1);
+    // A task ready to land says its one ask in the verdict, not as a next line (t586).
+    expect(html.match(/class="next-action"/g) ?? [], what).toHaveLength(html.includes("Ready to land: land it from chat.") ? 0 : 1);
   }
 });
 
@@ -276,8 +278,10 @@ it("the header states each state once and keeps the action it needs", () => {
       expect(h).toContain("fix the copy");
       expect(h).toContain("<summary>Request changes</summary>");
     }],
-    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Ready to land/, (h) => {
-      expect(h).toContain("atelier land t1");
+    ["ready to accept", (d) => { d.reviews = [review({ by: "claude-code/opus-5.5" })]; d.gate = { ready: true, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Ready to land(?!: land it from chat)/, (h) => {
+      // The state is said once; the verdict's ask is the one line that follows, and gives no command (t586).
+      expect(h).toContain("Ready to land: land it from chat.");
+      expect(h).not.toContain("atelier land");
     }],
     ["merged", (d) => { d.item.state = "merged"; d.item.acceptedHead = head; d.gate = { ready: false, needsAssessor: false, blockers: [], outOfScope: [] }; }, /Merged|merged/, (h) => {
       expect(h).toContain("Accepted at aaaaaaaa");
