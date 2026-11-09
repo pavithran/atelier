@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { buildToday, renderToday, todayInputsOf, type TodayInputs, type TodayLedger, type TodaySource } from "../src/today.ts";
-import { NOW, h, project } from "./fixtures/now.ts";
+import { NOW, h, min, project } from "./fixtures/now.ts";
 
 // buildToday is pure and todayInputsOf reads each ledger once (t562). Neither
 // test here reaches a ledger binding: the route tests (today-routes.spec.ts,
@@ -75,3 +75,32 @@ test("todayInputsOf names a project whose ledger throws and reads the rest", asy
   assert.deepEqual(got.projects.map((p) => p.now.name), ["p"]);
 });
 void h;
+
+// A review keeps no progress record (t578): its row says its stage and the head under review, its reviewer's model and, when the request names it, the reviewer's machine.
+test("a Running review row shows the stage, the head under review, the reviewer and its machine, and no empty figure; without a head or runner those are left out", () => {
+  const lane = (patch: Record<string, unknown>) => {
+    const input = inputs();
+    input.projects[0].now.reviewRequests = [{ item: "t6", state: "claimed", claimedBy: "codex/gpt-6-astra", claimedAt: min(5), ...patch }] as never;
+    const view = buildToday(input, NOW);
+    const found = view.lanes.find((l) => l.id === "t6");
+    assert.ok(found, "t6 is a Running row");
+    const html = renderToday(view, "PAVI");
+    const from = html.indexOf('data-task="t6"');
+    return { found, row: html.slice(html.lastIndexOf('<div class="today-lane', from), html.indexOf('<div class="today-lane', from) < 0 ? undefined : html.indexOf('<div class="today-lane', from)), html };
+  };
+  const named = lane({ head: "b6e0fb0d" + "0".repeat(32), runner: "home:mini-atelier-review" });
+  const words = named.row.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  assert.match(words, /Review\b/);
+  assert.match(words, /Reviewing b6e0fb0d\b/);
+  assert.ok(!words.includes("b6e0fb0d0"), "only the short head");
+  assert.match(words, /Mac mini/);
+  assert.match(words, /gpt-6-astra/);
+  assert.equal(named.found.run.pulse, "none");
+  assert.equal(named.found.run.company, "openai");
+  assert.doesNotMatch(named.row, /undefined|NaN|null|>0</);
+  const bare = lane({});
+  const bareWords = bare.row.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  assert.match(bareWords, /Reviewing(?! b)/);
+  assert.doesNotMatch(bareWords, /Mac |home:|undefined|NaN|null/);
+  assert.doesNotMatch(bare.row, /today-where/);
+});
