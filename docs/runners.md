@@ -42,6 +42,69 @@ commit, and inspect every restarted builder's TMPDIR. A failed npm install
 or restart must leave the new commit unacknowledged. Do not deploy if this
 check fails.
 
+## Browser tests on the build runners
+
+A build workspace has no Playwright of its own, so a project's
+`tests/*-browser.cjs` could not run there (tapestries t181, 2026-11-09). The
+Studio keeps one Playwright module and its browsers outside the workspaces and
+tells the runners where they are.
+
+Run as `atelier-build` on the Studio, once, then again after any change:
+
+```sh
+sh scripts/studio/setup-browsers.sh ~/.config/atelier/studio-*
+```
+
+Restart the runners afterwards. The script:
+
+- installs `playwright@1.61.1` (`SETUP_BROWSERS_VERSION`) into
+  `~/playwright-runner` (`SETUP_BROWSERS_ROOT`), and with that module's own
+  command installs its chromium into `~/playwright-runner/browsers`, so the
+  module and the browser revision it asks for are installed together;
+- launches chromium from the new module and loads `about:blank` before it
+  moves anything into place;
+- adds `PLAYWRIGHT_MODULE` (`.../node_modules/playwright`) and
+  `PLAYWRIGHT_BROWSERS_PATH` to the `env` list of every harness entry in each
+  `build*.json` of the folders given, and exports both in each
+  `start-build*.zsh` after its `export PATH=` line. The `env` list is the
+  config's existing passthrough (`cli/runner-config.mjs`; `harnessEnv` in
+  `cli/runner.mjs`): the runner copies the named variables from its own
+  environment to the harness, so a test reads `require(process.env.PLAYWRIGHT_MODULE)`.
+
+`sh scripts/studio/setup-browsers.sh --check` changes nothing: it launches
+chromium from the installed module and loads `about:blank`. Run it after setup
+and after a restart.
+
+Rerunning is safe. An interrupted run leaves only its staging folder, `.new`
+copies beside the configs, or (killed between the two renames) the old module
+in `~/playwright-runner.old`; the next run discards or restores these and
+finishes. A module that is the pinned version and launches is left alone, and
+a config that already names the variables is not rewritten. The lock is the
+folder `~/playwright-runner.lock` holding the pid of the run; a second run
+while it is held exits 75 and names that pid. A lock whose pid is gone is
+taken over.
+
+Every step (install the module, install the browsers, launch check, prepare the
+configs) has a time limit, `SETUP_BROWSERS_LIMIT` seconds, 900 unless set. A step past it is killed and
+the script exits 124 naming the step. The steps work only in staging and on
+`.new` copies, so the module, browsers and configs are as they were and the next
+run starts clean.
+
+The project's build guide should tell builders. For tapestries, add to its
+`.atelier/prompts/build.md` (a protected path, so another family reviews it):
+"Browser tests run in this workspace: `PLAYWRIGHT_MODULE` names Playwright
+1.61.1 with chromium installed. Start the project's local Vite server, then run
+`node tests/NAME-browser.cjs`. Say so if the variable is unset."
+`atelier guide --role build --project tapestries` prints that file.
+
+Local tests run the script with a stand-in `npm` and Playwright
+(`test/setup-browsers.test.mjs`). They cannot show the real npm download, the
+real chromium launching, launchd passing the exports to the runner, or a
+build on `home:studio-tapestries-build` running `tests/gathering-browser.cjs`
+against Vite. After deploy, on the Studio: run the script, restart the
+build runners, run `--check`, and run that test in a fresh build workspace
+without setting anything by hand.
+
 For developer-token examples, set the acting model for the session:
 
 ```sh
