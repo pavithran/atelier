@@ -352,6 +352,9 @@ function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly st
     const landing = lease?.item === o.id && !landingLeaseLapsed(lease, now) && o.state !== "merged" && o.state !== "abandoned";
     if (!holdsCore(o) && !landing) return [];
     if (o.kind === "plan" && !landing) return [];
+    // An unclaimed task blocked by this one cannot start before it does, so
+    // it holds nothing off it. A claimed one has a workspace and still holds.
+    if (o.state === "open" && !landing && o.blockedBy?.includes(item.id)) return [];
     // Two live tasks naming one design note overlap with no shared file; the
     // hold has the life of a core-file hold (holdsCore above).
     const core = (coreFiles?.length ? scopesOverlapWithin(item.scope, o.scope, [...coreFiles]) : null)
