@@ -4385,9 +4385,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (req.method !== "GET") return html("Not found.", 404);
   // Old URLs moved by organising the site by project (PAVI's direction,
   // 2026-10-06), permanently, so links already written in the ledger, the
-  // notifications and the README keep working: /projects is Home now, and a
-  // single project's flow is its own tab in the project's area.
-  if (parts[0] === "projects" && parts.length === 1) return movedTo(c.url, ["home"]);
+  // notifications and the README keep working: a single project's flow is its
+  // own tab in the project's area. /projects is the portfolio again (t585).
+  if (parts[0] === "projects" && parts.length === 1) return await homePage(c);
   if (parts[0] === "flow" && c.url.searchParams.has("project")) {
     const name = c.url.searchParams.get("project") ?? "";
     return new Response(null, { status: 301, headers: { location: `/p/${encodeURIComponent(name)}/flow` } });

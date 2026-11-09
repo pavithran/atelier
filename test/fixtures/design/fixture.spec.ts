@@ -52,7 +52,7 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
       const head = body.slice(body.indexOf('<header class="owner-bar">'), body.indexOf("</header>", body.indexOf('<header class="owner-bar">')));
       if (!body.includes('<header class="owner-bar">') || body.includes("<!--shell:")) failures.push(`${p.id}: no filled owner bar`);
       const marked = (label: string) => (head.split(`aria-label="${label}">`)[1]?.split("</nav>")[0] ?? "").split('aria-current="page"').length - 1;
-      if (p.status === 200 && marked("Atelier") !== (["/models", "/usage"].includes(p.path) ? 0 : 1)) failures.push(`${p.id}: ${marked("Atelier")} current items in row 1`);
+      if (p.status === 200 && marked("Atelier") !== (p.path === "/usage" ? 0 : 1)) failures.push(`${p.id}: ${marked("Atelier")} current items in row 1`);
       // Under /p/, an error or an empty repository included (gate finding 3).
       if (p.path.startsWith("/p/") && marked("Project") !== 1) failures.push(`${p.id}: ${marked("Project")} current tabs`);
       for (const m of head.matchAll(/<a [^>]*href="([^"]+)"/g)) links.add(m[1]);
@@ -70,7 +70,9 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
   // Log as its Code does: the row an error page is given still names them.
   const drawn = new Map(pageStates(seeded).map((p) => [p.path, p.status]));
   const redirects = ALIASES(seeded).filter((a) => a.audience === "owner");
+  // Process leads to /p/atelier/process outside a project; the fixture holds no project of that name.
   const want = (link: string) => drawn.get(link)
+    ?? (link === "/p/atelier/process" ? 404 : undefined)
     ?? redirects.find((a) => a.path === link)?.status
     ?? (link.startsWith(`/p/${UNAVAILABLE_PROJECT}/`) ? drawn.get(`/p/${UNAVAILABLE_PROJECT}`) : link === `/p/${EMPTY_PROJECT}/log` ? drawn.get(`/p/${EMPTY_PROJECT}/code`) : 200);
   for (const link of links) {

@@ -6,7 +6,7 @@ import { signIn } from "./signin.ts";
 // The owner's bar (t543; docs/design/reimagined/, plan.md P1) through the
 // Worker's own fetch handler: every owner route served today answers with
 // the bar, its current item marked, every link in it leads to a page that
-// answers, and the Decisions count is the number Today's Need you tile counts.
+// answers, and the waiting count on Today is the number Today's Need you tile counts.
 // The browsing routes (code, log, commit, path history) need Artifacts; the
 // design fixture draws those (test/fixtures/design/fixture.spec.ts).
 
@@ -30,19 +30,19 @@ const badge = (html: string) => /<span class="badge"><span class="visually-hidde
 // and the project tab it makes current (null: none), as plan.md §2 maps them.
 const NAME = "shell-area";
 const ROUTES: [path: string, nav: string | null, tab: string | null][] = [
-  ["/", "/decisions", null],
+  ["/", "/", null],
   ["/studio", "/studio", null],
   ["/flow", "/studio", null],
   ["/history", "/studio", null],
-  ["/models", null, null],
+  ["/models", "/models", null],
   ["/usage", null, null],
-  [`/p/${NAME}`, "/home", `/p/${NAME}`],
-  [`/p/${NAME}/tasks`, "/home", `/p/${NAME}/tasks`],
-  [`/p/${NAME}/flow`, "/home", `/p/${NAME}/flow`],
-  [`/p/${NAME}/plans`, "/home", `/p/${NAME}/tasks`],
-  [`/p/${NAME}/ship`, "/home", `/p/${NAME}/settings`],
-  [`/p/${NAME}/settings`, "/home", `/p/${NAME}/settings`],
-  [`/p/${NAME}/t1`, "/home", `/p/${NAME}/tasks`],
+  [`/p/${NAME}`, "/projects", `/p/${NAME}`],
+  [`/p/${NAME}/tasks`, "/projects", `/p/${NAME}/tasks`],
+  [`/p/${NAME}/flow`, "/projects", `/p/${NAME}/flow`],
+  [`/p/${NAME}/plans`, "/projects", `/p/${NAME}/tasks`],
+  [`/p/${NAME}/ship`, "/projects", `/p/${NAME}/settings`],
+  [`/p/${NAME}/settings`, "/projects", `/p/${NAME}/settings`],
+  [`/p/${NAME}/t1`, "/projects", `/p/${NAME}/tasks`],
 ];
 
 // The addresses Today replaced (t562): each redirects, and the bar's links to them are these.
@@ -50,6 +50,7 @@ const MOVED: Record<string, string> = { "/home": "/", "/now": "/", "/decisions":
 
 it("every owner route answers with the bar, its own item current, and every link in the bar answers", async () => {
   await project(NAME, "Shell Area");
+  await project("atelier");
   await L(NAME).newItem("Blocked work", ["src/**"], "owner");
   await L(NAME).block("t1", "owner", "waiting on a decision");
   await L(NAME).newItem("Open work", ["docs/**"], "owner");
@@ -74,7 +75,7 @@ it("every owner route answers with the bar, its own item current, and every link
     for (const m of bar(html).matchAll(/<a [^>]*href="([^"]+)"/g)) links.add(m[1]);
   }
   // The bar's destinations, the five tabs and the switcher's projects.
-  for (const want of ["/decisions", "/home", "/studio", "/models", "/usage", `/p/${NAME}`, `/p/${NAME}/tasks`, `/p/${NAME}/code`, `/p/${NAME}/flow`, `/p/${NAME}/settings`]) expect([...links]).toContain(want);
+  for (const want of ["/", "/projects", "/studio", "/models", "/usage", `/p/${NAME}/process`, "/p/atelier/process", `/p/${NAME}`, `/p/${NAME}/tasks`, `/p/${NAME}/code`, `/p/${NAME}/flow`, `/p/${NAME}/settings`]) expect([...links]).toContain(want);
   // Each link answers; Code reads Artifacts, which this pool has no repository in, so it is drawn by the design fixture.
   for (const link of links) {
     if (link.endsWith("/code")) continue;
@@ -87,7 +88,7 @@ it("every owner route answers with the bar, its own item current, and every link
     const res = await get(from);
     expect([res.status, res.headers.get("location")], from).toEqual([302, to]);
   }
-  expect((await get("/projects")).headers.get("location")).toBe("/home");
+  expect((await get("/projects")).status).toBe(200);
   expect((await get(`/flow?project=${NAME}`)).headers.get("location")).toBe(`/p/${NAME}/flow`);
 });
 

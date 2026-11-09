@@ -4,12 +4,15 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { buildNow } from "../src/now.ts";
-import { page as ownerPage, renderNow } from "../src/ui.ts";
+import { page as ownerPage, renderError, renderItem, renderNow, type Detail } from "../src/ui.ts";
+import { buildToday, renderToday, type TodayInputs } from "../src/today.ts";
+import type { ProjectRecord } from "../src/ledger.ts";
 import { NOW, project } from "./fixtures/now.ts";
 
 // The Now page in a real browser (t525): it follows the device's colour
-// scheme and switches when that changes, it never scrolls sideways at 390 px,
-// and an owner page that is not Now stays in Night. The browser is the one
+// scheme and switches when that changes, and it never scrolls sideways at
+// 390 px. Since t585 every owner page does the same: Today, a task page and
+// the error page are drawn at 1280 and 390 px in both schemes below. The browser is the one
 // playwright-core finds in its cache or ATELIER_CAPTURE_CHROMIUM names
 // (docs/design/README.md); without one these tests are skipped, and the
 // stylesheet and markup the browser reads are checked in test/now-routes.spec.ts.
@@ -58,11 +61,46 @@ test("the page switches scheme when the device does, with no reload", { skip }, 
   });
 });
 
-test("an owner page that is not Now stays in Night on a light device", { skip }, async () => {
+test("an owner page that is not Now follows a light device, no longer staying in Night", { skip }, async () => {
   await open(1440, "light", async (p) => {
-    assert.equal(await ground(p), "rgb(7, 9, 12)");
+    assert.notEqual(await ground(p), "rgb(7, 9, 12)");
   }, ownerPage("Decisions", "<p>Decisions</p>"));
 });
+
+// The owner pages t585 moved to the device: Today, a task's page and the error page.
+const stamped = "2026-10-03T12:00:00Z", rev = "a".repeat(40);
+const example: ProjectRecord = { name: "example", repo: "example", policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: stamped };
+const taskDetail = (): Detail => ({
+  ownerActor: "pavi", ownerFactor: "access",
+  item: { id: "t1", title: "A task", state: "submitted", owner: "codex/gpt-6", scope: ["src/**"], workspace: "example--t1", base: "b".repeat(40), head: rev, acceptedHead: null, lastPushAt: stamped, updatedAt: stamped, createdAt: stamped },
+  policy: example.policy,
+  evidence: [{ itemId: "t1", claim: "npm test", grade: "observed", head: rev, passed: true, by: "codex/gpt-6", at: stamped, changedPaths: ["src/a.ts"] }],
+  reviews: [], gate: { ready: false, needsAssessor: true, blockers: ["Protected"], outOfScope: [] }, events: [],
+} as unknown as Detail);
+const todayInputs = (): TodayInputs => ({ owner: "owner", unread: [], projects: [{ now: project(), pulseEvents: project().events as never, ships: [], postMerge: {} }] });
+const OWNER_PAGES: [string, string][] = [
+  ["Today", renderToday(buildToday(todayInputs(), NOW), "PAVI")],
+  ["a task page", renderItem(example, taskDetail(), "PAVI", { head: rev, base: "b".repeat(40), files: [], truncated: false })],
+  ["the error page", renderError("Something went wrong.", "/projects", "PAVI")],
+];
+for (const [name, body] of OWNER_PAGES) {
+  for (const width of [1280, 390]) {
+    test(`${name} at ${width} px: light and dark grounds differ, and nothing scrolls sideways`, { skip }, async () => {
+      let dark = "", light = "";
+      await open(width, "dark", async (p) => { dark = await ground(p); }, body);
+      await open(width, "light", async (p) => {
+        light = await ground(p);
+        const o = await p.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth }));
+        assert.ok(o.scroll <= o.inner, `${name} light: scrollWidth ${o.scroll} > ${o.inner}`);
+      }, body);
+      assert.notEqual(light, dark);
+      if (width === 390) await open(390, "dark", async (p) => {
+        const o = await p.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: window.innerWidth }));
+        assert.ok(o.scroll <= o.inner, `${name} dark: scrollWidth ${o.scroll} > ${o.inner}`);
+      }, body);
+    });
+  }
+}
 
 for (const width of [1440, 390]) {
   for (const scheme of ["dark", "light"] as const) {

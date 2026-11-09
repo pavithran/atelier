@@ -1090,10 +1090,10 @@ it("the project's area serves each tab, and the URLs that moved redirect permane
   const signedIn = await signIn(TOKEN, testEnv);
   const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn }, redirect: "manual" }), testEnv);
 
-  // /projects is Home now, and a project's flow is its own tab: both permanent. Home itself sends on to Today (t562).
+  // /projects is the portfolio (t585), and a project's flow is its own tab, permanently. Home sends on to Today (t562).
   const projects = await get("/projects");
-  expect(projects.status).toBe(301);
-  expect(projects.headers.get("location")).toBe("/home");
+  expect(projects.status).toBe(200);
+  expect(await projects.text()).toContain(`href="/p/${name}"`);
   const homeMoved = await get("/home");
   expect(homeMoved.status).toBe(302);
   expect(homeMoved.headers.get("location")).toBe("/");
