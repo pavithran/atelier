@@ -144,7 +144,7 @@ test("npm test executes real runner-token routes and propagates a failed token a
   // runner, route or process exit is stubbed. The passing run measures
   // expanded it.each.
   const dir = tree(t, []);
-  for (const file of ["package.json", "tsconfig.json", "src", "hooks", "test/support", "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs",
+  for (const file of ["package.json", "tsconfig.json", "src", "hooks", "test/support", "test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/runner-cleanup.mjs", "test/node-pool.mjs",
     "cli/group.mjs", "cli/check-clock.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file), { recursive: true });
@@ -191,7 +191,7 @@ test("files run longest first, those the list does not name before it, each grou
 
 function runTree(t, { timings } = {}) {
   const dir = tree(t, []);
-  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/check-clock.mjs", "cli/load.mjs"]) {
+  for (const file of ["test/run.mjs", "test/suites.mjs", "test/guard.mjs", "test/runner-cleanup.mjs", "test/node-pool.mjs", "cli/group.mjs", "cli/check-clock.mjs", "cli/load.mjs"]) {
     mkdirSync(join(dir, file, ".."), { recursive: true });
     cpSync(file, join(dir, file));
   }
