@@ -4,6 +4,8 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { seed, type Seeded } from "./fixtures/design/seed.ts";
 import { designEnv, draw, pageStates, serveKeys, session } from "./fixtures/design/pages.ts";
+import { existsSync } from "node:fs";
+import { chromium } from "playwright-core";
 import { stamp } from "../src/time.ts";
 
 // The task page's verdict, track and evidence (t586), entered at worker.fetch
@@ -140,6 +142,33 @@ it("criterion 6: each counting review shows reviewer, company, builder, round an
   expect(reviewed).toMatch(/glm-5\.3 Z\.ai approved Built by gpt-6-astra .*Round 1 · \d{4}-\d\d-\d\d \d\d:\d\d UTC/);
 });
 
+it("criterion 6: two reviews at one head with the same finding each take their own verdict, the newer confirmed over the older refuted", async () => {
+  const id = lc().ready[2];
+  const l = ledger();
+  const d = await l.detail(id);
+  const findings = [{ file: "src/same.ts", line: 7, severity: "blocking" as const, text: "Twin finding." }];
+  const criteria = await l.criteria(id);
+  const add = () => l.addReview({ itemId: id, head: d.item.head!, criteria, by: "codex/gpt-6-astra", approve: false, note: "Twin.", at: new Date().toISOString(), findings });
+  await add();
+  const older = (await l.detail(id)).reviews.at(-1) as { seq: number };
+  await add();
+  const newer = (await l.detail(id)).reviews.at(-1) as { seq: number };
+  expect(newer.seq).toBeGreaterThan(older.seq);
+  await l.addFinding(id, "owner", d.item.head!, 1, "refuted", "no", { reviewSeq: older.seq });
+  await l.addFinding(id, "owner", d.item.head!, 1, "confirmed", "yes", { reviewSeq: newer.seq });
+  const shown = text(evidenceOf(await get(id)));
+  expect(shown).toContain("Verdict: confirmed");
+  expect(shown).not.toContain("Verdict: refuted");
+});
+
+it("the check output fold carries id=checks, the target the graph's check and review links name", async () => {
+  const html = await get(lc().ready[1]);
+  expect(html.match(/id="checks"/g)).toHaveLength(1);
+  expect(html).toMatch(/<details class="fold" id="checks">(?:(?!<\/details>)[^])*Checks and reviews/);
+  expect(html).toContain('id="changes"');
+  expect(html).toContain('id="history"');
+});
+
 it("criterion 7: scope lists the declared globs and each path outside by name, with K of N files inside, or not read", async () => {
   const scope = text(evidenceOf(await get(lc().scope[0])));
   expect(scope).toContain("docs/**");
@@ -194,4 +223,27 @@ it("criterion 11: the renderer reads only its arguments, the CSS holds no colour
   const css = readFileSync("src/task-verdict.css", "utf8");
   expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\brgba?\(\s*\d|\bhsla?\(|\boklch\(|\b(white|black|red|green|blue|gold|orange)\b\s*[;,)]/);
   expect(execFileSync("git", ["diff", "--name-only", "339aa165", "--", "src/index.ts", "src/ledger.ts", "src/theme.css"], { encoding: "utf8" })).toBe("");
+});
+
+// Criterion 12: the committed 390 px shots are of pages that do not scroll sideways. The drawn HTML is loaded
+// in Chromium (the build playwright-core names, or ATELIER_CAPTURE_CHROMIUM) with every other request aborted.
+it("criterion 12: the ready, sent-back and protected pages have no sideways scroll at 390 px, light and dark", async () => {
+  const executablePath = process.env.ATELIER_CAPTURE_CHROMIUM || chromium.executablePath();
+  expect(existsSync(executablePath), `no Chromium at ${executablePath}`).toBe(true);
+  const browser = await chromium.launch({ executablePath, headless: true });
+  try {
+    for (const [name, id] of [["ready", lc().ready[1]], ["sent-back", lc().sentBack[0]], ["protected", lc().protected[0]]] as const) {
+      const body = await get(id);
+      for (const scheme of ["light", "dark"] as const) {
+        const context = await browser.newContext({ viewport: { width: 390, height: 844 }, colorScheme: scheme });
+        const page = await context.newPage();
+        await page.route("**/*", (route) => route.request().url().startsWith("http://page.test/") ? route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body }) : route.abort());
+        await page.goto("http://page.test/task");
+        const m = await page.evaluate("({ client: document.documentElement.clientWidth, scroll: document.documentElement.scrollWidth })") as { client: number; scroll: number };
+        expect({ name, scheme, wide: m.scroll > m.client }, `${name} ${scheme}: scrollWidth ${m.scroll}, client ${m.client}`).toEqual({ name, scheme, wide: false });
+        expect(m.scroll).toBeLessThanOrEqual(390);
+        await context.close();
+      }
+    }
+  } finally { await browser.close(); }
 });

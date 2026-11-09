@@ -148,8 +148,10 @@ function reviewRows(d: Detail): string {
   const rows = counted.map((r) => {
     const w = who(r.by, owner);
     const round = submitted.filter((at) => at <= r.at).length;
-    const blocking = (r.findings ?? []).filter((f) => f.severity === "blocking").map((f) => {
-      const j = judged.find((x) => x.by === r.by && x.head === r.head && x.file === f.file && x.line === f.line && x.text === f.text);
+    const seq = (r as { seq?: number }).seq;
+    const blocking = (r.findings ?? []).map((f, i) => [f, i + 1] as const).filter(([f]) => f.severity === "blocking").map(([f, index]) => {
+      // A verdict is on one review's finding: matched by that review's seq and the finding's 1-based index, never by its words.
+      const j = judged.find((x) => x.review === seq && x.index === index);
       return `<div class="finding"><div class="finding-top"><span class="tag tag-bad">Blocking</span><span class="mono">${e(f.file)}${f.line === null ? "" : `:${f.line}`}</span></div><p>${e(f.text)}</p><p class="finding-verdict">${j?.verdict ? `Verdict: ${e(j.verdict)}` : "Verdict: not judged yet"}</p></div>`;
     }).join("");
     return `<li class="row">${mark(r.approve ? "ok" : "bad", r.approve ? "approved" : "changes requested")}<div class="row-main"><span>${e(w.model)} <span class="co">${e(w.company)}</span> ${r.approve ? "approved" : "asked for changes"}</span><span class="row-sub">Built by ${item.owner ? e(who(item.owner, owner).model) : NOT_RECORDED}${r.note ? ` · ${e(r.note)}` : ""}</span>${blocking}</div><div class="row-meta">${round ? `Round ${round}` : `Round ${NOT_RECORDED}`}<span class="sep">·</span>${e(when(r.at))}</div></li>`;
@@ -181,7 +183,7 @@ function evidenceBlock(d: Detail, diff: ItemDiff | "unavailable" | null): string
 
 // ── the page ───────────────────────────────────────────────────────────────
 
-const fold = (title: string, inner: string) => `<details class="fold"><summary>${ICON.chevron}<span>${e(title)}</span></summary>${inner.trim() ? inner : `<p class="meta">${NOT_RECORDED[0].toUpperCase()}${NOT_RECORDED.slice(1)}.</p>`}</details>`;
+const fold = (title: string, inner: string, id = "") => `<details class="fold"${id ? ` id="${id}"` : ""}><summary>${ICON.chevron}<span>${e(title)}</span></summary>${inner.trim() ? inner : `<p class="meta">${NOT_RECORDED[0].toUpperCase()}${NOT_RECORDED.slice(1)}.</p>`}</details>`;
 
 export function renderTaskVerdict(d: Detail, diff: ItemDiff | "unavailable" | null, parts: ReviewParts, ctx: TaskVerdictContext): string {
   const { item } = d;
@@ -216,7 +218,7 @@ export function renderTaskVerdict(d: Detail, diff: ItemDiff | "unavailable" | nu
   ${fold("Earlier rounds", parts.rounds)}
   ${parts.history.replace('<details class="disclosure" id="history"><summary>Task history</summary>', `<details class="fold" id="history"><summary>${ICON.chevron}<span>Task history</span></summary>`)}
   ${fold("Brief and acceptance criteria", `${parts.text}${parts.origin}${parts.framing}${v.kind === "ready" ? parts.briefAsk : parts.brief}`)}
-  ${fold("Check output and review notes", parts.checks)}
+  ${fold("Check output and review notes", parts.checks, item.head ? "checks" : "")}
   ${fold(`Technical details${parts.live ? " and handoff" : ""}`, `${parts.technical}${browse}${parts.ownership}${parts.close}`)}
 </div>`;
   return `${hero}
