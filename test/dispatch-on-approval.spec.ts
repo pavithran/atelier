@@ -258,6 +258,66 @@ it("criterion 9: the review at filing is asked with requireCriteriaReview unset,
   expect((await L.item(id)).dispatch?.reviewer).toBeTruthy();
 });
 
+const MAPPING = `anthropic=${ACTING}`;
+const decide = (P: string, value: string) => call("POST", `${P}/decisions`, "owner", { standing: { key: "review-on-checked", value }, quote: "Astra reviews Claude-built work" });
+
+it("t587 criterion 1: review-on-checked is recorded through the decisions route on a project not in fast mode", async () => {
+  const { L, P } = await setup("t587-record", SONNET, {});
+  expect((await L.mode()).mode).not.toBe("fast");
+  const res = await decide(P, MAPPING);
+  expect(res.status, await res.clone().text()).toBe(201);
+  expect((await L.decisions()).filter(d => d.standing?.key === "review-on-checked")).toHaveLength(1);
+});
+
+it("t587 criterion 2: with the mapping recorded and no fast mode, approval dispatches with the mapped reviewer", async () => {
+  const { L, P } = await setup("t587-dispatch", SONNET, {});
+  expect((await decide(P, MAPPING)).status).toBe(201);
+  const { id } = await file(P, ["Search answers within 200 ms"], OPUS);
+  const [asked] = await openReview(L, id);
+  await verdict(P, id, asked.reviewer, true);
+  expect((await L.item(id)).dispatch).toMatchObject({ agent: "claude-code", model: "sonnet-5.5", land: true, reviewer: ACTING });
+});
+
+it("t587 criterion 3: with no mapping, landReviewer takes the first eligible model of another company", async () => {
+  const { L, P } = await setup("t587-unmapped", SONNET, {});
+  const { id } = await file(P, ["Search answers within 200 ms"], OPUS);
+  const [asked] = await openReview(L, id);
+  await verdict(P, id, asked.reviewer, true);
+  const d = (await L.item(id)).dispatch;
+  expect(POOL.map(e => `${e.harness}/${e.id}`)).toContain(d?.reviewer);
+  expect(familyOf(d!.reviewer!.split("/")[1])).not.toBe("anthropic");
+});
+
+it("t587 criteria 5 and 7: a second review-on-checked while one stands is refused already_decided and one decision.recorded stands", async () => {
+  const { L, P } = await setup("t587-twice", null, {});
+  await L.setMode("owner", "fast", "Test the repeated decision", ACTING, "Use fast mode so this passes on main");
+  expect((await decide(P, MAPPING)).status).toBe(201);
+  const again = await decide(P, MAPPING);
+  expect(again.status).toBe(409);
+  expect(await again.text()).toContain("already_decided");
+  expect((await L.decisions()).filter(d => d.standing?.key === "review-on-checked")).toHaveLength(1);
+  expect((await L.events()).filter(e => e.kind === "decision.recorded" && JSON.stringify(e.data).includes("review-on-checked"))).toHaveLength(1);
+});
+
+it("t587 criterion 6: a refused landReviewer writes no dispatch and blocks the task; a second approval does not dispatch twice", async () => {
+  const { L, P } = await setup("t587-refused", OPUS, { familyMode: { single: "anthropic", by: "owner", at: AT } });
+  const { id } = await file(P, ["Search answers within 200 ms"], SONNET);
+  const [asked] = await openReview(L, id);
+  await verdict(P, id, asked.reviewer, true);
+  expect((await L.item(id)).dispatch).toBeNull();
+  expect(await dispatches(L, id)).toHaveLength(0);
+  expect((await L.item(id)).state).toBe("blocked");
+  const ok = await setup("t587-once", SONNET, {});
+  await ok.L.setMode("owner", "fast", "Test the single dispatch", ACTING, "Use fast mode so this passes on main");
+  expect((await decide(ok.P, MAPPING)).status).toBe(201);
+  const f = await file(ok.P, ["Search answers within 200 ms"], OPUS);
+  const [r] = await openReview(ok.L, f.id);
+  await verdict(ok.P, f.id, r.reviewer, true);
+  await ok.L.stageTick(new Date());
+  await ok.L.stageTick(new Date());
+  expect(await dispatches(ok.L, f.id)).toHaveLength(1);
+});
+
 it("criterion 9: the review at filing is asked in fast mode, and its approval dispatches", async () => {
   const { L, P } = await setup("approval-fast");
   await L.setMode("owner", "fast", "Test the review at filing", ACTING, "Use fast mode to test the review at filing");
