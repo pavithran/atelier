@@ -1,5 +1,5 @@
 // A protected change no reviewer in the pool qualifies for needs the owner's
-// override (t504): the Home page, the Overview, the Decisions page and the
+// override (t504): Today, the Overview, the task page and the
 // standing route each read the Ledger's inbox with the model pool, so the
 // task is placed under the owner, not left in review; once the pool offers a
 // reviewer of another family, every view moves it back to review.
@@ -53,16 +53,20 @@ it("a protected change with no qualifying reviewer waits on the owner in every v
   const inbox = (await (await api("/inbox")).json()) as { project: string; itemId: string; kind: string; reviewer?: string | null }[];
   expect(inbox.filter((x) => x.project === NAME).map((x) => [x.itemId, x.kind, x.reviewer])).toEqual([["t1", "assess", null]]);
 
-  const row = /<li class="owner-call"><a href="\/p\/pool-placement\/t1"><strong>Touch a protected path<\/strong><\/a><span class="tag[^"]*">No reviewer<\/span>/;
-  const home = await page("/home", cookie);
-  expect(home).toMatch(row);
+  // Today lists it among the cards that need the owner, as No reviewer.
+  const card = /<section id="needs-you".*?<a class="today-title" href="\/p\/pool-placement\/t1">Touch a protected path<\/a>.*?<span class="today-chip you">No reviewer<\/span>.*?decide the review override/s;
+  const today = await page("/", cookie);
+  expect(today).toMatch(card);
   const overview = await page(`/p/${NAME}`, cookie);
   expect(overview.split('id="standing"')[1]).toContain("No reviewer");
   expect(overview).toContain("Waiting on you · 1");
   // On the grid it is a protected change waiting for its review.
   expect(overview).toContain('<a href="/p/pool-placement/tasks?state=needs-review"><span class="state-n ask">1</span>');
-  const decisions = await page(`/decisions?project=${NAME}&task=t1`, cookie);
-  expect(decisions).toContain("No reviewer in the pool qualifies for this protected change");
+  const task = await page(`/p/${NAME}/t1`, cookie);
+  expect(task).toContain("touches a protected path and needs an approval from");
+  expect(task).toContain("if no reviewer qualifies, accept with an override and its reason");
+  const old = await worker.fetch(new Request(`https://atelier.test/decisions?project=${NAME}&task=t1`, { headers: { cookie }, redirect: "manual" }), testEnv);
+  expect([old.status, old.headers.get("location")]).toEqual([302, `/p/${NAME}/t1`]);
 
   // A reviewer of another family joins the pool: the reviewers handle it.
   await I().putModel(model("gpt-6-astra"));
@@ -70,7 +74,7 @@ it("a protected change with no qualifying reviewer waits on the owner in every v
   const some = await standing();
   expect(some.waiting).toEqual([]);
   expect(some.pipeline).toEqual([{ stage: "submitted", count: 1 }]);
-  expect(await page("/home", cookie)).not.toMatch(row);
+  expect(await page("/", cookie)).not.toMatch(card);
   expect(await page(`/p/${NAME}`, cookie)).toContain("Waiting on you · 0");
 });
 

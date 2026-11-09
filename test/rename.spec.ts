@@ -194,8 +194,10 @@ it("pages under a former name redirect to the current one with their path and qu
   const task = await get("/p/page-new/t1");
   expect(task.status).toBe(200);
   expect(await task.text()).toContain('action="/ui/page-new/t1/release"');
-  // Decisions selects the project by either name.
-  expect((await get("/decisions?project=page-old&task=t1")).status).toBe(200);
+  // The old Decisions address carries the name it was given to the task page, which then redirects to the current name.
+  const decisions = await get("/decisions?project=page-old&task=t1");
+  expect(decisions.status).toBe(302);
+  expect(decisions.headers.get("location")).toBe("/p/page-old/t1");
   // A form from a page opened before the rename still acts, and lands on the page under the new name.
   const posted = await worker.fetch(new Request("https://atelier.test/ui/page-old/t1/release", {
     method: "POST", headers: { cookie: signedIn, origin: "https://atelier.test", "content-type": "application/x-www-form-urlencoded" }, body: "note=done&head=",

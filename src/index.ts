@@ -59,6 +59,7 @@ import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaime
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor, type Attention } from "./attention.ts";
+import { buildToday, renderToday, todayInputsOf, type TodayLedger } from "./today.ts";
 import { readAccepted } from "./accepted-main.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
 import { cleanReport, thresholdsFrom, type Thresholds, type UsageReport } from "./usage/report.ts";
@@ -654,6 +655,9 @@ function assertNewName(name: string): void {
 // A page reached through a name the project no longer has moves to the name
 // it has now, with the rest of its path and its query. Permanent, but not
 // cached: a rename can be reversed, and a cached redirect each way would loop.
+// A temporary redirect to a path of this site.
+const sentTo = (path: string) => new Response(null, { status: 302, headers: { location: path, "cache-control": "no-store" } });
+
 function movedTo(url: URL, parts: string[]): Response {
   return new Response(null, {
     status: 301,
@@ -4388,12 +4392,21 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const name = c.url.searchParams.get("project") ?? "";
     return new Response(null, { status: 301, headers: { location: `/p/${encodeURIComponent(name)}/flow` } });
   }
-  if (parts[0] === "home" && parts.length === 1) return await homePage(c);
+  // Today (t562) is the front page; Home, Now and Decisions lead to it, a task's decision to its page.
+  if (parts.length === 0) {
+    const now = new Date();
+    const projects = await index(env).projects();
+    const inputs = await todayInputsOf({ projects: projects.map((p) => ({ name: p.name, title: titleOf(p), ledger: ledgerOf(env, p) as unknown as TodayLedger })), pool: await poolOf(env), offers: await offersOf(env), owner: ownerActor(env) }, now);
+    return html(renderToday(buildToday(inputs, now), ownerName(env), live), 200, live.nonce);
+  }
+  if ((parts[0] === "home" || parts[0] === "now") && parts.length === 1) return sentTo("/");
   if (parts[0] === "history") return await historyPage(c);
   if (parts[0] === "studio") return await studioPage(c);
-  if (parts[0] === "now" && parts.length === 1) return html(renderNow(await nowViewOf(env, new Date()), ownerName(env), live), 200, live.nonce);
   if (parts[0] === "flow") return await flowPage(c, live);
-  if (parts[0] === "decisions") return await decisionsPage(c, live);
+  if (parts[0] === "decisions") {
+    const [project, task] = [c.url.searchParams.get("project") ?? "", c.url.searchParams.get("task") ?? ""];
+    return sentTo(project && project !== "." && project !== ".." && /^t\d+$/.test(task) ? `/p/${encodeURIComponent(project)}/${task}` : "/");
+  }
   if (parts[0] === "p" && parts.length >= 2) return await projectArea(c, parts, live, nonce);
   return html("Not found.", 404);
 }
@@ -4824,10 +4837,9 @@ export default {
     // Pages show times in the owner's zone (src/time.ts).
     setTimeZone((env as unknown as Settings).TIMEZONE);
     try {
-      // The front door and the old /showcase lead to the projects list at
-      // /home, answered before the sign-in check; a visitor who is not signed
-      // in meets the sign-in there, as at any owner page (t758).
-      if ((pathname === "/" || pathname === "/showcase") && (req.method === "GET" || req.method === "HEAD")) return Response.redirect(new URL("/home", url).toString(), 302);
+      // The old /showcase leads to /home (and so to Today), answered before
+      // the sign-in check. The front door is Today itself, behind the check.
+      if (pathname === "/showcase" && (req.method === "GET" || req.method === "HEAD")) return Response.redirect(new URL("/home", url).toString(), 302);
       // The live script, first party and public: it holds nothing private, and a page admits it only under its nonce.
       if (pathname === "/live.js" && (req.method === "GET" || req.method === "HEAD")) {
         return new Response(LIVE_SCRIPT, { headers: { "content-type": LIVE_SCRIPT_TYPE, "cache-control": "public, max-age=300", "x-content-type-options": "nosniff" } });

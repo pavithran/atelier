@@ -94,7 +94,7 @@ it("visibility by caller and output path: JSON, the page, the Revert confirmatio
   const anyAgent = { authorization: `Bearer ${agent}`, "x-atelier-actor": ASTRA };
   const rows: [string, string, Record<string, string>, number][] = [
     // [caller, path, headers, status]
-    ["developer session", "/now", { cookie }, 200],
+    ["developer session", "/now", { cookie }, 302],
     ["developer session", "/p/now-table/t1/revert", { cookie }, 200],
     ["no session", "/now", {}, 303],
     ["no session", "/p/now-table/t1/revert", {}, 303],
@@ -105,27 +105,27 @@ it("visibility by caller and output path: JSON, the page, the Revert confirmatio
     const res = await get(path, headers);
     expect(res.status, `${caller} ${path}`).toBe(status);
     if (status !== 200) expect(await res.text(), `${caller} ${path}`).not.toContain("Merged today");
+    if (path === "/now" && status === 302) expect(res.headers.get("location"), `${caller} ${path}`).toBe("/");
   }
-  // The session's page carries the title; the redirect and the refusal carry none of it.
-  expect(await (await get("/now", { cookie })).text()).toContain("Merged today");
+  // /now has no page of its own any more (t562): it sends every caller to Today. The JSON still carries the title, to the developer alone.
+  const json = await get("/api/now", { ...OWNER });
+  expect(JSON.stringify(await json.json())).toContain("Merged today");
 });
 
-it("the page links Now in the bar, follows the device's scheme, and lists each task with its Revert link", async () => {
+it("/now is a redirect to Today, and the Now rows still list each task with its Revert link in the JSON", async () => {
   await seed("now-page");
   const cookie = await signIn(TOKEN, testEnv);
   const res = await get("/now", { cookie });
-  const html = await res.text();
-  expect(html).toContain('<a href="/now" aria-current="page">Now</a>');
-  const tag = (page: string) => /<html[^>]*>/.exec(page)![0];
-  expect(tag(html)).not.toContain("data-scheme");
-  expect(html).toContain('<meta name="color-scheme" content="dark light">');
-  expect(html).toContain("@media (prefers-color-scheme: light)");
-  expect(html).toContain('href="/p/now-page/t1/revert"');
-  expect(html).toContain("Still filed");
-  // Another page keeps the bar's link to Now and stays in Night, as it was.
-  const decisions = await (await get("/decisions", { cookie })).text();
-  expect(decisions).toContain('<a href="/now">Now</a>');
-  expect(tag(decisions)).toContain('data-scheme="night"');
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toBe("/");
+  const view = (await (await get("/api/now", OWNER)).json()) as { groups: { rows: { id: string; project: string; title?: string; revertHref?: string | null }[] }[] };
+  const rows = view.groups.flatMap((g) => g.rows).filter((r) => r.project === "now-page");
+  expect(rows.map((r) => r.id).sort()).toEqual(["t1", "t2", "t3"]);
+  expect(rows.find((r) => r.id === "t1")!.revertHref).toBe("/p/now-page/t1/revert");
+  // The old decisions address now redirects to Today as well.
+  const decisions = await get("/decisions", { cookie });
+  expect(decisions.status).toBe(302);
+  expect(decisions.headers.get("location")).toBe("/");
 });
 
 it("opening the Revert link changes nothing; its form makes one revert task that records the merge commit", async () => {
@@ -144,11 +144,12 @@ it("opening the Revert link changes nothing; its form makes one revert task that
   expect(made.headers.get("location")).toBe("https://atelier.test/p/now-revert/t4");
   expect(await L.events("t4")).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "item.reverts", data: { itemId: "t1", mergeCommit: H2 } })]));
   expect(((await L.events("t1")) as unknown as LedgerEvent[]).map((e) => e.kind)).toContain("item.revert_requested");
-  // The revert is asked for, not yet merged: the Now page says so, offers no second link and does not call it reverted.
-  const now = await (await get("/now", { cookie })).text();
-  expect(now).not.toContain('href="/p/now-revert/t1/revert"');
-  expect(now).toContain("Revert asked for in t4");
-  expect(now).not.toContain(">Reverted<");
+  // The revert is asked for, not yet merged: the Now data says so, offers no second link and does not call it reverted.
+  const view = (await (await get("/api/now", OWNER)).json()) as { groups: { rows: { id: string; project: string; revertHref?: string | null; reverted?: boolean; revertTask?: string | null }[] }[] };
+  const row = view.groups.flatMap((g) => g.rows).find((r) => r.project === "now-revert" && r.id === "t1")!;
+  expect(row.revertHref).toBeNull();
+  expect(row.revertTask).toBe("t4");
+  expect(row.reverted).toBe(false);
 });
 
 it("a task that is not merged has nothing to revert: the page says so and the form is refused", async () => {

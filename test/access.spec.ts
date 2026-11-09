@@ -89,11 +89,11 @@ it("a valid owner assertion starts a session at /login and on any owner page, wi
     expect(login.headers.get("location")).toBe("/home");
     const id = sessionOf(login);
     expect(id).toBeTruthy();
-    const home = await get("/home", { cookie: `atelier=${id}`, "cf-access-jwt-assertion": jwt });
+    const home = await get("/", { cookie: `atelier=${id}`, "cf-access-jwt-assertion": jwt });
     expect(home.status).toBe(200);
     expect(home.headers.get("set-cookie")).toBeNull();
-    expect(await home.text()).toContain("<title>Home · Atelier</title>");
-    // Signed in already, /login keeps the session and goes on to Home.
+    expect(await home.text()).toContain("<title>Today · Atelier</title>");
+    // Signed in already, /login keeps the session and goes on to Home (which leads to Today).
     const again = await get("/login", { cookie: `atelier=${id}`, "cf-access-jwt-assertion": jwt });
     expect(again.status).toBe(303);
     expect(again.headers.get("set-cookie")).toBeNull();
@@ -264,7 +264,7 @@ it("with Access set in part or unusably, the developer's routes are refused, nam
 // Worker's own check is the guard. / and /showcase lead to /home for anyone,
 // with no assertion and no session (t758); every owner route, each method its
 // forms use, is refused without Access's vouching, even with a session cookie.
-it("with Access on, / and /showcase lead to /home to anyone, and every owner route still needs Access", async () => {
+it("with Access on, / is Today and needs Access, /showcase leads to /home to anyone, and every owner route still needs Access", async () => {
   const send = serveKeys();
   try {
     const record = { name: "front-door", repo: "front-door", title: "Front door secret title", policy: { checks: [], protected: [] }, createdAt: "2026-10-08T00:00:00.000Z" };
@@ -277,19 +277,22 @@ it("with Access on, / and /showcase lead to /home to anyone, and every owner rou
     const at = (path: string, method = "GET", headers: Record<string, string> = {}) =>
       worker.fetch(new Request(`https://atelier.test${path}`, { method, headers, redirect: "manual" }), shown);
     for (const method of ["GET", "HEAD"]) {
-      for (const path of ["/", "/showcase"]) {
-        const front = await at(path, method);
-        expect(front.status, `${method} ${path}`).toBe(302);
-        expect(front.headers.get("location")).toBe("https://atelier.test/home");
-      }
+      const front = await at("/showcase", method);
+      expect(front.status, `${method} /showcase`).toBe(302);
+      expect(front.headers.get("location")).toBe("https://atelier.test/home");
+      // Today, at /, is an owner page (t562): without Access's vouching it answers 401, as /home does.
+      const today = await at("/", method);
+      expect(today.status, `${method} /`).toBe(401);
     }
-    // The redirect carries nothing of any project.
-    const page = await (await at("/")).text();
-    for (const secret of ["Front door secret title", "Front door secret task", "front-door", 'class="owner-bar"']) expect(page).not.toContain(secret);
+    // Neither answer carries anything of any project (the 401 page's bar is the error frame's, unfilled).
+    for (const path of ["/", "/showcase"]) {
+      const page = await (await at(path)).text();
+      for (const secret of ["Front door secret title", "Front door secret task", "front-door", "data-tile"]) expect(page).not.toContain(secret);
+    }
     const cookie = await signIn(TOKEN, shown, { "cf-access-jwt-assertion": await assertion() });
     const form = { origin: "https://atelier.test", cookie };
     const owner: [string, string][] = [
-      ["GET", "/home"], ["GET", "/login"], ["POST", "/login"], ["GET", "/decisions"], ["GET", "/studio"],
+      ["GET", "/"], ["GET", "/home"], ["GET", "/login"], ["POST", "/login"], ["GET", "/decisions"], ["GET", "/studio"],
       ["GET", "/flow"], ["GET", "/history"], ["GET", "/models"], ["POST", "/models/add"], ["GET", "/usage"],
       ["GET", "/projects"], ["POST", "/ui/front-door/t1/accept"],
       ["GET", "/p/front-door"], ["GET", "/p/front-door/tasks"], ["GET", "/p/front-door/t1"], ["GET", "/p/front-door/code"], ["POST", "/"],

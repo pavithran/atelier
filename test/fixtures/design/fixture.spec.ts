@@ -57,9 +57,10 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
       if (p.path.startsWith("/p/") && marked("Project") !== 1) failures.push(`${p.id}: ${marked("Project")} current tabs`);
       for (const m of head.matchAll(/<a [^>]*href="([^"]+)"/g)) links.add(m[1]);
       if (p.id === "decisions") {
-        const listed = /<h1 id="dec-h">Decisions · (\d+)<\/h1>/.exec(body)?.[1];
+        // Today's Need you tile is the number the bar's badge shows.
+        const listed = /data-tile="need"[^>]*>[\s\S]*?<span class="n">(\d+)<\/span>/.exec(body)?.[1];
         const shown = /, waiting on you: <\/span>(\d+)\??<\/span>/.exec(head)?.[1];
-        if (!listed || shown !== listed) failures.push(`decisions: the badge says ${shown}, the list ${listed}`);
+        if (!listed || shown !== listed) failures.push(`decisions: the badge says ${shown}, Today's Need you tile ${listed}`);
       }
     }
   }
@@ -68,13 +69,15 @@ it("seeds 310 tasks across three projects, each state where the brief says, and 
   // project's tabs answer as its Overview does, and the empty repository's
   // Log as its Code does: the row an error page is given still names them.
   const drawn = new Map(pageStates(seeded).map((p) => [p.path, p.status]));
+  const redirects = ALIASES(seeded).filter((a) => a.audience === "owner");
   const want = (link: string) => drawn.get(link)
+    ?? redirects.find((a) => a.path === link)?.status
     ?? (link.startsWith(`/p/${UNAVAILABLE_PROJECT}/`) ? drawn.get(`/p/${UNAVAILABLE_PROJECT}`) : link === `/p/${EMPTY_PROJECT}/log` ? drawn.get(`/p/${EMPTY_PROJECT}/code`) : 200);
   for (const link of links) {
     const res = await draw(pages, link, "owner", cookie);
     if (res.status !== want(link)) failures.push(`bar link ${link}: ${res.status}`);
   }
-  for (const a of ALIASES) {
+  for (const a of ALIASES(seeded)) {
     const res = await draw(pages, a.path, a.audience, cookie);
     const location = res.headers.get("location") ?? "";
     if (res.status !== a.status || (a.location && !location.endsWith(a.location))) failures.push(`alias ${a.path}: ${res.status} ${location}`);

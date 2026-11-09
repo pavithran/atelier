@@ -347,6 +347,9 @@ const INLINE_SET: Record<string, string> = {
   "--d": "graph.ts",
   // A drawn path's animation length: graph.ts.
   "--l": "graph.ts",
+  // A family's colour, per dot, lane and card, and a bar's height: today.ts.
+  "--fam": "today.ts",
+  "--h": "today.ts",
 };
 test("every custom property the page styles use is one the sheets define or the markup sets by name", () => {
   const defined = new Set<string>();

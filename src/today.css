@@ -1,0 +1,89 @@
+/* Today (t562), drawn from the chosen mockup (docs/design/today/a-home.html).
+   Colours, faces and radii are the theme's tokens, so the page follows the
+   device's light or dark scheme; the family colours are layout.css's --m-*.
+   Nothing here is a gradient. */
+.today { --ok: var(--observed); --warn: var(--caution); --bad: var(--fault); --ease: cubic-bezier(.2,.7,.2,1); max-width: 1040px; margin: 0 auto; }
+.today a { color: inherit; text-decoration: none; }
+.today h1, .today h2, .today h3 { font-family: var(--font-display); margin: 0; letter-spacing: -.01em; }
+.today .mono { font-family: var(--font-mono); font-size: .86em; }
+.today-date { color: var(--text-muted); font-size: 14px; margin-bottom: 6px; }
+.today h1 { font-size: 44px; font-weight: 800; line-height: 1.05; }
+.today h1 em { font-style: normal; color: var(--signal); }
+.today-unread { margin: 18px 0 0; padding: 10px 14px; border: 1px solid var(--caution-line, var(--line-bright)); border-radius: var(--radius-small); color: var(--warn); }
+.today-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 28px 0 44px; }
+.today-tile { background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-medium); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; transition: border-color .2s; min-width: 0; }
+.today-tile:hover, .today-tile:focus-visible { border-color: var(--line-bright); }
+.today-tile .n { font: 800 34px/1 var(--font-display); overflow-wrap: anywhere; }
+.today-tile .l { font-size: 13px; color: var(--text-muted); }
+.today-tile.you { border-color: var(--wire); background: rgba(var(--signal-rgb), .07); }
+.today-tile.you .n { color: var(--signal); }
+.today-note { font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.today-dots { display: flex; gap: 4px; flex-wrap: wrap; min-height: 10px; }
+.today-dots i { width: 10px; height: 10px; border-radius: 3px; background: var(--fam); }
+.today-spark, .today-bars { display: flex; align-items: end; gap: 3px; height: 22px; }
+.today-spark i, .today-bars i { flex: 1; height: max(var(--h), 4px); border-radius: 2px; background: var(--ok); opacity: .8; }
+.today-spark i.none, .today-bars i.none { background: rgba(var(--text-rgb), .12); opacity: 1; height: 3px; }
+.today-ships { display: flex; gap: 6px; flex-wrap: wrap; min-height: 10px; }
+.today-ships i { width: 22px; height: 10px; border-radius: 3px; background: var(--ok); }
+.today-ships i.bad { background: var(--bad); }
+.today section { margin-bottom: 44px; scroll-margin-top: 16px; }
+.today-sh { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+.today-sh h2 { font-size: 22px; font-weight: 700; }
+.today-c { color: var(--text-muted); font: 500 14px var(--font-mono); }
+.today-sh a { margin-left: auto; font-size: 13px; color: var(--text-muted); }
+.today-sh a:hover, .today-sh a:focus-visible { color: var(--text); }
+.today-empty { margin: 0; color: var(--text-muted); }
+.today-ask { display: grid; grid-template-columns: 1fr auto; gap: 6px 20px; padding: 18px 20px; border: 1px solid var(--line); border-left: 3px solid var(--signal); border-radius: var(--radius-medium); background: var(--surface-raised); margin-bottom: 10px; align-items: center; }
+.today-title { font-weight: 600; font-size: 16px; overflow-wrap: anywhere; }
+.today-title:hover, .today-title:focus-visible { text-decoration: underline; }
+.today-meta { grid-column: 1; font-size: 13px; color: var(--text-muted); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.today-why { grid-column: 1; font-size: 14px; color: var(--text-muted); }
+.today-open { grid-row: 1 / span 3; grid-column: 2; font: 600 14px/1 var(--font-sans); padding: 10px 14px; border: 1px solid var(--line-bright); border-radius: var(--radius-small); background: var(--surface-raised); transition: transform .15s var(--ease); }
+.today-open:hover, .today-open:focus-visible { transform: translateY(-1px); }
+.today-chip { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/1 var(--font-sans); padding: 5px 9px 5px 8px; border-radius: var(--radius-pill); white-space: nowrap; border: 1px solid transparent; }
+.today-chip::before { content: ""; width: 7px; height: 7px; border-radius: 1px; transform: rotate(45deg); background: currentColor; }
+.today-chip.you { color: var(--on-accent); background: var(--signal); }
+.today-fam { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--fam); flex: none; }
+.today-lane { display: grid; grid-template-columns: 22px 1fr 220px 90px; gap: 16px; align-items: center; padding: 14px 4px; border-bottom: 1px solid var(--line); }
+.today-lane .today-title { font-weight: 500; font-size: inherit; }
+.today-sub { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.today-st { font-size: 12px; color: var(--text-muted); margin-top: 6px; overflow-wrap: anywhere; }
+.today-el { text-align: right; font: 13px var(--font-mono); color: var(--text-muted); }
+.today-lane.stuck .today-el { color: var(--warn); }
+.today-track { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
+.today-track i { height: 5px; border-radius: 3px; background: rgba(var(--text-rgb), .12); }
+.today-track i.done, .today-track i.now { background: var(--fam, var(--ok)); }
+.today-track i.now { position: relative; overflow: hidden; }
+.today-track i.now::after { content: ""; position: absolute; inset: 0; background: var(--surface); opacity: .5; animation: today-sweep 1.8s var(--ease) infinite; }
+.today-track i.wait { background: var(--signal); }
+@keyframes today-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.today-landed { position: relative; padding-left: 26px; }
+.today-landed::before { content: ""; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 2px; background: var(--line-bright); }
+.today-ev { position: relative; padding: 8px 0 14px; display: flex; gap: 14px; align-items: baseline; }
+.today-ev::before { content: ""; position: absolute; left: -25px; top: 13px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); border: 2px solid var(--fam, var(--ok)); }
+.today-ev.deploy::before { background: var(--ok); border-color: var(--ok); border-radius: 3px; }
+.today-ev.failed::before { background: var(--bad); border-color: var(--bad); border-radius: 3px; }
+.today-tm { font: 13px var(--font-mono); color: var(--text-muted); width: 52px; flex: none; }
+.today-ev .today-t { font-weight: 500; overflow-wrap: anywhere; }
+.today-projects { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.today-proj { display: block; border: 1px solid var(--line); border-radius: var(--radius-medium); padding: 16px; background: var(--surface-raised); min-width: 0; transition: border-color .2s; }
+a.today-proj:hover, a.today-proj:focus-visible { border-color: var(--line-bright); }
+.today-proj h3 { font-size: 18px; overflow-wrap: anywhere; }
+.today-proj.unread { border-style: dashed; }
+.today-k { font-size: 13px; color: var(--text-muted); margin: 4px 0 12px; }
+.today-proj.unread .today-k { margin-bottom: 0; color: var(--warn); }
+.today-bars i { background: var(--fam); height: max(var(--h), 4px); }
+.today-bars { height: 34px; }
+.today-bars i.none { background: rgba(var(--text-rgb), .12); }
+.today-zone { margin: 0; }
+@media (max-width: 760px) {
+  .today h1 { font-size: 32px; }
+  .today-tiles { grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 20px 0 32px; }
+  .today-tile .n { font-size: 28px; }
+  .today-ask { grid-template-columns: 1fr; }
+  .today-open { grid-row: auto; grid-column: 1; margin-top: 8px; justify-self: start; }
+  .today-lane { grid-template-columns: 14px 1fr 70px; }
+  .today-trk { grid-column: 2 / span 2; }
+  .today-projects { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .today * { animation: none !important; transition: none !important; } }

@@ -537,9 +537,10 @@ it("removed projects disappear from signed-in pages", async () => {
   await L.claim("t1", "codex/gpt-6-astra");
   const signedIn = await signIn(TOKEN, testEnv);
   const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn } }), testEnv);
-  expect(await (await get("/home")).text()).toContain(name);
+  // Today is the signed-in front page (t562): /home and /decisions only redirect to it, so it stands for them.
+  expect(await (await get("/")).text()).toContain(`<a class="today-proj" href="/p/${name}" `);
   expect((await call("DELETE", `/projects/${name}`, "owner", { force: true })).status).toBe(200);
-  for (const path of ["/home", "/projects", "/flow", "/decisions"]) {
+  for (const path of ["/", "/projects", "/flow"]) {
     expect(await (await get(path)).text()).not.toContain(name);
   }
 });
@@ -1089,22 +1090,24 @@ it("the project's area serves each tab, and the URLs that moved redirect permane
   const signedIn = await signIn(TOKEN, testEnv);
   const get = (path: string) => worker.fetch(new Request(`https://atelier.test${path}`, { headers: { cookie: signedIn }, redirect: "manual" }), testEnv);
 
-  // /projects is Home now, and a project's flow is its own tab: both permanent.
+  // /projects is Home now, and a project's flow is its own tab: both permanent. Home itself sends on to Today (t562).
   const projects = await get("/projects");
   expect(projects.status).toBe(301);
   expect(projects.headers.get("location")).toBe("/home");
+  const homeMoved = await get("/home");
+  expect(homeMoved.status).toBe(302);
+  expect(homeMoved.headers.get("location")).toBe("/");
   const oldFlow = await get(`/flow?project=${name}&since=7d`);
   expect(oldFlow.status).toBe(301);
   expect(oldFlow.headers.get("location")).toBe(`/p/${name}/flow`);
 
-  // Home: the portfolio, one card per project, its links to Flow and History.
-  const home = await get("/home");
+  // Today: the front page, one card per project, with its links to Flow and History.
+  const home = await get("/");
   expect(home.status).toBe(200);
   const homeHtml = await home.text();
-  expect(homeHtml).toContain("<h1>Home</h1>");
-  expect(homeHtml).toContain(`href="/p/${name}"`);
-  expect(homeHtml).toContain('href="/flow">the whole flow</a>');
-  expect(homeHtml).toContain('href="/history">the timeline of merges</a>');
+  expect(homeHtml).toContain(`<a class="today-proj" href="/p/${name}" `);
+  expect(homeHtml).toContain('href="/flow"');
+  expect(homeHtml).toContain('href="/history"');
 
   // The area's tabs, each its own page with its own tab current.
   const over = await get(`/p/${name}`);
@@ -1519,10 +1522,10 @@ it("the task page shows the title, then the brief and the criteria; every list s
   expect(task).toContain("<title>Short titles · Atelier</title>");
   expect(task).toMatch(/<h2>Short titles<\/h2>\s*<div class="task-text">\s*<p class="task-brief">Short titles for tasks \(zebrafish marker\)/);
   expect(task).toContain('<p class="section-title">Acceptance criteria</p><ol class="task-accept"><li>Lists show the short &lt;title&gt;</li><li>The brief is on the task page</li></ol>');
-  for (const path of ["/home", `/p/${name}`, `/p/${name}/tasks`, `/p/${name}/flow`, "/decisions", "/studio"]) {
+  for (const path of ["/", `/p/${name}`, `/p/${name}/tasks`, `/p/${name}/flow`, "/studio"]) {
     // The raw event log under Ledger events keeps what the creator sent.
     const html = (await get(path)).replace(/<pre>[^]*?<\/pre>/g, "");
-    if (path === "/home" || path.endsWith("/tasks")) expect(html, path).toContain("Short titles");
+    if (path === "/" || path.endsWith("/tasks")) expect(html, path).toContain("Short titles");
     expect(html, path).not.toContain("zebrafish");
   }
 });

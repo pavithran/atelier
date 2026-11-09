@@ -272,10 +272,11 @@ it('the flow route is served behind sign-in, under a policy that admits the font
  const again=await worker.fetch(new Request('https://atelier.test/flow',{headers:{cookie:signedIn}}),testEnv);
  const second=liveChecks(await again.text(),again.headers.get('content-security-policy')!);
  expect(second).not.toBe(first);
- // Decisions and a task's page are live too; the public pages and the Studio carry no script and admit none.
- const decisions=await worker.fetch(new Request('https://atelier.test/decisions',{headers:{cookie:signedIn}}),testEnv);
- liveChecks(await decisions.text(),decisions.headers.get('content-security-policy')!);
- for(const path of ['/studio','/home','/how']){
+ // Today is live too (it replaced the Decisions page); the public pages and the Studio carry no script and admit none.
+ const today=await worker.fetch(new Request('https://atelier.test/',{headers:{cookie:signedIn}}),testEnv);
+ expect(today.status).toBe(200);
+ liveChecks(await today.text(),today.headers.get('content-security-policy')!);
+ for(const path of ['/studio','/how']){
   const r=await worker.fetch(new Request(`https://atelier.test${path}`,{headers:{cookie:signedIn}}),testEnv);
   expect(r.status).toBe(200);
   expect(r.headers.get('content-security-policy')).not.toContain('script-src');
@@ -480,25 +481,38 @@ it('the Models page shows a paused or reserved model with the date its state was
  // Available is not shown, nor its date; no roles or tier, no standing line.
  expect(card('opus-5.5')).not.toMatch(/tag ask">available|set 2026-10-09|the jobs it may take|<span class="meta">tier<\/span>/);
 });
-it('the front door: / and /showcase lead to /home, where a visitor meets the sign-in and the owner meets Home',async()=>{
+it('the front door: /showcase leads to /home and /home to /, which needs a session and is Today for the owner',async()=>{
  const TOKEN='door-test-token';
  const signedIn=await signIn(TOKEN,{...env,ATELIER_TOKEN:TOKEN} as typeof env);
  const go=(path:string,signed=false,method='GET')=>worker.fetch(new Request(`https://atelier.test${path}`,{method,headers:signed?{cookie:signedIn}:{},redirect:'manual'}),{...env,ATELIER_TOKEN:TOKEN,OWNER_NAME:'Door Owner'} as typeof env);
- // No session and a session alike: 302 to /home, for GET and HEAD, whatever a server's old showcase setting says.
- for(const path of ['/','/showcase'])for(const method of ['GET','HEAD'])for(const signed of [false,true]){
-  const res=await go(path,signed,method);
-  expect(res.status,`${method} ${path}`).toBe(302);
+ // /showcase: 302 to /home, before any sign-in check, for GET and HEAD, signed in or not.
+ for(const method of ['GET','HEAD'])for(const signed of [false,true]){
+  const res=await go('/showcase',signed,method);
+  expect(res.status,`${method} /showcase`).toBe(302);
   expect(res.headers.get('location')).toBe('https://atelier.test/home');
  }
- // Home and the other owner pages send a visitor to sign in.
- expect((await go('/home')).headers.get('location')).toBe('https://atelier.test/login');
- expect((await go('/flow')).headers.get('location')).toBe('https://atelier.test/login');
- const home=await go('/home',true);
- expect(home.status).toBe(200);
- expect(await home.text()).toContain('<title>Home · Atelier</title>');
- const decisions=await go('/decisions',true);
- expect(decisions.status).toBe(200);
- expect(await decisions.text()).toContain('<title>Decisions · Atelier</title>');
+ // /home, /now and bare /decisions are 302s to / for the owner; a visitor with no session is sent to sign in first.
+ for(const path of ['/home','/now','/decisions']){
+  const res=await go(path,true);
+  expect(res.status,path).toBe(302);
+  expect(res.headers.get('location')).toBe('/');
+  const out=await go(path);
+  expect(out.status,path).toBe(303);
+  expect(out.headers.get('location')).toBe('https://atelier.test/login');
+ }
+ // A task's decision leads to the task's page; a malformed task leads to /.
+ const task=await go('/decisions?project=example&task=t7',true);
+ expect(task.status).toBe(302);expect(task.headers.get('location')).toBe('/p/example/t7');
+ expect((await go('/decisions?project=example&task=x7',true)).headers.get('location')).toBe('/');
+ // / and the other owner pages send a visitor with no session to sign in.
+ for(const path of ['/','/flow']){
+  const res=await go(path);
+  expect(res.status,path).toBe(303);
+  expect(res.headers.get('location')).toBe('https://atelier.test/login');
+ }
+ const today=await go('/',true);
+ expect(today.status).toBe(200);
+ expect(await today.text()).toContain('<title>Today · Atelier</title>');
 });
 // ── browsing ──
 import {renderTree,renderBlob,renderCommit,renderLog,codeHref} from '../src/browse/view';
