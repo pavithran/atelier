@@ -4119,9 +4119,11 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
 }
 
 // Whether an item coming off the queue is a claim a runner already holds, as
-// heldJobs lists it: the queue offers it back to its holder alone.
+// heldJobs lists it: the queue offers it back to its holder alone. A criteria
+// review row copies its task's state and owner (t565), but it is the
+// reviewer's job, not the holder's build, so it is never held.
 function isHeld(item: Item): boolean {
-  return item.state === "claimed" && !!item.owner;
+  return item.state === "claimed" && !!item.owner && item.dispatch?.job !== "criteria-review";
 }
 
 // A job the queue lists beside the builds: a gate review, a pre-review

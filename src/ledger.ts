@@ -3440,8 +3440,8 @@ export class Ledger extends DurableObject<Env> {
       if (!item.dispatch || "held" in item && item.held || "overlap" in item && item.overlap || ((item as Waiting).waitingOn?.length ?? 0) > 0) continue;
       const assignment = assign(item.dispatch, offer);
       if (!assignment || ["integrate", "refresh"].includes(item.dispatch.job ?? "")) continue;
-      // A pre-review (t524) is a review job: it grants what a review does.
-      const reviewing = item.dispatch.job === "review" || item.dispatch.job === "prereview";
+      // A pre-review (t524) and a criteria review (t565) are review jobs: each grants what a review does.
+      const reviewing = item.dispatch.job === "review" || item.dispatch.job === "prereview" || item.dispatch.job === "criteria-review";
       if (item.state === "claimed" && item.owner !== assignment.actor && !reviewing) continue;
       const role = reviewing ? "review" : item.dispatch.job === "plan" ? "plan" : "build";
       this.sql.exec(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, `runner-report:${token.id}:${item.id}:${assignment.actor}:${role}`, JSON.stringify(item.dispatch.at));

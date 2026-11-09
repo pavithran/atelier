@@ -224,8 +224,9 @@ it("criterion 11: the renderer reads only its arguments, the CSS holds no colour
   expect(src).not.toMatch(/\bfetch\(|\.detail\(|LEDGER|await /);
   const css = readFileSync("src/task-verdict.css", "utf8");
   expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\brgba?\(\s*\d|\bhsla?\(|\boklch\(|\b(white|black|red|green|blue|gold|orange)\b\s*[;,)]/);
-  // src/index.ts and src/ledger.ts are wired by t594 (the Land action), so only the theme stays as it was.
+  // src/index.ts and src/ledger.ts are wired by t594 (the Land action), so only the theme stays as it was at the working tree.
   expect(execFileSync("git", ["diff", "--name-only", "b91b451d", "--", "src/theme.css"], { encoding: "utf8" })).toBe("");
+  expect(execFileSync("git", ["diff", "--name-only", "b91b451d", "7d7df93b^", "--", "src/index.ts", "src/ledger.ts", "src/theme.css"], { encoding: "utf8" })).toBe("");
 });
 
 // Criterion 12: the committed 390 px shots are of pages that do not scroll sideways. The drawn HTML is loaded
