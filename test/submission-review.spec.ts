@@ -2,6 +2,7 @@ import { env, runInDurableObject } from "./support/workers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { RuleError } from "../src/rules.ts";
 import { makeDispatch } from "../src/dispatch/rules.ts";
 // @ts-expect-error plain JavaScript formatter
 import { formatStatus, statusJson } from "../cli/status.mjs";
@@ -30,6 +31,8 @@ test("dispatch records a named reviewer and landing intent; submit asks and queu
   assert.equal((await L.item(id)).dispatch?.reviewer, reviewer);
   await L.submit(id, builder, "Checked", undefined, false, head);
   assert.equal((await L.reviewRequests(id))[0]?.reviewer, reviewer);
+  assert.equal((await L.events(id)).filter(e => e.kind === "review.requested").length, 1);
+  assert.equal((await L.events(id)).filter(e => e.kind === "submission.review_wait").length, 0);
   assert.equal((await L.events(id)).filter(e => e.kind === "land.requested").length, 1);
   await L.submit(id, builder, "Checked", undefined, false, head);
   assert.equal((await L.reviewRequests(id)).length, 1);
@@ -97,4 +100,50 @@ test("status JSON carries the same unasked head and orchestrator command", async
   assert.equal(view.items[0].reviewAskedHead, null);
   assert.equal(view.orchestratorWaits[0].id, id);
   assert.match(view.orchestratorWaits[0].command, /atelier land/);
+});
+
+const head2 = "b".repeat(40);
+
+// t523: a first round asked, rejected, released, then dispatched again with the
+// same reviewer and an old land job, and pushed at a new head.
+async function secondRound(name: string) {
+  const { L, id } = await setup(name);
+  await L.submit(id, builder, "Round one", undefined, false, head);
+  const first = (await L.reviewRequests(id))[0];
+  await L.addReview({ itemId: id, by: reviewer, head, criteria: await L.criteria(id), approve: false, note: "fix it", at: new Date().toISOString() });
+  await L.release(id, builder, "parked");
+  await L.dispatch(id, "owner", { agent: "codex", model: "gpt-6-astra", reviewer, land: true });
+  await L.claim(id, builder, runner);
+  await L.recordPush(id, builder, head2, head2);
+  await L.addEvidence({ itemId: id, head: head2, claim: "npm test", grade: "observed", passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+  return { L, id, first };
+}
+
+test("a second-round submit, dispatched with the reviewer after a rejection and a release, asks the review of its new head (t523)", async () => {
+  const { L, id } = await secondRound("submission-round-two");
+  await L.submit(id, builder, "Round two");
+  const events = await L.events(id);
+  assert.ok(events.some(e => e.kind === "review.requested" && e.data.head === head2), "review.requested at the new head");
+  assert.equal(events.filter(e => e.kind === "submission.review_wait").length, 0);
+  assert.equal((await L.item(id)).reviewAskedHead, head2);
+});
+
+test("a submit that cannot ask the dispatched review logs submission.review_wait and status lists the task", async () => {
+  for (const label of ["RuleError", "KeptRequests"]) {
+    const { L, id, name } = await setup(`submission-wait-${label}`);
+    await runInDurableObject(L, async (instance: any) => {
+      const original = instance.requestReview;
+      // KeptRequests reaches the caller as an answer, never thrown: requestReview turns it into this.
+      instance.requestReview = label === "RuleError"
+        ? () => { throw new RuleError("ineligible", "reviewer is not eligible", 403); }
+        : () => ({ needed: false, reason: "no review is needed; no review of the reviewer was asked, so request 1 stands" });
+      try { instance.submit(id, builder, "Checked", undefined, false, head); } finally { instance.requestReview = original; }
+    });
+    const waits = (await L.events(id)).filter(e => e.kind === "submission.review_wait");
+    assert.equal(waits.length, 1, label);
+    assert.equal(waits[0].data.head, head, label);
+    assert.match(String(waits[0].data.reason), /not eligible|no review is needed/, label);
+    assert.equal(waits[0].data.next, `atelier land ${id} --reviewer ${reviewer}`, label);
+    assert.match(formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/, label);
+  }
 });
