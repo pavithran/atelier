@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
+import { waitFor } from "./land-node-shared.mjs";
+import { slotStatus } from "../cli/load.mjs";
 import { checkLimits, limitText, stopText, STOP_WORDS } from "../src/check-limit.ts";
 import { clockStop, cpuTime, treeActivity } from "../cli/check-clock.mjs";
 import { runGroup } from "../cli/group.mjs";
@@ -130,43 +132,54 @@ function isolatedWrapper() {
   return { root, wrapper: join(root, "cli/load.mjs") };
 }
 
-test("the clock starts when the slot is held: a run queued past its limit still passes", { timeout: 30_000 }, async (t) => {
+test("the clock starts when the slot is held: a run queued past its limit still passes", { timeout: 60_000 }, async (t) => {
   if (!canInspectSlots(t)) return;
   const { root, wrapper } = isolatedWrapper();
+  const pool = join(root, "pool.sqlite");
   const env = { ...process.env, ATELIER_TEST_SLOTS: "1" };
   delete env.ATELIER_TEST_LEASE;
   const ready = join(root, "ready");
-  const hold = (ms) => spawn(process.execPath, [wrapper, "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, "x"); setTimeout(() => {}, ${ms})`], { env, stdio: "ignore" });
-  const held = async (child) => {
-    const deadline = Date.now() + 10_000;
-    while (!existsSync(ready)) { assert.ok(Date.now() < deadline, "the holder did not start"); await new Promise((r) => setTimeout(r, 20)); }
+  // A holder keeps the one slot until the test stops it, once it has written its ready file.
+  const holders = [];
+  const hold = async () => {
+    const child = spawn(process.execPath, [wrapper, "--", process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(ready)}, "x"); setTimeout(() => {}, 120000)`], { env, stdio: "ignore" });
+    const closed = new Promise((done) => child.once("close", done));
+    holders.push(child);
+    await waitFor("the holder to take the slot (its ready file)", () => existsSync(ready));
     rmSync(ready);
-    return new Promise((done) => child.once("close", done));
+    return { release: () => { child.kill("SIGTERM"); return closed; } };
   };
-  // Queued about 1.5 s behind a holder, then 0.2 s of running, under a 0.8 s limit.
-  const holder = hold(1500);
-  const holderDone = held(holder);
-  await new Promise((r) => setTimeout(r, 100));
-  const queued = await runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "sleep 0.2"], { env, timeoutMs: 800, silenceMs: 5000, fromSlot: true });
-  await holderDone;
-  assert.equal(queued.status, 0, queued.error?.message ?? queued.stderr);
-  assert.equal(queued.stopped, undefined);
-  // The same wait counted from the spawn is past the limit.
-  const second = hold(1500);
-  const secondDone = held(second);
-  await new Promise((r) => setTimeout(r, 100));
-  const fromSpawn = await runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "sleep 0.2"], { env, timeoutMs: 800, silenceMs: 5000 });
-  await secondDone;
-  assert.deepEqual(fromSpawn.stopped, { kind: "timeout", ms: 800 });
+  t.after(() => { for (const child of holders) child.kill("SIGKILL"); });
+  const queuedAsWaiter = (what) => waitFor(`${what} to be a waiter in the slot pool`, async () => (await slotStatus({ path: pool })).waiters.length > 0);
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Queued behind a holder for 6 s, longer than its 5 s limit, then a run of `true`.
+  // The holder is released 6 s after the run is seen waiting, however long its spawn took.
+  const first = await hold();
+  const queued = runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "true"], { env, timeoutMs: 5000, silenceMs: 20_000, fromSlot: true });
+  await queuedAsWaiter("the queued run");
+  await pause(6000);
+  await first.release();
+  const done = await queued;
+  assert.equal(done.status, 0, done.error?.message ?? done.stderr);
+  assert.equal(done.stopped, undefined);
+
+  // The same wait counted from the spawn is past the limit: the 800 ms clock
+  // stops the run while the holder, released 1500 ms after the run is seen
+  // waiting, still has the slot.
+  const second = await hold();
+  const fromSpawn = runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "sleep 0.2"], { env, timeoutMs: 800, silenceMs: 5000 });
+  await queuedAsWaiter("the run clocked from its spawn");
+  await pause(1500);
+  await second.release();
+  assert.deepEqual((await fromSpawn).stopped, { kind: "timeout", ms: 800 });
+
   // A run that never gets its slot is stopped at the slot-wait limit, as a wait.
-  const third = hold(3000);
-  const thirdDone = held(third);
-  await new Promise((r) => setTimeout(r, 100));
+  const third = await hold();
   const waited = await runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "true"], { env, timeoutMs: 800, silenceMs: 5000, slotWaitMs: 600, fromSlot: true });
   assert.deepEqual(waited.stopped, { kind: "slot", ms: 600 });
   assert.match(waited.error.message, /waited .* for a test slot and was not started/);
-  third.kill("SIGTERM");
-  await thirdDone;
+  await third.release();
 });
 
 // ── atelier check against a stub server ────────────────────────────────────
