@@ -171,6 +171,9 @@ function standIn(state) {
       a.consumed = { by: "owner", at: new Date().toISOString() };
       return send(200, view(a));
     }
+    if (path === "/api/projects/demo/actions/starts" && body.terminal && state.startsStall) return; // never answered
+    if (path === "/api/projects/demo/actions/starts" && body.terminal && state.terminalStartsStatus) return send(state.terminalStartsStatus, { error: "refused" });
+    if (path === "/api/projects/demo/actions/starts" && state.startsLoseFirst && !state.startsLost) { state.startsLost = true; return; } // recorded, answer lost
     if (path === "/api/projects/demo/actions/starts") return send(state.startsStatus ?? 201, state.startsStatus ? { error: state.startsStatus === 404 ? "not_found" : "refused" } : { recorded: true });
     if (path === "/api/projects/demo/actions/runs") { state.runs.push(body); return send(201, body); }
     // The checkout lease (G9) as the server keeps it, for one holder at a
@@ -1086,6 +1089,61 @@ test("ship runs without optional step-start telemetry and warns once", async (t)
   assert.deepEqual(f.state.runs.map(r => r.step), ["commit", "deploy", "verify-delivery", "wrap"]);
   assert.equal((r.stdout + r.stderr).split("\n").filter(l => /Warning:.*step starts/.test(l)).length, 1);
   assert.equal(f.state.requests.filter(r => r.path.endsWith("/starts")).length, 1);
+});
+
+// t593 criteria 1, 4 and 6: a step with the terminal posts when it gives up.
+const TERMINAL_SHIP = (url) => ({
+  schema_version: 1, kind: "atelier.ship", class: "web",
+  deploy: { run: ["bin/deploy.sh"], terminal: true, timeout_seconds: 90 },
+  "verify-deploy": { request: `${url}/live`, status: 200 },
+});
+const startsOf = (f, step) => f.state.requests.filter((r) => r.path.endsWith("/actions/starts") && r.body.step === step).map((r) => r.body);
+
+test("a terminal step posts terminal and givesUpAt, its timeout from now, before it runs", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: TERMINAL_SHIP });
+  const before = Date.now();
+  const r = await f.run(["ship"]);
+  const after = Date.now();
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const [deploy] = startsOf(f, "deploy");
+  assert.equal(deploy.terminal, true);
+  assert.ok(Date.parse(deploy.givesUpAt) >= before + 90_000 && Date.parse(deploy.givesUpAt) <= after + 90_000, deploy.givesUpAt);
+  for (const other of ["verify-delivery", "wrap"]) assert.ok(startsOf(f, other).every((b) => b.terminal === undefined && b.givesUpAt === undefined), other);
+  const at = (kind) => f.state.requests.findIndex((q) => q.path.endsWith(`/actions/${kind}`) && q.body.step === "deploy");
+  assert.ok(at("starts") >= 0 && at("starts") < at("runs"), "the start is posted before the step's run is recorded");
+});
+
+test("a step without the terminal posts a plain start, as an older CLI does", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"] });
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(Object.keys(startsOf(f, "deploy")[0]).sort(), ["command", "commit", "ship", "step"]);
+});
+
+for (const [name, setup, env] of [
+  ["refuses", (state) => { state.terminalStartsStatus = 500; }, { ATELIER_RETRY_MS: "1" }],
+  ["refuses with 403", (state) => { state.terminalStartsStatus = 403; }, {}],
+  ["never answers", (state) => { state.startsStall = true; }, { ATELIER_SERVER_TIMEOUT_MS: "300", ATELIER_RETRY_MS: "1" }],
+]) test(`a terminal step's start post that ${name} prints a warning and the step still runs`, async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: TERMINAL_SHIP });
+  setup(f.state);
+  const r = await f.run(["ship"], env);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout + r.stderr, /Warning: could not record that deploy waits for the developer's password/);
+  assert.equal(readFileSync(f.marker, "utf8"), "deployed\n");
+  assert.ok(f.state.runs.some((x) => x.step === "deploy" && x.passed));
+});
+
+test("a terminal start whose answer was lost is posted again with the same body, for the server's one event", async (t) => {
+  const f = await fixture(t, { approve: ["deploy"], ship: TERMINAL_SHIP });
+  f.state.startsLoseFirst = true;
+  const r = await f.run(["ship"], { ATELIER_SERVER_TIMEOUT_MS: "300" });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const posts = startsOf(f, "deploy");
+  assert.equal(posts.length, 2);
+  assert.deepEqual(posts[1], posts[0]);
+  assert.doesNotMatch(r.stdout + r.stderr, /Warning: could not record/);
+  assert.equal(readFileSync(f.marker, "utf8"), "deployed\n");
 });
 
 for (const status of [401, 403, 409, 500]) test(`ship refuses a step-start error ${status}`, async (t) => {

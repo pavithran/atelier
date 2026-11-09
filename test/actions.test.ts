@@ -23,6 +23,7 @@ function memory(owner = "owner") {
       if (query.startsWith("SELECT json FROM action_approvals")) return { toArray: () => [...rows].sort((x, y) => x.n - y.n).map((r) => ({ json: r.json })) };
       if (query.startsWith("INSERT INTO action_approvals")) rows.push({ n: b[0] as number, id: b[1] as string, json: b[2] as string });
       else if (query.startsWith("UPDATE action_approvals")) rows.find((r) => r.id === b[1])!.json = b[0] as string;
+      else if (query.startsWith("SELECT data FROM events WHERE kind = 'action.started'")) return { toArray: () => events.filter((e) => e.kind === "action.started").reverse().map((e) => ({ data: JSON.stringify(e.data) })) };
       else if (!query.startsWith("CREATE TABLE IF NOT EXISTS action_approvals")) throw new Error(`unexpected statement: ${query}`);
       return { toArray: () => [] };
     },
@@ -192,4 +193,41 @@ test("only the owner records a ship start, with no completion claim", () => {
   assert.deepEqual(m.events, []);
   startActionRun(m.store, "owner", body);
   assert.deepEqual(m.events, [{ kind: "action.started", data: body }]);
+});
+
+// t593: criterion 1, 4 and 6 on the server side. A step with the terminal
+// posts `terminal` and `givesUpAt`; one without records as before.
+const GIVES_UP = later(20 * 60_000);
+const terminalStart = { step: "deploy", command: "node scripts/ship-studio.mjs deploy", commit: H1, ship: "s-1", terminal: true, givesUpAt: GIVES_UP };
+
+test("a start with the terminal records terminal and givesUpAt on action.started", () => {
+  const m = memory();
+  startActionRun(m.store, "owner", terminalStart);
+  assert.deepEqual(m.events, [{ kind: "action.started", data: { ship: "s-1", step: "deploy", command: terminalStart.command, commit: H1, terminal: true, givesUpAt: GIVES_UP } }]);
+});
+
+test("a start without terminal is recorded as before and carries no wait", () => {
+  const m = memory();
+  const { terminal: _t, givesUpAt: _g, ...plain } = terminalStart;
+  startActionRun(m.store, "owner", plain);
+  assert.deepEqual(m.events, [{ kind: "action.started", data: { ship: "s-1", step: "deploy", command: plain.command, commit: H1 } }]);
+});
+
+test("the same terminal start posted again for one ship and step is recorded once; another step or ship is its own", () => {
+  const m = memory();
+  startActionRun(m.store, "owner", terminalStart);
+  startActionRun(m.store, "owner", terminalStart);
+  assert.equal(m.events.length, 1);
+  startActionRun(m.store, "owner", { ...terminalStart, step: "install" });
+  startActionRun(m.store, "owner", { ...terminalStart, ship: "s-2" });
+  assert.equal(m.events.length, 3);
+});
+
+test("a start's terminal and givesUpAt are checked, and only the owner may post them", () => {
+  const m = memory();
+  refused(() => startActionRun(m.store, "agent/model", terminalStart), "not_project_owner");
+  refused(() => startActionRun(m.store, "owner", { ...terminalStart, terminal: "yes" }), "bad_run");
+  refused(() => startActionRun(m.store, "owner", { ...terminalStart, terminal: false }), "bad_run");
+  refused(() => startActionRun(m.store, "owner", { ...terminalStart, givesUpAt: "soon" }), "bad_run");
+  assert.deepEqual(m.events, []);
 });

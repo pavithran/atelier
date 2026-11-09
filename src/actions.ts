@@ -217,11 +217,26 @@ export function consumeAction(store: ActionStore, actor: string, body: Record<st
   return view(match, now);
 }
 
-// A start is an observation, with no completion or approval claim.
+// A start is an observation, with no completion or approval claim. A step
+// that has the terminal (`terminal: true`) says when its timeout will kill it
+// (`givesUpAt`), so status and Today can show a ship waiting at a password
+// prompt (src/ship-wait.ts). The same terminal start posted again, as a client
+// does when it never saw the answer, is recorded once.
 export function startActionRun(store: ActionStore, actor: string, body: Record<string, unknown>): void {
   ownerOnly(store, actor, "records a ship step start");
   const run = cleanRun({ ...body, durationMs: 0, passed: false });
-  store.log("action.started", { ship: run.ship, step: run.step, command: run.command, commit: run.commit });
+  const data: Record<string, unknown> = { ship: run.ship, step: run.step, command: run.command, commit: run.commit };
+  if (body.terminal !== undefined && body.terminal !== true) throw new RuleError("bad_run", "a start's terminal must be true or absent", 400);
+  if (body.terminal === true) {
+    const at = typeof body.givesUpAt === "string" ? Date.parse(body.givesUpAt) : NaN;
+    if (body.givesUpAt !== undefined && !Number.isFinite(at)) throw new RuleError("bad_run", "a start's givesUpAt must be a time", 400);
+    data.terminal = true;
+    if (Number.isFinite(at)) data.givesUpAt = new Date(at).toISOString();
+    const same = store.sql.exec(`SELECT data FROM events WHERE kind = 'action.started' ORDER BY seq DESC LIMIT 50`).toArray()
+      .some((r) => { const d = JSON.parse(r.data as string) as Record<string, unknown>; return d.terminal === true && d.ship === data.ship && d.step === data.step && d.givesUpAt === data.givesUpAt; });
+    if (same) return;
+  }
+  store.log("action.started", data);
 }
 
 // A completed run must name an approval used for this revision and kind.
