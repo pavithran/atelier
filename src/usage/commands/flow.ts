@@ -4,7 +4,7 @@ const spec: CommandSpec = {
   name: "flow",
   forms: [
     { group: "Developer", line: 2, slot: 6, form: "flow [--project P] [--since T] [--json]", about: "Prints a short scorecard: tasks merged, median filing-to-merge minutes, median review rounds per task, rejection rate and known time shares including criteria review. Reads existing events without storing state. Definitions and unknown phases are in docs/flow.md." },
-    { group: "Developer", line: 2, slot: 6, form: "flow --bars [--project P] [--tokens FILE] [--json]", about: "Prints the redesign's bars for the last 7 days, per project and overall: each with its value, target, pass or fail and the events it came from." },
+    { group: "Developer", line: 2, slot: 6, form: "flow --bars [--project P] [--tokens FILE] [--json]", about: "Prints the redesign's bars for the last 7 days, per project and overall: each with its value, target, pass or fail and the events it came from. Then, per project and overall, how the criteria were written: blocking findings by cause (spec, wiring, failure-path, coding, tests, docs), the spec share, criteria that drew two or more findings, repeats, failed required checks by cause, and the share of tasks whose criteria passed their first criteria review, each with its source. Findings with cause unknown (recorded before causes were asked for, or whose reply gave none) are counted and left out of the shares." },
   ],
   flags: { json: true, since: false, bars: true, tokens: false },
   help: {

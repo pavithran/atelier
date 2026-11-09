@@ -2422,7 +2422,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       if (!response.ok || v.commit !== run.after || !Number.isInteger(v.routeLevel) || Number(v.routeLevel) < requiredLevel) throw new RuleError("deployment_unverified", "deployment does not report the pinned commit and required route level", 409);
       deployment = { commit: String(v.commit), routeLevel: Number(v.routeLevel) };
     }
-    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
+    return json({ run: await L.postMergeAction(item, actor, { run: String(body.run), action: String(body.action), attempt: typeof body.attempt === "string" ? body.attempt : undefined, passed: body.passed === true, output: body.output, failingTests: body.failingTests, failedTotal: body.failedTotal, commandOutcome: body.commandOutcome === "passed" ? "passed" : "failed", publication: body.publication as { source: string; remote: string | null; commits: number } | undefined, reason: body.reason, resolution: body.resolution }, deployment) });
   }
   // The developer's branches (t641, developerBranch in src/rules.ts): work
   // in progress carried between the developer's Macs, as dev/NAME in the
@@ -3501,6 +3501,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       const { head, index, verdict, note } = cleanFinding(body);
       const { review, by, event } = await L.addFinding(id, actor, head, index, verdict, note, { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null);
       return json({ id, head, index, verdict, review, by, event, ...(c.acting ? { acting: c.acting } : {}) }, 201);
+    }
+    // The cause of a blocking finding, corrected (t536). Owner only, like a
+    // verdict on a finding; the cause is the caller's word, never read from
+    // the review, and the review's own record is not edited.
+    case "finding-cause": {
+      requireOwner(env, actor);
+      return json({ id, ...await L.setFindingCause(id, actor, body.head === undefined ? null : String(body.head), Number(body.index), String(body.cause ?? ""), { reviewSeq: body.reviewSeq, reviewer: body.reviewer }, c.acting ?? null), ...(c.acting ? { acting: c.acting } : {}) }, 201);
+    }
+    // The cause of a failed required check (t536), set by the orchestrator.
+    case "check-cause": {
+      requireOwner(env, actor);
+      return json({ id, ...await L.setCheckCause(id, actor, Number(body.failure), String(body.cause ?? ""), c.acting ?? null), ...(c.acting ? { acting: c.acting } : {}) }, 201);
     }
     // Criteria review (t438, src/review/criteria.ts): the owner asks for a
     // review of the task's acceptance criteria, naming the reviewer or

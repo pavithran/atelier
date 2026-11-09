@@ -3,6 +3,7 @@
 // events the item route already returns, so no server route is needed.
 import { readFileSync } from "node:fs";
 import { formatScorecard, computeFlow, computeBars, formatBars } from "../../src/flow.ts";
+import { computeCriteriaWriting, formatCriteriaWriting } from "../../src/usage/criteria-writing.ts";
 import { I, OWNER, P, actor, args, call, die, project, request } from "../atelier.mjs";
 import { collectEvents } from "./events.mjs";
 
@@ -17,7 +18,8 @@ function sinceMs(text, now) {
 }
 
 // --bars: the redesign's bars over the last 7 days, for --project if named,
-// else every project, with an overall line. Weighted tokens are not recorded
+// else every project, with an overall line, then how the criteria were
+// written (src/usage/criteria-writing.ts). Weighted tokens are not recorded
 // in the ledger; --tokens FILE is a JSON object of item id (or project/id) to
 // weighted tokens.
 async function barsCommand() {
@@ -34,9 +36,14 @@ async function barsCommand() {
     const events = await collectEvents((before) => call("GET", `${P(name)}/events${before === undefined ? "" : `?before=${before}`}`, undefined, OWNER));
     projects.push({ name, events });
   }
-  const report = computeBars(projects, Date.now(), tokens);
-  if (args.json) return console.log(JSON.stringify(report, null, 2));
+  const now = Date.now();
+  const report = computeBars(projects, now, tokens);
+  // How the criteria were written (t536), from the same events.
+  const writing = computeCriteriaWriting(projects, now);
+  if (args.json) return console.log(JSON.stringify({ ...report, criteriaWriting: writing }, null, 2));
   for (const line of formatBars(report)) console.log(line);
+  console.log("");
+  for (const line of formatCriteriaWriting(writing)) console.log(line);
 }
 
 export default async function flowCommand() {
