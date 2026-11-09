@@ -413,8 +413,9 @@ gate, check classes and checks that apply to some paths.
   overlaps a live task's, `--regenerate CMD` names the command that
   regenerates fixtures during a landing, and `--review-bar TEXT` states what
   may block a review.
-- **Notifications.** Set `NTFY_TOPIC` (a file in the secrets directory) to have an ntfy message sent when a
-  submitted task reaches the developer's inbox.
+- **Notices.** Nothing is sent to a phone. A submitted task reaching the
+  developer's inbox, a usage alert and a stuck-episode digest are ledger events,
+  read in chat through `atelier status`.
 
 ## Daily use
 
@@ -725,7 +726,8 @@ is no longer used.
 harnesses, reports Codex's 5-hour and weekly windows, the requests, tokens
 and cost that zcode and opencode recorded by served model, and the DeepSeek
 balance. The Usage page shows the last report of each tool, and the server
-sends an ntfy alert once when a figure crosses the developer's threshold.
+records one alert event when a figure crosses the developer's threshold, which
+`atelier status` lists.
 Claude's plan limits and Gemini's spend have no record on the machine and
 are not reported.
 

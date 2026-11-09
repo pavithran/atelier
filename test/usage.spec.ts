@@ -18,8 +18,6 @@ const AT = "2027-02-01T21:00:00.000Z";
 const NOW = Date.parse(AT);
 const LATER = new Date(NOW + 4 * 86_400_000).toISOString();
 const at = (ms: number) => new Date(ms).toISOString();
-// An RFC 2047 title, decoded.
-const decodeTitle = (header: string) => new TextDecoder().decode(Uint8Array.from(atob(header.slice(10, -2)), (c) => c.charCodeAt(0)));
 
 // A write on the owner token names the acting model (G18), a runner header or not: only a real runner token skips it.
 function call(method: string, path: string, actor: string, body?: unknown, headers: Record<string, string> = {}, over: Partial<typeof env> = {}) {
@@ -74,7 +72,7 @@ it("a runner reports a tool under its name, as it reports a model's status, and 
 });
 
 // Task t157: a key-shaped tool or runner name reached the stored report and
-// the alert's title sent to ntfy.sh.
+// the alert's title recorded in the ledger.
 it("a report whose tool or runner name looks like a key is refused, and nothing is stored or alerted", async () => {
   const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
   try {
@@ -104,36 +102,33 @@ it("the thresholds are owner settings with defaults, and off turns one off", asy
   expect(((await under.json()) as { alerts: string[] }).alerts).toEqual([]);
 });
 
-it("an alert fires once per crossing through the notification topic, and again only after the figure went back under", async () => {
+it("an alert is one usage.alert event per crossing, and another only after the figure went back under", async () => {
   await fixture("crossings", async (state) => {
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
       const L = new Ledger(state, { ...env, NTFY_TOPIC: TOPIC } as typeof env);
       const put = (weekly: number, when: number, runner = "home:studio") =>
-        L.putUsage(report({ runner, at: at(when), windows: [{ name: "weekly", usedPercent: weekly, resetsAt: LATER, at: at(when) }] }), DEFAULT_THRESHOLDS, "https://atelier.test/api/usage/codex");
+        L.putUsage(report({ runner, at: at(when), windows: [{ name: "weekly", usedPercent: weekly, resetsAt: LATER, at: at(when) }] }), DEFAULT_THRESHOLDS);
+      const alerts = () => L.notices(new Date(0).toISOString()).filter((e) => e.kind === "usage.alert");
       expect(put(85, NOW).alerts).toEqual(["codex: weekly window 85% used"]);
-      expect(send).toHaveBeenCalledTimes(1);
-      const request = send.mock.calls[0][0] as Request;
-      expect(request.url).toBe(`https://ntfy.sh/${TOPIC}`);
-      expect(request.headers.get("Click")).toBe("https://atelier.test/usage");
-      expect(request.headers.get("Tags")).toBe("warning");
-      expect(decodeTitle(request.headers.get("Title")!)).toBe("Atelier: codex: weekly window 85% used");
-      expect(await request.text()).toBe("codex on home:studio has used 85% of its weekly window, past 80%; it resets at 2027-02-05T21:00:00.000Z.");
+      expect(alerts()).toHaveLength(1);
+      expect(alerts()[0].data).toMatchObject({ title: "codex: weekly window 85% used", runner: "home:studio", body: "codex on home:studio has used 85% of its weekly window, past 80%; it resets at 2027-02-05T21:00:00.000Z." });
       expect(L.usageAlerts()).toEqual([{ key: "codex/home:studio/window:weekly", since: AT }]);
-      // Still over on the next reports: nothing more is sent.
+      // Still over on the next reports: nothing more is recorded.
       expect(put(90, NOW + 3_600_000).alerts).toEqual([]);
       expect(put(99, NOW + 7_200_000).alerts).toEqual([]);
-      expect(send).toHaveBeenCalledTimes(1);
-      // Back under: the crossing is cleared without a message.
+      expect(alerts()).toHaveLength(1);
+      // Back under: the crossing is cleared without a notice.
       expect(put(10, NOW + 10_800_000).alerts).toEqual([]);
       expect(L.usageAlerts()).toEqual([]);
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(alerts()).toHaveLength(1);
       // Over again: a new crossing, a new alert.
       expect(put(95, NOW + 14_400_000).alerts).toEqual(["codex: weekly window 95% used"]);
-      expect(send).toHaveBeenCalledTimes(2);
+      expect(alerts()).toHaveLength(2);
       // Another runner's crossing of the same window is its own.
       expect(put(95, NOW + 14_400_000, "home:mac").alerts).toEqual(["codex: weekly window 95% used"]);
-      expect(send).toHaveBeenCalledTimes(3);
+      expect(alerts()).toHaveLength(3);
+      expect(send).not.toHaveBeenCalled();
       expect(L.usageAlerts().map((a) => a.key).sort()).toEqual(["codex/home:mac/window:weekly", "codex/home:studio/window:weekly"]);
       // The record says what was alerted and what was cleared.
       expect(L.events(undefined, 10).map((e) => [e.kind, e.data.key]).reverse()).toEqual([
@@ -145,7 +140,7 @@ it("an alert fires once per crossing through the notification topic, and again o
   });
 });
 
-it("spend and balance crossings alert once each, and an unset topic records the crossing without sending", async () => {
+it("spend and balance crossings alert once each, with the topic unset or set", async () => {
   await fixture("spend", async (state) => {
     const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
     try {
@@ -154,29 +149,32 @@ it("spend and balance crossings alert once each, and an unset topic records the 
         { model: "gemini-3.1-pro", provider: "google", spans: { "5h": span(1, 10, cost / 2), "24h": span(2, 20, cost), "7d": span(3, 30, cost) } },
       ] });
       const deepseek = (amount: number, when: number) => report({ tool: "deepseek", at: at(when), balances: [{ currency: "USD", amount }] });
-      expect(L.putUsage(opencode(12, NOW), DEFAULT_THRESHOLDS, "https://atelier.test").alerts).toEqual(["opencode: $12 spent in 24 hours"]);
-      expect(L.putUsage(opencode(13, NOW + 1000), DEFAULT_THRESHOLDS, "https://atelier.test").alerts).toEqual([]);
-      expect(L.putUsage(deepseek(9.57, NOW), DEFAULT_THRESHOLDS, "https://atelier.test").alerts).toEqual(["deepseek: balance 9.57 USD"]);
-      expect(L.putUsage(deepseek(9.5, NOW + 1000), DEFAULT_THRESHOLDS, "https://atelier.test").alerts).toEqual([]);
-      expect(L.putUsage(deepseek(50, NOW + 2000), DEFAULT_THRESHOLDS, "https://atelier.test").alerts).toEqual([]);
+      expect(L.putUsage(opencode(12, NOW), DEFAULT_THRESHOLDS).alerts).toEqual(["opencode: $12 spent in 24 hours"]);
+      expect(L.putUsage(opencode(13, NOW + 1000), DEFAULT_THRESHOLDS).alerts).toEqual([]);
+      expect(L.putUsage(deepseek(9.57, NOW), DEFAULT_THRESHOLDS).alerts).toEqual(["deepseek: balance 9.57 USD"]);
+      expect(L.putUsage(deepseek(9.5, NOW + 1000), DEFAULT_THRESHOLDS).alerts).toEqual([]);
+      expect(L.putUsage(deepseek(50, NOW + 2000), DEFAULT_THRESHOLDS).alerts).toEqual([]);
       expect(L.usageAlerts().map((a) => a.key)).toEqual(["opencode/home:studio/spend"]);
       expect(send).not.toHaveBeenCalled();
     } finally { send.mockRestore(); }
   });
 });
 
-it("a delivery failure is logged without the topic and does not fail the report", async () => {
-  await fixture("delivery", async (state) => {
-    const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(TOPIC, { status: 503 }));
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const L = new Ledger(state, { ...env, NTFY_TOPIC: TOPIC } as typeof env);
-      const r = report({ windows: [{ name: "5-hour", usedPercent: 95, resetsAt: null, at: AT }] });
-      expect(L.putUsage(r, DEFAULT_THRESHOLDS, "https://atelier.test").alerts).toEqual(["codex: 5-hour window 95% used"]);
-      await vi.waitFor(() => expect(log).toHaveBeenCalledWith("Atelier notification failed", 503));
-      expect(JSON.stringify(log.mock.calls)).not.toContain(TOPIC);
-    } finally { send.mockRestore(); log.mockRestore(); }
-  });
+it("the same report with the topic set or unset records the same alert and sends nothing", async () => {
+  const seen: unknown[] = [];
+  for (const topic of [undefined, TOPIC]) {
+    await fixture(`topic-${topic ? "set" : "unset"}`, async (state) => {
+      const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(TOPIC, { status: 503 }));
+      try {
+        const L = new Ledger(state, { ...env, NTFY_TOPIC: topic } as typeof env);
+        const r = report({ windows: [{ name: "5-hour", usedPercent: 95, resetsAt: null, at: AT }] });
+        expect(L.putUsage(r, DEFAULT_THRESHOLDS).alerts).toEqual(["codex: 5-hour window 95% used"]);
+        seen.push(L.notices(new Date(0).toISOString()).map((e) => [e.kind, e.data]));
+        expect(send).not.toHaveBeenCalled();
+      } finally { send.mockRestore(); }
+    });
+  }
+  expect(seen[0]).toEqual(seen[1]);
 });
 
 it("the page shows one table per tool, marks stale reports and figures past a threshold, and escapes what runners sent", () => {

@@ -109,7 +109,8 @@ const when = (v: unknown): string | null => {
 const SECRET_FIELDS = ["key", "apiKey", "token", "authorization", "header", "headers"];
 
 // A tool or runner name is stored as sent, drawn on the usage page and put in
-// an alert's title, which goes to ntfy.sh, so it must be a plain name: the
+// an alert's title, which is recorded in the ledger and printed by atelier
+// status, so it must be a plain name: the
 // tool matches TOOL (the runner matched parseRunner's pattern already), and
 // neither looks like a key by the patterns redactKeys removes, in the case
 // it was sent or the case it is stored in. A report with such a name is

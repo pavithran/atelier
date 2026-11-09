@@ -40,14 +40,14 @@ import {
   recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
   riskNeed,
 } from "./rules";
-import { cleanSummary } from "./brief";
+import { briefFor, cleanSummary } from "./brief";
 import { criteriaHash, criteriaOf, NO_CRITERIA, sameCriteria, sha256Hex } from "./criteria.ts";
 import { settleCheckClasses, settleCheckPaths, type CheckDeclaration } from "./checks.ts";
 import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
-import { notificationRequest, usageAlertRequest } from "./notify.ts";
+import { INBOX_NOTICE, NOTICE_KINDS, STUCK_DIGEST_NOTICE, USAGE_ALERT } from "./notify.ts";
 import { ago } from "./floor.ts";
 
 // The note on the release a dispatch makes of a held task; the holder reads it
@@ -1058,7 +1058,6 @@ export class Ledger extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS notifications (
         item_id TEXT NOT NULL, head TEXT NOT NULL, PRIMARY KEY (item_id, head)
       );
-      CREATE TABLE IF NOT EXISTS notification_origins (item_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS notices (key TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT, at TEXT NOT NULL,
@@ -2094,22 +2093,20 @@ export class Ledger extends DurableObject<Env> {
   // Stores the report, then alerts once per crossing: a figure past its
   // threshold is recorded under its key the first time a report shows it,
   // and that key is dropped when a later report from the same runner shows
-  // it back under, so the next crossing alerts again. The alert goes through
-  // the notification topic when there is one; the crossing is recorded
-  // either way, and the keys alerted now come back to the caller.
-  putUsage(report: UsageReport, thresholds: Thresholds, origin: string): { report: UsageReport; alerts: string[] } {
+  // it back under, so the next crossing alerts again. The alert is one
+  // usage.alert event (t533), which atelier status lists; nothing is sent.
+  // The titles alerted now come back to the caller.
+  putUsage(report: UsageReport, thresholds: Thresholds): { report: UsageReport; alerts: string[] } {
     this.sql.exec(`INSERT OR REPLACE INTO usage (tool, runner, json) VALUES (?, ?, ?)`, report.tool, report.runner, JSON.stringify(report));
     const active = crossings(report, thresholds, Date.parse(report.at));
     const held = new Set(this.sql.exec(`SELECT key FROM usage_alerts WHERE tool = ? AND runner = ?`, report.tool, report.runner).toArray().map((r) => r.key as string));
-    const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
     const at = new Date().toISOString();
     const alerts: string[] = [];
     for (const c of active) {
       if (held.has(c.key)) continue;
       this.sql.exec(`INSERT INTO usage_alerts (key, tool, runner, since) VALUES (?, ?, ?, ?)`, c.key, report.tool, report.runner, report.at);
-      this.log(null, this.owner, "usage.alert", { key: c.key, runner: report.runner, title: c.title }, at);
+      this.log(null, this.owner, USAGE_ALERT, { key: c.key, runner: report.runner, title: c.title, body: c.body }, at);
       alerts.push(c.title);
-      if (topic) this.deliver(usageAlertRequest(topic, origin, c.title, c.body));
     }
     const keys = new Set(active.map((c) => c.key));
     for (const key of held) {
@@ -4819,46 +4816,47 @@ export class Ledger extends DurableObject<Env> {
     return others.length ? { authors: others } : {};
   }
 
-  // Cloud checks arrive without an HTTP request, so retain the initiating origin.
-  setNotificationOrigin(id: string, origin: string): void {
-    this.item(id);
-    this.sql.exec(`INSERT OR REPLACE INTO notification_origins (item_id, origin) VALUES (?, ?)`, id, new URL(origin).origin);
-  }
-
-  private notify(id: string, origin?: string): void {
+  // A decision waiting on the developer is one inbox.notice event (t533;
+  // PAVI, 2026-11-07: "drop ntfy"). The notifications row keeps it to one per
+  // head and is written in the same transaction as the event, so a crash
+  // between them leaves neither and a repeat at the same head records
+  // nothing. atelier status lists the event; nothing is sent.
+  private notify(id: string, at: string): void {
     try {
-      if (origin) this.setNotificationOrigin(id, origin);
-      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-      if (!topic) return;
       const item = this.item(id);
-      if (item.state !== "submitted" || !item.head || !this.inbox(new Date().toISOString()).some((e) => e.itemId === id)) return;
-      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, id).toArray()[0];
-      if (!saved) return;
-      const request = notificationRequest(topic, saved.origin as string, this.project().name, this.detail(id));
-      // Reserve before network I/O. A failed attempt is not retried at this head.
-      const claimed = this.sql.exec(`INSERT OR IGNORE INTO notifications (item_id, head) VALUES (?, ?) RETURNING item_id`, id, item.head).toArray();
-      if (!claimed.length) return;
-      this.deliver(request);
+      if (item.state !== "submitted" || !item.head || !this.inbox(at).some((e) => e.itemId === id)) return;
+      this.recordInboxNotice(id, item.head, item.head, "submitted", at);
     } catch {
-      console.error("Atelier notification could not be scheduled");
+      console.error("Atelier notice could not be recorded");
     }
   }
 
-  // Delivery runs in the background: a failure is logged without the
-  // response body or the topic, and nothing is retried. It holds the
-  // restart gate, so a restart after a deploy waits for it.
-  private deliver(request: Request): void {
-    const work = (async () => {
-      try {
-        const response = await fetch(request, { redirect: "error", signal: AbortSignal.timeout(10_000) });
-        if (!response.ok) console.error("Atelier notification failed", response.status);
-        await response.body?.cancel();
-      } catch {
-        console.error("Atelier notification failed");
-      }
-    })();
-    const gate = GATES.get(this);
-    this.ctx.waitUntil(gate ? gate.hold(work) : work);
+  private recordInboxNotice(id: string, key: string, head: string, reason: "submitted" | "round-cap", at: string): void {
+    try {
+      this.ctx.storage.transactionSync(() => {
+        if (!this.sql.exec(`INSERT OR IGNORE INTO notifications (item_id, head) VALUES (?, ?) RETURNING item_id`, id, key).toArray().length) return;
+        this.log(id, ORCHESTRATOR, INBOX_NOTICE, { head, reason, title: this.item(id).title, brief: briefFor(this.detail(id)).decided }, at);
+      });
+    } catch {
+      console.error("Atelier notice could not be recorded");
+    }
+  }
+
+  // One stuck.digest_notice event for the episodes with no notice yet, each
+  // keyed in `notices` so a repeat tick, or a retry after the index failed to
+  // mark them told, records nothing for an episode already recorded.
+  recordStuckDigest(project: string, episodes: readonly Transition[]): void {
+    this.ctx.storage.transactionSync(() => {
+      const fresh = episodes.filter((t) => this.sql.exec(`INSERT OR IGNORE INTO notices (key) VALUES (?) RETURNING key`, `stuck:${noticeKey(t)}`).toArray().length);
+      if (!fresh.length) return;
+      this.log(null, ORCHESTRATOR, STUCK_DIGEST_NOTICE, { project, episodes: fresh.map((t) => ({ item: t.item, cause: t.cause, episode: t.episode, reason: t.reason })) }, new Date().toISOString());
+    });
+  }
+
+  // The notices recorded at or after `since`, newest first.
+  notices(since: string): LedgerEvent[] {
+    const kinds = NOTICE_KINDS.map(() => "?").join(", ");
+    return this.sql.exec(`SELECT * FROM events WHERE kind IN (${kinds}) AND at >= ? ORDER BY seq DESC`, ...NOTICE_KINDS, since).toArray().map((r) => eventOf(r, this.owner, this.cutover().seq));
   }
 
   // A notice that wakes a session (t521): a builder's dispute or a second
@@ -4883,10 +4881,11 @@ export class Ledger extends DurableObject<Env> {
     const json = JSON.stringify(e);
     if (this.sql.exec(`SELECT 1 FROM evidence WHERE item_id = ? AND json = ? LIMIT 1`, e.itemId, json).toArray().length) return;
     this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, e.itemId, json);
+    const at = new Date().toISOString();
     // A record that a check does not apply has no result, so it is logged as its own kind, not as a pass.
     // A check whose whole log is kept in R2 (t284) names it by reference in the event.
-    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}), ...(e.load !== undefined ? { load: e.load } : {}) }, new Date().toISOString(), proved);
-    if (e.grade === "observed") this.notify(e.itemId, origin);
+    this.log(e.itemId, e.by, e.notApplicable ? "evidence.not_applicable" : `evidence.${e.grade}`, { claim: e.claim, passed: e.passed, head: e.head, ...(e.changedPaths !== undefined ? { changedPaths: e.changedPaths } : {}), ...(e.where ? { where: e.where } : {}), ...(e.log ? { log: e.log } : {}), ...(e.merged ? { merged: true, mainHead: e.mainHead } : {}), ...(e.load !== undefined ? { load: e.load } : {}) }, at, proved);
+    if (e.grade === "observed") this.notify(e.itemId, at);
     // Passing checks at a head the item moved to may be what the gate waited
     // on to need its review again: a request the move withdrew is carried.
     this.reaskReview(e.itemId, new Date().toISOString());
@@ -5060,7 +5059,7 @@ export class Ledger extends DurableObject<Env> {
       if (blocking.length) this.log(item.kind === "part" && item.plan ? item.plan : item.id, ORCHESTRATOR, "goal.notes", { itemId: item.id, head: r.head, by: r.by, request: r.request, notes: blocking, postMerge: true }, at);
       if (!fastReceiptOf && (r.findings ?? []).some((f) => f.severity === "blocking")) this.log(item.id, ORCHESTRATOR, "item.defect", { head: item.acceptedHead, mergeCommit: r.head, note: r.note, request: r.request }, at);
     }
-    this.notify(r.itemId, origin);
+    this.notify(r.itemId, at);
     if (!r.approve) this.noticeSecondRejection(item, r, reviewId, at);
     this.afterPlanChange(r.itemId);
   }
@@ -5104,16 +5103,7 @@ export class Ledger extends DurableObject<Env> {
     this.log(itemId, ORCHESTRATOR, "review.round_cap", { rounds: rounds.map((rd) => ({ head: rd.head, by: rd.by, note: rd.note.slice(0, 300) })) }, at);
     // The developer is told, once for the head: notify() speaks of submitted
     // work only, and this task is blocked now.
-    try {
-      if (origin) this.setNotificationOrigin(itemId, origin);
-      const topic = (this.env as Env & { NTFY_TOPIC?: string }).NTFY_TOPIC;
-      const saved = this.sql.exec(`SELECT origin FROM notification_origins WHERE item_id = ?`, itemId).toArray()[0];
-      if (!topic || !saved || !item.head) return;
-      const claimed = this.sql.exec(`INSERT OR IGNORE INTO notifications (item_id, head) VALUES (?, ?) RETURNING item_id`, itemId, `round-cap:${item.head}`).toArray();
-      if (claimed.length) this.deliver(notificationRequest(topic, saved.origin as string, this.project().name, this.detail(itemId)));
-    } catch {
-      console.error("Atelier notification could not be scheduled");
-    }
+    if (item.head) this.recordInboxNotice(itemId, `round-cap:${item.head}`, item.head, "round-cap", at);
   }
 
   // Releases a submitted part back to its builder with the reviewer's
@@ -5149,7 +5139,7 @@ export class Ledger extends DurableObject<Env> {
     // gate still needs it reviewed (reaskReview).
     this.reaskReview(id, at);
     this.askSubmissionReview(id);
-    this.notify(id, origin);
+    this.notify(id, at);
     this.afterPlanChange(id);
     return this.item(id);
   }
