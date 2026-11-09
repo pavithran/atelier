@@ -138,7 +138,7 @@ export function availabilityOf(
   const flags = have && have.size ? [] : [UNKNOWN_USAGE];
   const no = (reason: string, until: string | null = null): Availability => ({ available: false, reason, until, flags });
 
-  const refused = eligibilityRefusal(entry, ask);
+  const refused = eligibilityRefusal(entry, ask, undefined, new Date(t));
   if (refused) return no(refused);
 
   // Offered: the runners that would be handed this dispatch. With no live

@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { availabilityOf, keepsStored, READING_TTL_MS, readingsFor, toolOf, UNKNOWN_USAGE } from "../src/models/usage-readings.ts";
@@ -171,6 +171,14 @@ test("no reading for the tool is available with the flag, and every disqualifier
   assert.deepEqual(check(entry({ state: "paused" }), []).flags, [UNKNOWN_USAGE]);
   // With no live runner, nothing about offers or readiness restricts the model.
   assert.equal(check(entry(), [], { offers: null }).available, true);
+});
+
+test("a refusal's age is judged at the supplied now, not the system clock", () => {
+  const refused = entry({ status: { state: "refused", at: iso(NOW - HOUR), by: "home:studio" } });
+  mock.timers.enable({ apis: ["Date"], now: NOW + 8 * 24 * HOUR });
+  try {
+    assert.equal(check(refused, []).reason, "provider refused");
+  } finally { mock.timers.reset(); }
 });
 
 test("the module imports no ledger, fetch or clock", () => {

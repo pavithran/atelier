@@ -84,7 +84,7 @@ function staleRefusal(entry: Pick<ModelEntry, "status">, now = new Date()): stri
 // single-family mode, a provider's refusal, per-token spending and the rules'
 // own eligibility. The first that refuses gives its sentence; null when none
 // does. availabilityOf (usage-readings.ts) runs the same function.
-export function eligibilityRefusal(entry: ModelEntry, input: { policy: ProjectPolicy; owner?: string }, offered?: (entry: ModelEntry) => string | null): string | null {
+export function eligibilityRefusal(entry: ModelEntry, input: { policy: ProjectPolicy; owner?: string }, offered?: (entry: ModelEntry) => string | null, now = new Date()): string | null {
   const actor = actorOf(entry);
   const single = singleFamily(input.policy);
   const held = standingRefusal(entry, "build");
@@ -92,7 +92,7 @@ export function eligibilityRefusal(entry: ModelEntry, input: { policy: ProjectPo
   const unoffered = offered?.(entry);
   if (unoffered) return unoffered;
   if (single && actorFamily(actor) !== single) return `not one of ${single}'s models (single-family mode)`;
-  if (entry.status?.state === "refused" && !staleRefusal(entry)) return "provider refused";
+  if (entry.status?.state === "refused" && !staleRefusal(entry, now)) return "provider refused";
   if (paidPerToken(entry)) return "per-token spending is not authorized";
   try { assertEligible(actor, input.policy, input.owner); } catch (e) { if (!(e instanceof RuleError)) throw e; return e.message; }
   return null;
@@ -102,18 +102,19 @@ export function builderCandidates(input: SuggestionInput, constraints: { to?: un
   const job = typeof constraints.job === "string" && constraints.job !== "build" ? constraints.job as Dispatch["job"] : undefined;
   const jobText = job ? `the ${job} job` : "a build";
   const offeredFor = (entry: ModelEntry) => (input.offers ? offering({ to: entry.where, job }, input.offers) : null);
+  const now = new Date();
   const refusalOf = (entry: ModelEntry): string | null => eligibilityRefusal(entry, input, (e) => {
     const offered = offeredFor(e);
     if (offered && !claimants({ to: e.where, job, agent: e.harness, model: e.id }, input.offers ?? [])?.length) return `no live runner offers ${actorOf(e)} for ${jobText} ${e.where === "home" ? "at home" : "in the cloud"}`;
     return null;
-  });
+  }, now);
   const chosen = constraints.model ? String(constraints.model) : null;
   return ranked(input)
     .filter(({ entry }) => chosen === null || entry.id === chosen)
     .filter(({ entry }) => !(constraints.to && constraints.to !== "any" && constraints.to !== entry.where))
     .map(({ entry, reason }) => {
       const note = latestNote(entry, input.project, input.item.id);
-      const checked = staleRefusal(entry);
+      const checked = staleRefusal(entry, now);
       return { actor: actorOf(entry), where: entry.where, line: [reason, ...(checked ? [checked] : []), ...(note ? [noteLine(note)] : [])].join(" "), refusal: refusalOf(entry) };
     });
 }
