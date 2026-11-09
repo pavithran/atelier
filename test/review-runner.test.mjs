@@ -142,7 +142,7 @@ test("runReview posts a rejection with its findings, and releases the request wh
   const posted = calls.find((c) => c.argv && c.argv[0] === "review").argv;
   assert.ok(posted.includes("--reject"));
   assert.ok(posted.includes("--findings"));
-  assert.ok(posted.includes(JSON.stringify([{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried." }])));
+  assert.ok(posted.includes(JSON.stringify([{ file: "src/review/needed.ts", line: 88, severity: "blocking", text: "A lapsed claim is never retried.", cause: "unknown" }])));
 
   // A harness that writes no valid verdict keeps the reply on the task (t407)
   // and releases the request.
@@ -2128,7 +2128,7 @@ test("a blocking finding the check does not confirm is recorded as unverified an
     assert.equal(state.verdict, "approve", "no blocking finding stood");
     const argv = posted(calls);
     assert.ok(argv.includes("--approve") && !argv.includes("--reject"));
-    assert.deepEqual(findingsOf(argv), [{ file: "src/review/needed.ts", line: 11, severity: "follow-up", text: "A lapsed claim is never retried.", label: "unverified" }]);
+    assert.deepEqual(findingsOf(argv), [{ file: "src/review/needed.ts", line: 11, severity: "follow-up", text: "A lapsed claim is never retried.", cause: "unknown", label: "unverified" }]);
     const note = argv[argv.indexOf("--note") + 1];
     assert.match(note, /The reviewer rejected, but no blocking finding stood \(0 already answered, 0 pre-existing, 1 unverified\)/);
     assert.match(note, /The reviewer's summary: One bug\./);
@@ -2263,7 +2263,7 @@ test("the check is run by another model of another family when the runner has on
 // developer already answered.
 const H_EARLIER = "c".repeat(40);
 const earlier = { itemId: "t21", by: "codex/gpt-6-astra", head: H_EARLIER, approve: false, note: "One bug.", at: "2026-10-05T10:00:00.000Z", criteria: "c",
-  findings: [{ file: "src/review/needed.ts", line: 11, severity: "blocking", text: "A lapsed claim is never retried." }] };
+  findings: [{ file: "src/review/needed.ts", line: 11, severity: "blocking", text: "A lapsed claim is never retried.", cause: "unknown" }] };
 const reReviewClaim = (verdicts = []) => ({ ...claimed, need: { ...claimed.need, kind: "re-review", round: 2, previous: [earlier], previousReviewer: earlier.by },
   events: verdicts.map((v, i) => ({ seq: 5 + i, itemId: "t21", at: "2026-10-05T11:00:00.000Z", actor: "owner", kind: "review.finding", data: v })) });
 

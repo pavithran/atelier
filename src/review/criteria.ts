@@ -446,6 +446,13 @@ const numbered = (criteria: readonly string[], from = 0) => criteria.map((c, i) 
 // What a criteria review may block for, stated in every criteria brief.
 export const CRITERIA_REVIEW_BAR = "Block only for a criterion that cannot be observed or tested by anyone (it names no behaviour, output, state or measurement a reviewer could check), one that contradicts the task's brief or another criterion, one outside the task's scope, one so open that two reasonable readings would judge the same change differently, or a set that leaves out what the brief plainly requires, so that a change meeting every criterion could still fail the task. A criterion that can be observed, but not by the builder in its workspace (it needs a signed-in browser, production data, a deployed service or a human step), is not a defect: flag it as a check after deploy with a CHECK line, the developer's for a step a person makes or the orchestrator's for one a script runs against the deployed project, and do not block for it. Wording, order and style are follow-ups.";
 
+// t535: criteria that leave a failure design undecided cost a round in each
+// of several tasks (a notification lost or doubled across a crash between
+// sending and recording). Stated in every criteria brief.
+export const CRITERIA_FAILURE_RULE = "For a task that writes state, sends anything, retries, or spans more than one process or call, the criteria must say what happens on a crash part-way, a retry, a repeated or concurrent call and a timeout, or say why one does not apply. Ask it of each: for a notification, what the criteria decide when the process dies between sending and recording (lost or doubled), since \"exactly one\" cannot hold across that crash as written. When a set for such a task leaves one of them undecided and unexplained, reject it with a blocking finding that names which behaviour (crash, retry, repeat or concurrent call, or timeout) is left open. A task with none of these traits, such as a docs change or a pure function, is not asked for any of this and is never blocked for lacking it.";
+
+export const CRITERIA_SHARP_RULE = "Also block for an absolute (exactly, never, always) whose strictest reading is impossible or unstated, a number or field with no named source that records it (\"computed from the ledger\" when nothing records the parts), and a behaviour with no named production entry point (the command, route or job that runs it, \"a passed deploy step\" without saying which command of the step).";
+
 // The brief a criteria reviewer reads: the task, its criteria numbered as the
 // binding stores them, who wrote them, the earlier criteria reviews with the
 // owner's resolutions, the bar, and the reply format parseVerdict reads. A
@@ -508,6 +515,10 @@ export function criteriaReviewBrief(input: CriteriaBriefInput): string {
     "",
     "What may block:",
     CRITERIA_REVIEW_BAR,
+    "",
+    CRITERIA_SHARP_RULE,
+    "",
+    CRITERIA_FAILURE_RULE,
     "",
     "A blocking finding names the criterion (criterion-N in the file slot, or criteria for the set as a whole) and says what cannot be observed, what contradicts what, or what is missing. A finding on wording, order or style is a follow-up and never holds the task back.",
     "A criterion the developer stated as a decision of theirs is not a defect for its substance; it is one only when it cannot be observed.",

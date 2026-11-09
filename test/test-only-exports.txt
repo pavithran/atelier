@@ -1,0 +1,47 @@
+# Functions exported from src/ or cli/ that only test files reference (t534).
+# test/test-only-exports.test.mjs, in npm run test:static, fails on any such
+# function not listed here. PAVI, 2026-11-07: 18 of 65 blocking findings in
+# astra's rejections of t512-t528 were logic no production code calls
+# (t521's dispatchBuilder, io.wake and io.readItem; t524's guardLanding and
+# revertOnMain; t513's wake predicate). The list below is what stood on
+# 2026-11-08, so the check refuses only new ones; it holds old debt, not
+# permission. One entry per line: file:function, then why it is allowed.
+# An entry with no reason, or for a function that is gone or now has a
+# production caller, fails the check: remove it. Wire a function in or delete
+# it, then delete its line.
+cli/fresh.mjs:buildHistory exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/fresh.mjs:parseCommit exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/fresh.mjs:syncHistory exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/harness/providers.mjs:substituteEnv exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/landing.mjs:readMovedCodeRecords exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/load.mjs:poolSize exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/runner.mjs:limitFileFor exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/runner.mjs:mergeMainArgs exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/runner.mjs:readLimits exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/runner.mjs:writeLimits exported and tested, no production caller on 2026-11-08; wire it in or delete it
+cli/ship.mjs:memoryDeployStore exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/browse/repo.ts:walk exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/dispatch/rework.ts:disputeReason exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/index.ts:replayModelSnapshot exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/landing-verdict.ts:reviewStall exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/large.ts:capLarge exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/ledger-stub.ts:forgetToldLedgers exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/models/cards.ts:cardEvidence exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/models/speed.ts:speedLine exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/models/suggest.ts:suggestBuilder exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/moved-code.ts:detectMovedEdits exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/plans/integrate.ts:integrationChecks exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/refresh/mechanical.ts:reportText exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/refresh/mechanical.ts:resolveFile exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/retention.ts:regeneratedOutputs exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/review/criteria.ts:pickCriteriaReviewer exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/review/suggest.ts:suggestReviewer exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/rules.ts:agentOfMessage exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/rules.ts:agentsOfMessages exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/rules.ts:briefText exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/rules.ts:labelPreExisting exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/secret-scan.ts:scanTrees exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/stage-tick.ts:findStageOverrun exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/time.ts:zoneName exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/token-expiry.ts:warns exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/tokens.ts:callParts exported and tested, no production caller on 2026-11-08; wire it in or delete it

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentStep, failingTestOf, failureKey, hash, newRevertState, redactedOutput, revertBrief } from "../src/post-merge.ts";
 import { matchesFolded } from "../src/rules.ts";
+import { failedTestNames } from "./failed-names.mjs";
 import { checkEnv } from "./check-env.mjs";
 import { runGroup } from "./group.mjs";
 import { pushCheckoutRemote } from "./checkout-push.mjs";
@@ -202,8 +203,10 @@ export async function executePostMerge({ request, name, id, env = process.env, p
     // is lost. A command report never resolves the reservation on its own.
     await request("POST", path, { run: run.id, action: "command", attempt: attempt.id, passed, publication });
     let failedOutput = output;
+    // The server keeps the first 8,192 characters, so the failing names come from the whole output here.
+    const secrets = [...Object.values(env).filter(value => typeof value === "string" && value.length >= 8), ...(step.privacy?.patterns ?? [])];
     try {
-      ({ run } = await request("POST", path, { run: run.id, action: "finish", attempt: attempt.id, passed, commandOutcome, output: redactedOutput(output, [...Object.values(env).filter(value => typeof value === "string" && value.length >= 8), ...(step.privacy?.patterns ?? [])]) }));
+      ({ run } = await request("POST", path, { run: run.id, action: "finish", attempt: attempt.id, passed, commandOutcome, output: redactedOutput(output, secrets), ...(!passed && step.class === "check" ? failedTestNames(output, secrets) : {}) }));
     } catch (error) {
       // A successful deploy command and a wrong /version are different facts.
       // Re-submit failure only for a definite verification refusal; a lost
