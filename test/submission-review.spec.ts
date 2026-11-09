@@ -141,17 +141,26 @@ test("a submit the ledger refuses with a RuleError logs submission.review_wait a
   assert.match(formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);
 });
 
-// The real KeptRequests path: another reviewer's open request at the head is
-// withdrawn for the dispatched reviewer, no replacement is asked because a
-// check has failed at the head, and the withdrawal rolls back.
+// The real KeptRequests path (src/ledger.ts askReview): the head already has a
+// counted review, so the submit's review is not wanted; that review is a
+// rejection, so none is needed; another reviewer's older open request is
+// withdrawn for the dispatched reviewer and, with no replacement asked, the
+// withdrawal rolls back and requestReview answers instead of throwing.
 test("a submit whose redirect is rolled back (KeptRequests) leaves the standing request asked and logs no wait", async () => {
   const { L, id, name } = await setup("submission-wait-kept", false);
   await L.submit(id, builder, "Checked", undefined, false, head);
   await L.requestReview(id, "owner", "claude-code/sonnet-5.5", pool, false);
-  await L.addEvidence({ itemId: id, head, claim: "npm test", grade: "observed", passed: false, by: "owner", at: new Date(Date.now() + 1000).toISOString(), changedPaths: ["src/a.ts"] });
+  await L.addReview({ itemId: id, by: "owner", head, criteria: await L.criteria(id), approve: false, note: "not yet", at: new Date().toISOString() });
+  const open = (await L.reviewRequests(id)).filter(r => r.state === "open");
+  assert.equal(open.length, 1, "the older request is still open before the dispatched submit");
   await runInDurableObject(L, async (instance: any) => {
     const d = instance.item(id).dispatch;
     instance.sql.exec("UPDATE items SET dispatch = ? WHERE id = ?", JSON.stringify({ ...d, reviewer, land: true }), id);
+    const wanted = !instance.reviewsFor(id).some((r: any) => r.head === head);
+    assert.equal(wanted, false, "a counted review of the head makes wanted false, so the refusal is KeptRequests, not RuleError");
+    const answer = instance.requestReview(id, "owner", reviewer, pool, wanted);
+    assert.equal(answer.needed, false);
+    assert.match(answer.reason, /no review of claude-code\/opus-5\.5 was asked, so request \d+ for claude-code\/sonnet-5\.5 stands/);
     instance.submit(id, builder, "Checked", undefined, false, head);
   });
   const requests = await L.reviewRequests(id);
@@ -161,6 +170,20 @@ test("a submit whose redirect is rolled back (KeptRequests) leaves the standing 
   assert.equal((await L.item(id)).reviewAskedHead, head);
   assert.equal((await L.events(id)).filter(e => e.kind === "submission.review_wait").length, 0);
   assert.doesNotMatch(formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);
+});
+
+// An answer that asks nothing (not a RuleError, no request standing): the head
+// carries a counted rejection, so no review is needed and none is asked.
+test("a submit whose answer asks no review, with no request standing, logs submission.review_wait and status lists the task", async () => {
+  const { L, id, name } = await setup("submission-wait-answer");
+  await L.addReview({ itemId: id, by: "owner", head, criteria: await L.criteria(id), approve: false, note: "not yet", at: new Date().toISOString() });
+  await L.submit(id, builder, "Checked", undefined, false, head);
+  assert.equal((await L.reviewRequests(id)).length, 0);
+  const waits = (await L.events(id)).filter(e => e.kind === "submission.review_wait");
+  assert.equal(waits.length, 1);
+  assert.match(String(waits[0].data.reason), /rejected/);
+  assert.equal(waits[0].data.next, `atelier land ${id} --reviewer ${reviewer}`);
+  assert.match(formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);
 });
 
 async function routeSubmit(name: string, id: string, headSent?: string) {
