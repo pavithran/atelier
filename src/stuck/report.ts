@@ -72,7 +72,9 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
     for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
       if (e.kind === "action.started") {
         // Ship commands run in sequence; the next start replaces the previous one.
-        for (const [key, previous] of started) if (previous.data.ship === e.data.ship) started.delete(key);
+        // Ships take turns on the checkout lease, so another ship's start proves
+        // every earlier ship's process ended, whether or not it recorded a stop.
+        started.clear();
         started.set(runKey(e), e);
       }
       if (e.kind === "action.ran") started.delete(runKey(e));

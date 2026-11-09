@@ -37,6 +37,27 @@ test("a later command in the same ship replaces the previous start", () => {
   assert.match(r.entries[0].reason, /next command/);
 });
 
+const at = (minutes) => new Date(Date.parse(start.at) + minutes * 60000).toISOString();
+const step = (seq, ship, name, minutes) => ({ ...start, seq, at: at(minutes), data: { ship, step: name, command: `run ${name}` } });
+const steps = (r) => r.entries.map((e) => e.subject);
+
+test("criterion 1: a later ship's start closes an earlier ship's unfinished step", () => {
+  const events = [step(1, "s-A", "typecheck", 0), step(2, "s-B", "build", 5), step(3, "s-B", "test", 10)];
+  const r = report([...events, { ...start, seq: 4, kind: "action.ran", data: events[2].data }], 200);
+  assert.deepEqual(steps(r), []);
+});
+
+test("criterion 2: a running step with no later ship is listed after 60 minutes", () => {
+  const events = [step(1, "s-A", "typecheck", 0)];
+  assert.deepEqual(steps(report(events, 60)), []);
+  assert.deepEqual(steps(report(events, 61)), ["s-A:typecheck"]);
+});
+
+test("criterion 3: a later ship also running over 60 minutes is the only one listed", () => {
+  const events = [step(1, "s-A", "typecheck", 0), step(2, "s-B", "build", 5)];
+  assert.deepEqual(steps(report(events, 200)), ["s-B:build"]);
+});
+
 test("start route checks the authenticated owner before writing", async () => {
   const writes = [];
   const ledger = { startActionRun: async (body, actor) => writes.push({ body, actor }) };
