@@ -4,6 +4,8 @@ import type { BoardSnapshot, Stage } from "./board.ts";
 import { OWNER_CALL_LABEL, STAGE_LABEL, legacyFields, stageCounts, type Attention, type LegacyFields, type OwnerTask } from "./attention.ts";
 import { nowBody, type NowView } from "./now.ts";
 import nowCss from "./now.css";
+import verdictCss from "./task-verdict.css";
+import { renderTaskVerdict } from "./task-verdict.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
 // reads fully without script; the Studio refreshes itself with a meta
@@ -2097,13 +2099,6 @@ export function taskProgress(item: Pick<Item, "state" | "head" | "base" | "works
   };
 }
 
-function progressBlock(item: Item, checks: { grade: string; passed: boolean | null }[]): string {
-  const { steps, note } = taskProgress(item, checks);
-  return `<ol class="task-steps" aria-label="Progress: claim, branch, prove, review, land">${steps.map((s) =>
-    `<li class="${s.state}"${s.state === "current" ? ' aria-current="step"' : ""}><b>${e(s.verb)}</b><span>${s.state === "current" ? (item.state === "blocked" ? "Blocked here" : "Now") : s.state === "done" ? "Done" : e(s.line)}</span></li>`).join("")}</ol>
-  ${note && item.state !== "blocked" ? `<p class="meta task-steps-note">${e(note)}</p>` : ""}`;
-}
-
 // A task's page sits inside its project's area: the project's tab bar above
 // the review sheet, the area reached from Home. The five steps sit above
 // the sheet, the task's current one marked.
@@ -2160,18 +2155,18 @@ function fastReadyBlock(d: Detail): string {
 }
 
 export function renderItem(p: ProjectRecord, d: Detail, ownerName: string | null = null, diff: ItemDiff | "unavailable" | null = null, live?: Live): string {
+  const progress = taskProgress(d.item, evidenceAt(d.policy, d.evidence, d.item.head).checks);
   return page(d.item.title, `<div class="page-width">
   ${projectTabs(p, "Tasks", d.item.id)}
-  ${progressBlock(d.item, evidenceAt(d.policy, d.evidence, d.item.head).checks)}
-  <article class="review-sheet standalone" id="review">${reviewBody({ project: p, detail: d, diff, thread: true, full: true })}</article>
-</div>`, "Home", ownerName, 0, true, live);
+  <div class="task-verdict" id="review">${renderTaskVerdict(d, diff, reviewParts({ project: p, detail: d, diff, thread: true, full: true }), { project: p.name, projectTitle: titleOf(p), progress })}</div>
+</div>`, "Home", ownerName, 0, true, live, { css: verdictCss });
 }
 
 const VERDICT_TONE: Record<Verdict, string> = { land: "go", accept: "go", merge: "go", review: "ask", wait: "ask", decide: "ask", "send back": "bad", none: "" };
 
 // The brief sits above the diff: what is decided, what the agent said, what the
 // record shows, and what it points to.
-function briefBlock(d: Detail): string {
+function briefBlock(d: Detail, recommend = true): string {
   if (!["claimed", "submitted", "accepted", "blocked"].includes(d.item.state)) return "";
   const b = briefFor(d, definingOf(d));
   const said = submission(definingOf(d), d.item.id, d.item.head);
@@ -2182,8 +2177,8 @@ function briefBlock(d: Detail): string {
   <h3>${e(b.decided)}</h3>
   ${summary}
   ${b.evidence.length ? `<p class="section-title">What the evidence shows</p><ul>${b.evidence.map((l) => `<li>${e(l)}</li>`).join("")}</ul>` : ""}
-  <p class="section-title">Recommendation</p>
-  <p>${tag(b.recommendation.verdict, VERDICT_TONE[b.recommendation.verdict])} ${e(b.recommendation.reason)}</p>
+  ${recommend ? `<p class="section-title">Recommendation</p>
+  <p>${tag(b.recommendation.verdict, VERDICT_TONE[b.recommendation.verdict])} ${e(b.recommendation.reason)}</p>` : ""}
 </section>`;
 }
 
@@ -2357,7 +2352,7 @@ export function ownerState(d: Detail, evidenceVisible: boolean, now = Date.now()
 
 const NEXT_LABEL: Record<OwnerState["next"]["kind"], string> = { next: "Next", waiting: "Waiting", complete: "Done" };
 
-function ownerStateBlock(s: OwnerState): string {
+function ownerStateBlock(s: OwnerState, withNext = true): string {
   const row = (c: StateCell) => `<div><dt>${e(c.label)}</dt><dd${c.tone ? ` class="${c.tone}"` : ""}>${e(c.text)}</dd></div>`;
   // The owner's own approval, once recorded, is said here once, beside the
   // actions below it, with its short head and zoned time (t457); Approve is
@@ -2368,7 +2363,7 @@ function ownerStateBlock(s: OwnerState): string {
     : row(s.approval);
   return `<section class="owner-state" aria-label="Where this revision stands">
   <dl>${approval}${[s.independent, s.permission, s.acceptance].map(row).join("")}</dl>
-  <p class="next-action"><strong>${NEXT_LABEL[s.next.kind]}:</strong> ${e(s.next.text)}</p>
+  ${withNext ? `<p class="next-action"><strong>${NEXT_LABEL[s.next.kind]}:</strong> ${e(s.next.text)}</p>` : ""}
 </section>`;
 }
 
@@ -2414,7 +2409,20 @@ function secretNotice(item: Item, revision: string, action: (verb: string) => st
     : "";
 }
 
-function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext): string {
+// The pieces of a task's review, each as main draws it, so a page can set them
+// in its own order: the decision page and the task page both draw from them.
+export interface ReviewParts {
+  status: { title: string; detail: string; unknowns: string[]; tone: string };
+  text: string; notice: string; ownerState: string; ownerRows: string;
+  actions: string; secret: string; askReview: string; merge: string; reaccept: string; revision: string;
+  origin: string; framing: string; thread: string; brief: string; briefAsk: string;
+  openScope: string; fastReady: string; notices: string;
+  diff: string; scope: string; protectedNote: string; checks: string; fast: string;
+  rounds: string; history: string; technical: string; ownership: string; close: string;
+  live: boolean; pushed: boolean;
+}
+
+export function reviewParts({ project: p, detail: d, diff, thread, full }: ReviewContext): ReviewParts {
   const { item, gate } = d;
   // The company the project runs on alone (t394), named wherever the page
   // says what review the change needs, so the ask is never a cross-company one.
@@ -2584,21 +2592,6 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
         </form></details>`
       : "";
 
-  // One task headline; check outcomes stay with their evidence below.
-  const header = `<header class="review-header">
-  <p class="context">${e(titleOf(p))} · ${e(item.id)}</p>
-  <h2>${e(item.title)}</h2>
-  ${full ? taskText(item) : ""}
-  <p class="decision-status ${decision.tone}"><strong>${e(presentation.title)}</strong></p>
-  <p class="review-description">${e(presentation.detail)}</p>
-  ${presentation.unknowns.map(x => `<p class="meta">${e(x)}</p>`).join("")}
-  ${evidenceNotice}
-  ${ownerStateBlock(state)}
-  <div class="actions">${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}</div>
-  ${secretBox}
-  ${askReview}${merge}${reaccept}
-  <p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>
-</header>`;
 
   // The owner's framing, set with atelier new or atelier edit: shown only
   // when any of it is set, above the brief, where an agent or reviewer reads first.
@@ -2635,17 +2628,22 @@ function reviewBody({ project: p, detail: d, diff, thread, full }: ReviewContext
     <dt>Scope</dt><dd>${item.scope.map(e).join(", ") || "Unrestricted"}</dd>
     <dt>Last push</dt><dd>${when(item.lastPushAt)}</dd>
   </dl>`;
-  if (item.head === null) {
-    const openScope = `<section class="review-section" aria-label="Scope"><h3>Scope</h3>
+  const openScope = item.head === null
+    ? `<section class="review-section" aria-label="Scope"><h3>Scope</h3>
       <p>${item.scope.map(e).join(", ") || "Unrestricted"}</p>
-      <p class="meta">${item.owner ? `${e(item.owner)} holds it; nothing is pushed for review yet.` : "Any eligible agent can claim it; until then nothing is pushed for review."}</p></section>`;
-    return `${header}
-${defectOrigin}${framing}${openScope}${fastReadyBlock(d)}
-${notices}
-${submissionRounds(d)}
-<details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
-<details class="disclosure"><summary>Technical details${live ? " and handoff" : ""}</summary>${technical}${ownership}${close}</details>`;
-  }
+      <p class="meta">${item.owner ? `${e(item.owner)} holds it; nothing is pushed for review yet.` : "Any eligible agent can claim it; until then nothing is pushed for review."}</p></section>`
+    : "";
+  const common: ReviewParts = {
+    status: { title: presentation.title, detail: presentation.detail, unknowns: presentation.unknowns, tone: decision.tone },
+    text: taskText(item), notice: evidenceNotice, ownerState: ownerStateBlock(state), ownerRows: ownerStateBlock(state, false),
+    actions: `${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}`, secret: secretBox, askReview, merge, reaccept,
+    revision: `<p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>`,
+    origin: defectOrigin, framing, thread: "", brief: "", briefAsk: "", openScope, fastReady: fastReadyBlock(d), notices,
+    diff: "", scope: "", protectedNote: "", checks: "", fast: "",
+    rounds: submissionRounds(d), history: `<details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>`,
+    technical, ownership, close, live, pushed: item.head !== null,
+  };
+  if (item.head === null) return common;
 
   const scope = gate.outOfScope.length
     ? `<details class="notice"><summary>Scope changed · ${gate.outOfScope.length} file${gate.outOfScope.length === 1 ? "" : "s"}</summary>
@@ -2727,20 +2725,18 @@ ${submissionRounds(d)}
     ? `<details class="disclosure"><summary>Readiness details</summary><ul>${gate.blockers.map((b) => `<li>${e(b)}</li>`).join("")}</ul></details>`
     : "";
 
-  return `${header}
-${defectOrigin}${framing}${thread ? threadBlock(p, d) : ""}${briefBlock(d)}
-<nav class="review-nav" aria-label="In this review"><a href="#changes">Changes</a><a href="#checks">Checks</a><a href="#history">History</a>${item.workspace ? `<a href="${href("p", p.name, item.id, "code")}">Browse the branch</a><a href="${href("p", p.name, item.id, "log")}">Its log</a>` : ""}</nav>
-<section id="changes" class="review-section"><h3>Changes</h3>${renderDiff(diff, item.head, mergedChecks)}${scope}${protectedNote}</section>
-<section id="checks" class="review-section"><h3>Checks and reviews</h3>
+  const checksInner = `<h3>Checks and reviews</h3>
   <p class="meta">${view.checks.length ? `${decision.passed} of ${view.checks.length} required checks passed at this revision.` : view.notApplicable.length ? "No required check applies to this revision." : "This project requires no checks."}${view.checks.length && view.notApplicable.length ? ` ${view.notApplicable.length} more ${view.notApplicable.length === 1 ? "does" : "do"} not apply to it.` : ""}</p>
   ${notices}
   ${checkRows}${notApplicableRows}${reports}${reviews}${judgements}${prereview}${overrideNote}${blockers}
   ${item.state === "merged" ? definingOf(d).filter((ev) => ev.kind === "item.defect" && ev.data.mergeCommit && typeof ev.data.foundIn === "string").map((ev) => `<p>Post-merge defect: <a href="${href("p", p.name, String(ev.data.foundIn))}">${e(String(ev.data.foundIn))}</a></p>`).join("") : ""}
-  ${fastLandingBlock(p, d)}${recordedMergeBlock(d)}${fastReadyBlock(d)}
-</section>
-${submissionRounds(d)}
-<details class="disclosure" id="history"><summary>Task history</summary>${eventTable(d.events)}</details>
-<details class="disclosure"><summary>Technical details${live ? " and handoff" : ""}</summary>${technical}${ownership}${close}</details>`;
+`;
+  return {
+    ...common,
+    thread: thread ? threadBlock(p, d) : "", brief: briefBlock(d), briefAsk: briefBlock(d, false),
+    diff: renderDiff(diff, item.head, mergedChecks), scope, protectedNote, checks: checksInner,
+    fast: `${fastLandingBlock(p, d)}${recordedMergeBlock(d)}${fastReadyBlock(d)}`,
+  };
 }
 
 // A merged task's blocking findings and what the developer said of each

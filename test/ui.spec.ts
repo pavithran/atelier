@@ -60,7 +60,7 @@ it('merged tasks show completion without actionable approval or a misleading clo
  expect(html).toContain('Merged into the project');expect(html).not.toContain('Approve revision');expect(html).not.toContain('Readiness details');expect(html).not.toContain('Close task without merging');
 });
 it('the task page shows the five steps with the current one marked, read from the task\'s recorded state and its observed checks',()=>{
- const steps=(html:string)=>{const ol=html.slice(html.indexOf('<ol class="task-steps"'),html.indexOf('</ol>',html.indexOf('<ol class="task-steps"')));return [...ol.matchAll(/<li class="(\w+)"( aria-current="step")?><b>(\w+)<\/b>/g)].map((m)=>`${m[3]}:${m[1]}${m[2]?'*':''}`);};
+ const steps=(html:string)=>{const ol=html.slice(html.indexOf('<ol class="track '),html.indexOf('</ol>',html.indexOf('<ol class="track ')));const word:Record<string,string>={done:'done',now:'current',next:'todo'};return [...ol.matchAll(/<li class="st st-(\w+)[^"]*"( aria-current="step")?><span class="node">.*?<\/span><b class="st-name">(\w+)<\/b>/g)].map((m)=>`${m[3]}:${word[m[1]]}${m[2]?'*':''}`);};
  const at=(patch:Partial<Detail['item']>,evidence?:Detail['evidence'])=>{const d=detail();Object.assign(d.item,patch);if(evidence)d.evidence=evidence;return steps(renderItem(project,d,'PAVI',null));};
  const failed=[{...detail().evidence[0],passed:false}];
  expect(at({state:'open',owner:null,workspace:null,head:null})).toEqual(['Claim:current*','Branch:todo','Prove:todo','Review:todo','Land:todo']);
@@ -79,7 +79,7 @@ it('the task page shows the five steps with the current one marked, read from th
  const blocked=detail();blocked.item.state='blocked';blocked.item.blocked={by:'pavi',at:time,reason:'waiting',from:'submitted'};
  const blockedHtml=renderItem(project,blocked,'PAVI',null);
  expect(steps(blockedHtml)).toEqual(['Claim:done','Branch:done','Prove:done','Review:current*','Land:todo']);
- expect(blockedHtml).toContain('<span>Blocked here</span>');
+ expect(blockedHtml).toContain('<span class="st-note">Blocked here</span>');
  const closed=detail();closed.item.state='abandoned';closed.item.head=null;
  const closedHtml=renderItem(project,closed,'PAVI',null);
  expect(steps(closedHtml)).toEqual(['Claim:done','Branch:todo','Prove:todo','Review:todo','Land:todo']);
@@ -88,7 +88,7 @@ it('the task page shows the five steps with the current one marked, read from th
  // Labels only: the commands and routes on the page keep their names.
  const live=renderItem(project,detail(),'PAVI',null);
  expect(live).toContain('action="/ui/example/t1/block"');
- expect(live.indexOf('class="task-steps"')).toBeLessThan(live.indexOf('id="review"'));
+ expect(live.indexOf('class="track ')).toBeGreaterThan(live.indexOf('id="review"'));  // the track sits inside the verdict card (t586)
 });
 it('acceptance renders only after an independent approval and passing evidence; the owner\'s approval leaves the override instead',()=>{
  const diff={head,base:'b'.repeat(40),files:[],truncated:false};
@@ -98,7 +98,7 @@ it('acceptance renders only after an independent approval and passing evidence; 
  expect(own).toContain('Accept without an independent review');expect(own).toContain('action="/ui/example/t1/override"');expect(own).toContain('<textarea name="note" required rows="3" maxlength="500">');
  d.reviews.push({itemId:'t1',head,criteria:NO_CRITERIA,approve:true,by:'claude-code/opus-5.5',note:'another family',at:time});d.gate={ready:true,needsAssessor:false,blockers:[],outOfScope:[]};
  const independent=renderItem(project,d,'PAVI',diff);
- expect(independent).toContain('atelier land t1 --project');expect(independent).not.toContain('Accept without an independent review');
+ expect(independent).not.toContain('atelier land');expect(independent).toContain('Ready to land: land it from chat.');expect(independent).not.toContain('Accept without an independent review');
  d.evidence[0].passed=false;expect(renderItem(project,d,'PAVI',diff)).not.toContain('Accept revision');
 });
 it('while the gate waits for the independent review, asking a reviewer is the primary action and the owner\'s Approve is secondary',()=>{
@@ -132,7 +132,7 @@ it('where the owner\'s approval counts, Approve stays the primary action and no 
   const html=renderItem(project,d,'PAVI',diff);
   expect(html).toContain('Review overridden');expect(html).toContain('No &lt;b&gt;other&lt;/b&gt; family is available');expect(html).toContain("the developer's override, not a review");
   // The brief says it once; the header's description is not drawn beside that brief (finding 7).
-  expect(html).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).toContain('atelier land t1 --project');
+  expect(html).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');expect(html).not.toContain('atelier land');
   d.item.state='accepted';d.item.acceptedHead=head;
   expect(renderItem(project,d,'PAVI',diff)).toContain('The developer overrode the independent review at this revision: No &lt;b&gt;other&lt;/b&gt; family is available.');
   const moved=detail();moved.item.reviewOverride={...reviewOverride,head:'c'.repeat(40)};
@@ -365,7 +365,7 @@ it('the brief renders above the diff, escapes a hostile summary, and tags the ve
  // A summary by another actor at an older head is not shown for this one.
  d.events=[{seq:2,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head,summary:'current words'}},
   {seq:1,itemId:'t1',at:time,actor:'someone/else',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'stale words'}}];
- const briefOf=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const briefOf=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('</section>',h.indexOf('id="brief"')));
  const other=briefOf(renderItem(project,d,'PAVI',null));
  expect(other).toContain('current words');expect(other).toContain('Summary from codex/gpt-6');
  expect(other).not.toContain('stale words');expect(other).not.toContain('someone/else');
@@ -373,8 +373,8 @@ it('the brief renders above the diff, escapes a hostile summary, and tags the ve
  const none=briefOf(renderItem(project,d,'PAVI',null));
  expect(none).not.toContain('stale words');expect(none).not.toContain('Summary from');
  expect(html).toContain('1 passed in a Cloudflare container');
- expect(html).toContain('<span class="tag go">land</span>');
- expect(html.indexOf('Decision brief')).toBeLessThan(html.indexOf('id="changes"'));
+ expect(html).not.toContain('<span class="tag go">land</span>');expect(html).toContain('Ready to land: land it from chat.');  // a ready task's brief gives no recommendation to run a command (t586)
+ expect(html.indexOf('Decision brief')).toBeGreaterThan(html.indexOf('id="changes"'));  // the brief is a fold below the changes (t586)
 });
 it('the brief tags a rejected revision as send back and a pending one as wait',()=>{
  const d=detail();
@@ -384,7 +384,7 @@ it('the brief tags a rejected revision as send back and a pending one as wait',(
  const w=detail();w.evidence=[];w.gate={ready:false,needsAssessor:false,blockers:[],outOfScope:[]};w.item.scope=[];
  w.events=[{seq:1,itemId:'t1',at:time,actor:'codex/gpt-6',kind:'item.submitted',data:{head:'c'.repeat(40),summary:'older revision'}}];
  const html=renderItem(project,w,'PAVI',null);
- const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('</section>',html.indexOf('id="brief"')));
  expect(brief).toContain('<span class="tag ask">wait</span>');
  expect(brief).toContain('Wait on t1 at aaaaaaaa');
  expect(brief).not.toContain('older revision');
@@ -397,11 +397,11 @@ it('a project with no required checks says so instead of counting zero of zero',
 it('banner, brief heading and tag name one ask for a protected revision with a rejection',()=>{
  const d=detail();d.reviews=[{itemId:'t1',head,criteria:NO_CRITERIA,approve:false,by:'claude-code/opus-5.5',note:'no',at:time}];
  const html=renderItem(project,d,'PAVI',null);
- const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('</section>',html.indexOf('id="brief"')));
  expect(html).toContain('Waiting for an independent review');expect(brief).toContain('Review t1 at aaaaaaaa');expect(brief).toContain('<span class="tag ask">review</span>');
 });
 it('a claimed task shows the same ask in its banner and its brief',()=>{
- const brief=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('id="changes"'));
+ const brief=(h:string)=>h.slice(h.indexOf('id="brief"'),h.indexOf('</section>',h.indexOf('id="brief"')));
  const failing=detail();failing.item.state='claimed';failing.evidence[0].passed=false;
  const f=renderItem(project,failing,'PAVI',null);
  expect(f).toContain('Checks need attention');expect(brief(f)).toContain('Send t1 back');expect(brief(f)).toContain('<span class="tag bad">send back</span>');
@@ -419,7 +419,7 @@ it('a project with no checks says so once',()=>{
 });
 it('a protected revision awaiting an assessor shows a review tag under a review heading',()=>{
  const html=renderItem(project,detail(),'PAVI',null);
- const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('id="changes"'));
+ const brief=html.slice(html.indexOf('id="brief"'),html.indexOf('</section>',html.indexOf('id="brief"')));
  expect(brief).toContain('<span class="tag ask">review</span>');
  expect(brief).toContain('Review t1 at aaaaaaaa');
 });
@@ -665,7 +665,7 @@ it('the selected task\'s detail sits beside the list with its state, why, eviden
  expect(sheet).toContain('<p class="dec-because">Required checks passed for this revision. Run atelier land to check, review and merge it.</p>');
  const page=renderItem(open,d,'PAVI',shown(d));
  expect(sheet).toContain('atelier land t1 --project &#39;example&#39;');
- expect(page).toContain('atelier land t1 --project &#39;example&#39;');
+ expect(page).not.toContain('atelier land');expect(page).toContain('Ready to land: land it from chat.');  // the task page asks no command (t586)
  expect(sheet).not.toContain('>Accept revision</button>');
  expect(sheet).toContain('<a class="button" href="/p/example/t1#changes">Review the diff</a>');
  expect(page).toContain('id="changes"');
@@ -1126,7 +1126,7 @@ it('the framing is shown when any of it is set, escaped, and left out when none 
  expect(html).toContain('aria-label="How the task is framed"');
  expect(html).toContain('<dt>Non-goals</dt><dd><ul><li>no &lt;b&gt;CSS&lt;/b&gt;</li><li>no routes</li></ul></dd>');
  expect(html).toContain('<dt>Stop when</dt><dd><ul><li>a check fails twice</li></ul></dd>');expect(html).toContain('<dt>Next gate</dt><dd>design &lt;review&gt;</dd>');
- expect(html.indexOf('How the task is framed')).toBeLessThan(html.indexOf('id="changes"'));
+ expect(html.indexOf('How the task is framed')).toBeGreaterThan(html.indexOf('id="changes"'));  // folded below the changes (t586)
  const gateOnly=detail();gateOnly.item.nextGate='demo';
  const one=renderItem(project,gateOnly,'PAVI',null);expect(one).toContain('<dt>Next gate</dt>');expect(one).not.toContain('<dt>Non-goals</dt>');
   expect(renderItem(project,detail(),'PAVI',null)).not.toContain('How the task is framed');

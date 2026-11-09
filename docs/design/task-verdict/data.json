@@ -1,0 +1,245 @@
+{
+ "note": "Real Atelier records from 2026-11-08, times Eastern. Same data for every designer.",
+ "states": {
+  "ready": {
+   "id": "t564",
+   "project": "atelier",
+   "title": "Usage readers and the 6 AM job (model slate, task A)",
+   "state": "Ready to land",
+   "head": "079257a3",
+   "verdict": "Approved by gpt-6-astra (OpenAI). All 3 required checks passed. Ready to land.",
+   "action": "Land",
+   "stage": "Land",
+   "stages": [
+    "Claim",
+    "Branch",
+    "Prove",
+    "Review",
+    "Land"
+   ],
+   "checks": [
+    {
+     "name": "npm run typecheck",
+     "result": "passed",
+     "where": "Studio runner, clean clone",
+     "at": "12:58 pm"
+    },
+    {
+     "name": "npm run test:static",
+     "result": "passed",
+     "where": "Studio runner, clean clone",
+     "at": "12:59 pm"
+    },
+    {
+     "name": "npm test",
+     "result": "passed",
+     "where": "Studio runner, clean clone",
+     "at": "1:02 pm",
+     "detail": "6,742 tests, 0 failed"
+    }
+   ],
+   "review": {
+    "verdict": "approved",
+    "reviewer": "gpt-6-astra",
+    "company": "OpenAI",
+    "builder": "Sonnet 5.5 (Anthropic)",
+    "at": "1:04 pm",
+    "round": 4
+   },
+   "scope": {
+    "declared": [
+     "cli/usage.mjs",
+     "cli/usage-readers/**",
+     "test/usage-readers.test.mjs",
+     "docs/usage-agent.md"
+    ],
+    "outside": [
+     "cli/atelier.mjs",
+     "test/usage-cli.test.mjs"
+    ]
+   },
+   "criteria": 8,
+   "criteria_met": 8,
+   "agent_summary": "Added three usage readers (Z.ai, Claude Code, Antigravity), each in its own file, a 20-second timeout per reader, the --claude-capture option, and the slate proposal at the end of each run. Tests cover each reader's missing, stale and failing cases.",
+   "rounds": [
+    {
+     "round": 1,
+     "at": "10:19 am",
+     "verdict": "rejected",
+     "why": "Per-criterion red-on-main evidence missing"
+    },
+    {
+     "round": 2,
+     "at": "12:03 pm",
+     "verdict": "rejected",
+     "why": "Same evidence still missing"
+    },
+    {
+     "round": 3,
+     "at": "12:39 pm",
+     "verdict": "rejected",
+     "why": "Same evidence still missing; PAVI dropped that criterion at 12:50 pm"
+    },
+    {
+     "round": 4,
+     "at": "1:04 pm",
+     "verdict": "approved"
+    }
+   ],
+   "thread": [
+    [
+     "9:34 am",
+     "Dispatched to Sonnet 5.5"
+    ],
+    [
+     "10:14 am",
+     "Submitted"
+    ],
+    [
+     "10:19 am",
+     "Review: rejected"
+    ],
+    [
+     "11:46 am",
+     "Submitted"
+    ],
+    [
+     "12:03 pm",
+     "Review: rejected"
+    ],
+    [
+     "12:22 pm",
+     "Submitted"
+    ],
+    [
+     "12:39 pm",
+     "Review: rejected"
+    ],
+    [
+     "12:50 pm",
+     "PAVI: “Yes, drop it”; criterion 9 dropped"
+    ],
+    [
+     "1:04 pm",
+     "Review: approved"
+    ]
+   ],
+   "files_changed": 9,
+   "lines": "+612 − 18"
+  },
+  "sent-back": {
+   "id": "t558",
+   "project": "atelier",
+   "title": "A Process tab maps the task flow with time per phase and loop counts",
+   "state": "Sent back, round 3 building",
+   "head": "cdb6491c",
+   "verdict": "Sent back by gpt-6-astra (OpenAI): one blocking finding. Sonnet 5.5 is fixing it in round 3, started 1:36 pm.",
+   "action": null,
+   "stage": "Prove",
+   "stages": [
+    "Claim",
+    "Branch",
+    "Prove",
+    "Review",
+    "Land"
+   ],
+   "checks": [
+    {
+     "name": "npm run typecheck",
+     "result": "passed",
+     "where": "Studio runner, clean clone",
+     "at": "12:55 pm"
+    },
+    {
+     "name": "npm run test:static",
+     "result": "passed",
+     "where": "Studio runner, clean clone",
+     "at": "12:56 pm"
+    },
+    {
+     "name": "npm test",
+     "result": "waiting",
+     "where": "Studio runner",
+     "at": "—"
+    }
+   ],
+   "review": {
+    "verdict": "rejected",
+    "reviewer": "gpt-6-astra",
+    "company": "OpenAI",
+    "builder": "Sonnet 5.5 (Anthropic)",
+    "at": "1:08 pm",
+    "round": 2,
+    "finding": {
+     "where": "test/process.test.ts:199",
+     "text": "The regression test never reaches the new recovery code: the old filing is on the last page the read returns, so the task-history call never runs. Add an older event so the read stops before the filing, and check the call happens.",
+     "orchestrator": "Confirmed by the orchestrator against the code."
+    }
+   },
+   "scope": {
+    "declared": [
+     "src/process.ts",
+     "src/process.css",
+     "src/flow.ts",
+     "src/index.ts",
+     "src/ui.ts",
+     "docs/**",
+     "test/process*"
+    ],
+    "outside": [
+     "test/preview.mjs"
+    ]
+   },
+   "criteria": 12,
+   "criteria_met": 11,
+   "agent_summary": "Fixed the read window so a task filed before the window still shows its filing and deploy time; added a regression test.",
+   "rounds": [
+    {
+     "round": 1,
+     "at": "12:26 pm",
+     "verdict": "rejected",
+     "why": "Read window dropped tasks filed before it"
+    },
+    {
+     "round": 2,
+     "at": "1:08 pm",
+     "verdict": "rejected",
+     "why": "Test does not reach the recovery code"
+    }
+   ],
+   "thread": [
+    [
+     "7:48 am",
+     "Filed with 12 criteria"
+    ],
+    [
+     "10:13 am",
+     "Dispatched to Sonnet 5.5"
+    ],
+    [
+     "12:09 pm",
+     "Submitted"
+    ],
+    [
+     "12:26 pm",
+     "Review: rejected"
+    ],
+    [
+     "12:53 pm",
+     "Submitted"
+    ],
+    [
+     "1:08 pm",
+     "Review: rejected"
+    ],
+    [
+     "1:36 pm",
+     "Round 3 claimed"
+    ]
+   ],
+   "files_changed": 15,
+   "lines": "+1,904 − 22",
+   "diff_excerpt": "diff --git a/test/process.test.ts b/test/process.test.ts\nnew file mode 100644\nindex 00000000..80a4000f\n--- /dev/null\n+++ b/test/process.test.ts\n@@ -0,0 +1,231 @@\n+import { test } from \"node:test\";\n+import assert from \"node:assert/strict\";\n+import { readFileSync } from \"node:fs\";\n+import { computeBars, computeFlow, midpoint, nearestRank, PHASES, type BarEvent, type Phase } from \"../src/flow.ts\";\n+import { buildProcess, parseStat, parseWindow, readProcessEvents, renderProcess, minutesText, PROCESS_CSS } from \"../src/process.ts\";\n+import { FIXTURE, NOW, T1_FILED_TO_DEPLOYED, T1_MERGE_TO_DEPLOY } from \"./fixtures/process/ledger.ts\";\n+\n+// The Process page's numbers (t558). Every figure is checked against what\n+// src/flow.ts reports for the same events, and the empty cases against the\n+// words the page must show instead of 0, NaN or an error.\n+\n+const DAY = 86_400_000;\n+const tasksOf = (events: readonly BarEvent[], from: number, to: number) => {\n+  const by = new Map<string, BarEvent[]>();\n+  for (const e of events) if (e.itemId) (by.get(e.itemId) ?? by.set(e.itemId, []).get(e.itemId)!).push(e);\n+  return [...by].filter(([, l]) => l[0].kind === \"item.created\" && Date.parse(l[0].at) >= from && Date.parse(l[0].at) < to).map(([id, l]) => ({ id, events: l }));\n+};\n+const page = (events: readonly BarEvent[], window: \"7d\" | \"30d\" = \"7d\", stat: \"median\" | \"p90\" = \"median\") => renderProcess(buildProcess(\"demo\", events, NOW, window), stat, \"/p/demo/process\");\n+const text = (html: string) => html.replace(/<style[\\s\\S]*?<\\/style>/g, \"\").replace(/<[^>]+>/g, \" \").replace(/&lt;/g, \"<\").replace(/&gt;/g, \">\").replace(/&amp;/g, \"&\").replace(/\\s+/g, \" \");\n+\n+test(\"criterion 3: each phase block's task count, median, p90 and share equal the flow report for the window\", () => {\n+  const model = buildProcess(\"demo\", FIXTURE, NOW, \"7d\");\n+  const report = computeFlow(tasksOf(FIXTURE, NOW - 7 * DAY, NOW + 1), NOW);\n+  assert.deepEqual(model.report, report, \"the page reuses computeFlow's report\");\n+  for (const phase of PHASES) {\n+    const minutes = report.tasks.filter((t) => !t.phases[phase].unknown && (t.phases[phase].ms > 0 || t.phases[phase].open)).map((t) => t.phases[phase].ms / 60_000);\n+    const block = model.blocks.find((b) => b.phases.length === 1 && b.phases[0] === phase);\n+    if (!block) continue;\n+    assert.equal(block.tasks, minutes.length, phase);\n+    assert.equal(block.median, midpoint(minutes), phase);\n+    assert.equal(block.p90, nearestRank(minutes, 0.9), phase);\n+    assert.equal(block.share, report.phaseShares[phase], phase);\n+  }\n+  // Accept and wait to land are one block: its share is the two shares added.\n"
+  }
+ }
+}

@@ -44,6 +44,7 @@ import { basename } from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { after } from "node:test";
 import { Worker } from "node:worker_threads";
+import { installRunnerCleanup, keepTestProcess, leadRunner, trackRunner } from "./runner-cleanup.mjs";
 
 // No test reads this Mac's own iCloud ai-projects folder (t645): the
 // private-file guard looks there for an opted-in project with no folder
@@ -122,9 +123,12 @@ const children = new Set();
 const { ChildProcess } = childProcess;
 const spawnChild = ChildProcess.prototype.spawn;
 ChildProcess.prototype.spawn = function (options, ...rest) {
+  leadRunner(options);
   const detached = Boolean(options?.detached);
+  keepTestProcess(options?.envPairs, process.pid);
   const result = spawnChild.call(this, options, ...rest);
   const pid = this.pid;
+  if (pid) trackRunner(this, options?.args ?? []);
   if (pid && detached) {
     track(pid);
     this.once("exit", () => { for (let i = 0; i < live.length; i++) Atomics.compareExchange(live, i, pid, groupLeft(pid) ? -pid : 0); });
@@ -143,6 +147,8 @@ process.on("exit", killLive);
 // starts a second empty harness whose zero-count footer hides the real result.
 if (basename(process.argv[1] ?? "") !== "node-pool.mjs") {
   after(() => { killLive(); Atomics.store(ended, 0, 1); });
+  // Each test ends the runners it started (t590).
+  installRunnerCleanup();
 }
 
 // Node's own execFileSync and execSync call its internal spawnSync, not the

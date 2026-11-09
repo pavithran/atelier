@@ -1,0 +1,143 @@
+/* The task page's verdict, track and evidence (t586). Colours come from
+   theme.css variables only; the mockup is docs/design/task-verdict/task.html. */
+.task-verdict { max-width: 860px; margin: 0 auto; }
+.task-verdict .mono { font-family: var(--font-mono); font-size: 0.88em; }
+.task-verdict svg { display: block; }
+
+.task-verdict .card { background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-large); }
+
+/* Hero: title, state, verdict, track */
+.task-verdict .hero { padding: 22px 26px 24px; margin-top: var(--space-lg); box-shadow: 0 18px 40px -28px rgba(var(--shadow-rgb), .55); }
+.task-verdict .hero .review-header { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "crumbs state" "title title" "detail detail"; align-items: center; gap: 0 12px; }
+.task-verdict .crumbs { grid-area: crumbs; margin: 0; color: var(--text-dim); font-size: 12.5px; }
+.task-verdict .crumbs span { margin: 0 6px; opacity: .6; }
+.task-verdict .hero h2 { grid-area: title; margin: 14px 0 0; font: 650 27px/1.22 var(--font-display); letter-spacing: -0.015em; color: var(--text-bright); text-wrap: balance; overflow-wrap: anywhere; }
+.task-verdict .pill {
+  grid-area: state; justify-self: end; display: inline-flex; align-items: center; gap: 8px; margin: 0; min-height: 28px; padding: 0 12px;
+  border-radius: var(--radius-pill); font-size: 13px; font-weight: 600; color: var(--text-muted); background: var(--inset);
+}
+.task-verdict .pill-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.task-verdict .pill.ready { color: var(--observed); background: rgba(var(--observed-rgb), .12); box-shadow: inset 0 0 0 1px rgba(var(--observed-rgb), .28); }
+.task-verdict .pill.sent-back, .task-verdict .pill.blocked { color: var(--caution); background: rgba(var(--caution-rgb), .12); box-shadow: inset 0 0 0 1px rgba(var(--caution-rgb), .3); }
+.task-verdict .pill.failed { color: var(--fault); background: rgba(var(--fault-rgb), .12); }
+.task-verdict .hero .review-description { grid-area: detail; margin: 8px 0 0; color: var(--text-muted); font-size: 14px; }
+.task-verdict .hero .review-header .meta { grid-column: 1 / -1; margin: 4px 0 0; }
+
+.task-verdict .verdict { margin-top: 18px; padding: 18px 0 22px; border-top: 1px solid var(--line); }
+.task-verdict .verdict-line { margin: 0; font-size: 18.5px; line-height: 1.45; color: var(--text); text-wrap: pretty; overflow-wrap: anywhere; }
+.task-verdict .verdict-ask { margin: 8px 0 0; font-size: 15px; font-weight: 600; color: var(--text-muted); }
+.task-verdict .is-ready .verdict-ask { color: var(--signal); }
+.task-verdict .is-sent-back .verdict-ask, .task-verdict .is-blocked .verdict-ask { color: var(--caution); }
+.task-verdict .is-failed .verdict-ask { color: var(--fault); }
+
+/* Stage track */
+.task-verdict .track {
+  --n: 5; list-style: none; margin: 0; padding: 20px 0 0; border-top: 1px solid var(--line);
+  display: grid; grid-template-columns: repeat(var(--n), 1fr); position: relative;
+}
+.task-verdict .track::before, .task-verdict .track::after { content: ""; position: absolute; top: 33px; height: 2px; border-radius: 2px; left: calc(100% / var(--n) / 2); }
+.task-verdict .track::before { right: calc(100% / var(--n) / 2); background: var(--line-bright); opacity: .55; }
+.task-verdict .track::after { width: 0; background: var(--observed); }
+.task-verdict .track.done-1::after { width: calc(100% / var(--n) * 1); }
+.task-verdict .track.done-2::after { width: calc(100% / var(--n) * 2); }
+.task-verdict .track.done-3::after { width: calc(100% / var(--n) * 3); }
+.task-verdict .track.done-4::after { width: calc(100% / var(--n) * 4); }
+.task-verdict .track.done-5::after { width: calc(100% / var(--n) * 4); }
+.task-verdict .st { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; min-width: 0; }
+.task-verdict .node { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-raised); border: 2px solid var(--line-bright); }
+.task-verdict .node svg { width: 16px; height: 16px; }
+.task-verdict .st-done .node { background: var(--observed); border-color: var(--observed); color: var(--surface); }
+.task-verdict .st-now .node { border-color: var(--signal); box-shadow: 0 0 0 5px rgba(var(--signal-rgb), .16); }
+.task-verdict .st-now .node::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--signal); }
+.task-verdict .is-sent-back .st-now .node, .task-verdict .is-blocked .st-now .node { border-color: var(--caution); box-shadow: 0 0 0 5px rgba(var(--caution-rgb), .16); }
+.task-verdict .is-sent-back .st-now .node::after, .task-verdict .is-blocked .st-now .node::after { background: var(--caution); animation: tv-breathe 2.4s var(--curve-breathe) infinite; }
+@keyframes tv-breathe { 50% { transform: scale(.6); opacity: .6; } }
+.task-verdict .was-back .node { border-color: rgba(var(--fault-rgb), .65); border-style: dashed; }
+.task-verdict .st-name { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.task-verdict .st-next .st-name { color: var(--text-dim); font-weight: 500; }
+.task-verdict .st-note { font-size: 12px; color: var(--text-dim); line-height: 1.3; overflow-wrap: anywhere; }
+.task-verdict .st-now .st-note { color: var(--signal); }
+.task-verdict .is-sent-back .st-now .st-note, .task-verdict .is-blocked .st-now .st-note { color: var(--caution); }
+.task-verdict .was-back .st-note { color: var(--fault); }
+.task-verdict .task-steps-note { margin: 12px 0 0; }
+
+/* The forms and refusals below the verdict keep their own look (layout.css) */
+.task-verdict .verdict-actions { min-width: 0; }
+.task-verdict .verdict-actions .actions { margin: var(--space-lg) 0; }
+
+/* Blocks */
+.task-verdict .block { margin-top: 30px; min-width: 0; }
+.task-verdict .block > h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 0 0 10px 2px; font: 600 15px/1.2 var(--font-sans); color: var(--text-bright); }
+.task-verdict .list { padding: 4px 0; overflow: hidden; }
+.task-verdict .group-h { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 14px 22px 6px; font-size: 12.5px; font-weight: 600; color: var(--text-dim); }
+.task-verdict .group-h:not(:first-child) { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 16px; }
+.task-verdict .c-ok { color: var(--observed); }
+.task-verdict .rows { list-style: none; margin: 0; padding: 0 0 6px; }
+.task-verdict .row { display: grid; grid-template-columns: 24px 1fr auto; column-gap: 14px; align-items: start; padding: 9px 22px; min-width: 0; }
+.task-verdict .row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.task-verdict .row-main > .mono { font-size: 14px; color: var(--text-bright); }
+.task-verdict .row-sub { font-size: 13px; color: var(--text-muted); }
+.task-verdict .row-meta { font-size: 13px; color: var(--text-dim); text-align: right; padding-top: 1px; }
+.task-verdict .sep { margin: 0 6px; opacity: .6; }
+.task-verdict .is-waiting .row-main > .mono { color: var(--text-muted); }
+.task-verdict .co { color: var(--text-muted); font-size: 13px; margin-left: 2px; padding: 1px 7px; border-radius: var(--radius-pill); background: var(--inset); }
+.task-verdict .mark { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; }
+.task-verdict .mark svg { width: 15px; height: 15px; }
+.task-verdict .mark-ok { color: var(--observed); background: rgba(var(--observed-rgb), .14); }
+.task-verdict .mark-bad { color: var(--fault); background: rgba(var(--fault-rgb), .13); }
+.task-verdict .mark-warn { color: var(--caution); background: rgba(var(--caution-rgb), .15); }
+.task-verdict .mark-wait { color: var(--text-dim); box-shadow: inset 0 0 0 1.5px var(--line-bright); }
+
+.task-verdict .finding { margin-top: 10px; padding: 14px 16px; border-radius: var(--radius-medium); background: var(--surface); border: 1px solid rgba(var(--fault-rgb), .35); }
+.task-verdict .finding-top { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.task-verdict .finding-top .mono { color: var(--text-bright); font-size: 13px; }
+.task-verdict .finding p { margin: 8px 0 0; font-size: 14.5px; line-height: 1.55; color: var(--text); }
+.task-verdict .finding .finding-verdict { font-size: 13px; color: var(--text-muted); }
+.task-verdict .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.task-verdict .chip { display: inline-block; padding: 2px 8px; border-radius: 6px; background: var(--inset); color: var(--text-muted); font-size: 12.5px; overflow-wrap: anywhere; }
+.task-verdict .chip-warn { color: var(--caution); background: rgba(var(--caution-rgb), .1); }
+.task-verdict .tag-bad { color: var(--fault); background: rgba(var(--fault-rgb), .12); }
+.task-verdict .tag-unv { color: var(--caution); background: transparent; box-shadow: inset 0 0 0 1px var(--caution-line); }
+
+/* The builder's own words */
+.task-verdict .said { margin: 0; padding: 16px 22px; border-radius: var(--radius-large); border: 1px dashed var(--caution-line); background: transparent; }
+.task-verdict .said p { margin: 0; font-size: 15.5px; line-height: 1.6; color: var(--text-muted); overflow-wrap: anywhere; }
+.task-verdict .said footer { margin-top: 8px; font-size: 12.5px; color: var(--text-dim); }
+
+/* The diff keeps the pieces layout.css draws, inside one card */
+.task-verdict .diff { padding: 14px 18px; overflow: hidden; }
+.task-verdict .diff pre { max-width: 100%; overflow-x: auto; }
+
+/* Folded parts */
+.task-verdict .folds { margin-top: 30px; border-top: 1px solid var(--line); }
+.task-verdict .folds > details { border-bottom: 1px solid var(--line); border-top: 0; padding: 0; }
+.task-verdict .folds > details > summary {
+  list-style: none; display: flex; align-items: center; gap: 10px; min-height: var(--ctl-h); padding: 0 4px; cursor: pointer;
+  font-size: 14.5px; font-weight: 500; color: var(--text-muted); transition: color var(--motion-tap);
+}
+.task-verdict .folds > details > summary::-webkit-details-marker { display: none; }
+.task-verdict .folds > details > summary svg { width: 16px; height: 16px; flex: none; color: var(--text-dim); transition: transform var(--motion-move) var(--curve-move); }
+.task-verdict .folds > details[open] > summary svg { transform: rotate(90deg); }
+.task-verdict .folds > details > summary:hover { color: var(--text-bright); }
+.task-verdict .folds > details[open] > summary { margin-bottom: 0; }
+.task-verdict .folds > details > :not(summary) { margin: 0 0 18px 30px; min-width: 0; }
+.task-verdict .folds > details[open] > summary + * { margin-top: 6px; }
+.task-verdict .folds .review-section { margin: 0 0 18px 30px; }
+
+@media (max-width: 600px) {
+  .task-verdict .hero { padding: 18px; }
+  .task-verdict .hero h2 { font-size: 22px; }
+  .task-verdict .verdict-line { font-size: 17px; }
+  .task-verdict .st-name { font-size: 12.5px; }
+  .task-verdict .st-note { font-size: 11px; }
+  .task-verdict .row { grid-template-columns: 22px 1fr; padding: 9px 16px; }
+  .task-verdict .row-meta { grid-column: 2; text-align: left; padding-top: 2px; }
+  .task-verdict .group-h { padding-left: 16px; padding-right: 16px; }
+  .task-verdict .said { padding: 14px 16px; }
+  .task-verdict .diff { padding: 12px 14px; }
+  .task-verdict .folds > details > :not(summary), .task-verdict .folds .review-section { margin-left: 4px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-verdict *, .task-verdict *::after { animation: none !important; transition: none !important; }
+}

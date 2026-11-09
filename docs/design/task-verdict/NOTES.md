@@ -1,0 +1,6 @@
+- One focal card per state holds title, state pill, verdict sentence, its action and the stage track; everything below is evidence, so the answer sits in the first screen.
+- Colour means one thing each: green for passed and done stages, gold only for the one thing waiting on PAVI (Land, the current stage), orange for sent back, outside scope and "not verified", red only for the blocking finding and the rejected review.
+- Evidence is one card with three quiet groups (checks, review, scope), typed glyphs rather than dots, where and when on the right; on a phone the meta drops under each row.
+- The builder's summary sits in a dashed, unfilled box with a "Not verified" tag, so it reads as a claim, not a record. t564 has no diff excerpt in data.json, so its Changes card lists the declared scope and the two outside files instead of inventing code.
+- In light, the Land button uses Night's gold fill with ink text (taste AD-7) instead of the theme's light-scheme brown (rejected in AD-5); that is the one colour value not taken from a light token.
+- Motion is small: a breathing dot on the stage being rebuilt and beside "the builder is fixing it", an arrow nudge on Land, a rotating chevron on the folds; all off under reduced motion.

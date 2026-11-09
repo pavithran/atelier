@@ -33,3 +33,10 @@ test("a file that keeps a handle open is killed after the grace", { timeout: 30_
   assert.notEqual(r.status, 0);
   assert.ok(r.ms >= 2000, `killed after ${r.ms} ms, before the grace`);
 });
+
+test("a file that keeps a handle open is killed after the default 10 s grace", { timeout: 40_000 }, async () => {
+  const r = await run("handle.mjs", { ATELIER_TEST_EXIT_GRACE_MS: undefined });
+  assert.match(r.out, /did not exit 10 s after its tests ended; killing it/);
+  assert.notEqual(r.status, 0);
+  assert.ok(r.ms >= 10_000, `killed after ${r.ms} ms, before the grace`);
+});
