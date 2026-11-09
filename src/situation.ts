@@ -45,7 +45,7 @@ export interface SituationFacts {
   held: { id: string; held: CoreHold }[];
   reviewRequests: { id: number; item: string; head: string; state: string; dispatch: Dispatch; claimedBy: string | null; runner: string | null; claimedAt: string | null; tier: boolean }[];
   landingLease: LandingLease | null;
-  landJobs: { item: string; by: string; at: string }[];
+  landJobs: { item: string; by: string; at: string; head?: string | null }[];
   landings: Record<string, LandingRecord>;
   lastChecks: Record<string, { claim: string; passed: boolean | null; head: string; at: string; by: string; stopped?: { kind: string; minutes: number } }>;
   standing: Decision[];
