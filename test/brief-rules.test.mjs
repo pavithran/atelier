@@ -194,7 +194,7 @@ test("a runner with the README's generic wrapper hands its agents both rule text
 // measure again and change all three here, as a decision.
 const BYTES = (text) => Buffer.byteLength(text, "utf8");
 const BLOCK_LIMITS = {
-  "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "538119f6 + t422", measured: 2098, margin: 150 },
+  "build rules (BUILD_RULES)": { text: BUILD_RULES, at: "t534", measured: 2263, margin: 150 },
   "builder test instructions (BUILDER_TESTS)": { text: BUILDER_TESTS.join("\n"), at: "t336", measured: 580, margin: 100 },
   "builder screenshot instruction (BUILDER_SCREENSHOTS)": { text: BUILDER_SCREENSHOTS, at: "93b3198d", measured: 277, margin: 100 },
   "review rules (REVIEW_RULES)": { text: REVIEW_RULES, at: "538119f6 + t422", measured: 2155, margin: 150 },
@@ -266,4 +266,11 @@ test("only incremental re-reviews require the fix diff and handle absent fix rep
     assert.ok(!text.includes("inspect only the fix diff"));
     assert.ok(!text.includes("Require the fix report"));
   }
+});
+
+test("every build brief tells the builder to test through the production caller (t534)", async () => {
+  assert.match(BUILD, /Test through the production caller: a function only tests call fails the static check/);
+  const { text } = await jobBrief(job());
+  assert.ok(text.includes("Test through the production caller: a function only tests call fails the static check"));
+  assert.ok(briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier").includes("Test through the production caller"));
 });

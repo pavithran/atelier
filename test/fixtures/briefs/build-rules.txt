@@ -12,4 +12,5 @@
 - For UI changes, attach before and after screenshots, console output and network failures for every affected page. For pages with visibility levels, include evidence at each level, not only as the owner.
 - In a fix report, name the findings addressed, covering tests, commands and output before re-review.
 - Write each status, version or completion marker only after the work it marks; test that a crash before completion leaves it unset.
+- Test through the production caller: a function only tests call fails the static check (npm run test:static), so wire each new function into the code that runs it.
 - A change that depends on a platform limit or runtime behaviour local tests cannot reproduce names it in the task, and the project declares a remote smoke check run before and after deploy.
