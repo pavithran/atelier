@@ -31,7 +31,7 @@ async function project(name: string) {
     expect(minted.status, await minted.clone().text()).toBe(201);
     return (await minted.json() as { token: string }).token;
   };
-  return { L, token: await mint("home:astra"), studio: await mint("home:studio") };
+  return { L, token: await mint("home:astra"), studio: await mint("home:studio"), other: await mint("home:other") };
 }
 
 const OFFER = { runner: "home:astra", jobs: ["review", "criteria-review"], agents: [{ agent: "codex", models: ["gpt-6-astra"] }] };
@@ -64,12 +64,14 @@ it("the runner's poll grants a criteria review of a claimed task as a review job
 
 it("a build job of a claimed task is offered only to its holder", async () => {
   const name = "claimed-build-offer";
-  const { L, token, studio } = await project(name);
+  const { L, token, studio, other } = await project(name);
   const { id } = await L.newItem("Task", ["src/x/**"], "owner", { accept: ["It works"] });
   await L.dispatch(id, "owner", { to: "home", agent: "claude-code", model: "opus-5.5" });
   await L.claim(id, OPUS, RUNNER);
   // The astra runner serves no claude-code build, and the claim is not its to take.
   expect(await offered(name, token, { ...OFFER, jobs: ["build"] })).toEqual([]);
+  // A non-holder runner that does offer the matching claude-code model is refused too: only the holder restriction explains it.
+  expect(await offered(name, other, { runner: "home:other", jobs: ["build"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }] })).toEqual([]);
   // The holder's own runner is offered it back.
   expect(await offered(name, studio, { runner: "home:studio", jobs: ["build"], agents: [{ agent: "claude-code", models: ["opus-5.5"] }] })).toEqual([`${id}:build`]);
 });
