@@ -1520,7 +1520,9 @@ it("the task page shows the title, then the brief and the criteria; every list s
 
   const task = await get(`/p/${name}/t1`);
   expect(task).toContain("<title>Short titles · Atelier</title>");
-  expect(task).toMatch(/<h2>Short titles<\/h2>\s*<div class="task-text">\s*<p class="task-brief">Short titles for tasks \(zebrafish marker\)/);
+  expect(task).toContain("<h2>Short titles</h2>");
+  // The brief and the criteria sit in one fold under the evidence (t586).
+  expect(task).toMatch(/<span>Brief and acceptance criteria<\/span><\/summary><div class="task-text">\s*<p class="task-brief">Short titles for tasks \(zebrafish marker\)/);
   expect(task).toContain('<p class="section-title">Acceptance criteria</p><ol class="task-accept"><li>Lists show the short &lt;title&gt;</li><li>The brief is on the task page</li></ol>');
   for (const path of ["/", `/p/${name}`, `/p/${name}/tasks`, `/p/${name}/flow`, "/studio"]) {
     // The raw event log under Ledger events keeps what the creator sent.
