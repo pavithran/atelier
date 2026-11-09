@@ -125,6 +125,21 @@ it("a deploy whose merge has no post-merge run reads 'not recorded', and a partl
   expect(html.toLowerCase()).not.toContain("main green");
 });
 
+// Fix round 1: a deploy's merges are those after the previous shipped deploy; with that deploy
+// outside the 14-day read the membership is unknown, so it never reads passed.
+it("a deploy today whose previous shipped deploy is 15 days old reads 'not recorded', though its newer merge has a complete run", async () => {
+  const L = await project("old-prev");
+  at("2026-09-24T12:00:00.000Z"); await ship(L, "p0"); // the previous deploy, 16 days old
+  at("2026-09-25T12:00:00.000Z"); await merge(L, "old-prev", "t1"); // merged 15 days ago, never shipped, no run
+  at("2026-10-10T11:00:00.000Z"); await merge(L, "old-prev", "t2");
+  at("2026-10-10T11:10:00.000Z"); await ship(L, "p1");
+  await postMerge(L, "t2", "complete");
+  at("2026-10-10T12:00:00.000Z");
+  const html = await today();
+  expect(tile(html, "deploys").text).toContain("post-merge run not recorded");
+  expect(tile(html, "deploys").text).not.toContain("post-merge checks passed");
+});
+
 // Criterion 9: an empty day, read from ledgers that hold nothing.
 it("a project with no tasks and a day with no merges, deploys or live tasks shows one plain line per empty section", async () => {
   at("2026-10-12T12:00:00.000Z"); // a later day: the ledgers above hold nothing for it

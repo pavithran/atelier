@@ -17,8 +17,11 @@ test("buildToday and renderToday are exported, Today's CSS is in src/today.css, 
   assert.equal(typeof buildToday, "function");
   assert.equal(typeof renderToday, "function");
   assert.ok(existsSync(new URL("../src/today.css", import.meta.url)));
-  const a = buildToday(inputs(), NOW), b = buildToday(inputs(), NOW);
+  const input = inputs();
+  const before = structuredClone(input);
+  const a = buildToday(input, NOW), b = buildToday(input, NOW);
   assert.deepEqual(a, b);
+  assert.deepEqual(input, before);
   assert.equal(renderToday(a, "PAVI"), renderToday(b, "PAVI"));
   assert.equal(a.tiles.need.value, 2);
   assert.equal((globalThis as Record<string, unknown>).LEDGER, undefined);

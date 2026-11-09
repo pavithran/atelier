@@ -57,6 +57,8 @@ export interface TodayProjectInput {
   ships: DeployRecord[];
   // The post-merge run state of each task a deploy of today shipped; null: no run recorded.
   postMerge: Record<string, PostMergeRun["state"] | null>;
+  // The 14-day read stopped short of the ledger's start: a deploy with no earlier shipped deploy in it may have carried older merges.
+  cutShort?: boolean;
 }
 
 export interface TodayInputs {
@@ -88,6 +90,15 @@ export function mergesShippedBy(events: Pick<LedgerEvent, "kind" | "at" | "itemI
   return by;
 }
 
+// mergesShippedBy for a 14-day read: with the read cut short, the first shipped
+// deploy in it has no known previous deploy, so its merges are not known.
+export function carriedIn(p: Pick<TodayProjectInput, "pulseEvents" | "ships" | "cutShort">): Map<string, string[]> {
+  const carried = mergesShippedBy(p.pulseEvents, p.ships);
+  const first = p.ships.filter((s) => s.result === "shipped").sort((a, b) => a.at.localeCompare(b.at))[0];
+  if (p.cutShort && first) carried.delete(first.ship);
+  return carried;
+}
+
 const onDay = (at: string, today: string) => dayInZone(at, EASTERN) === today;
 
 async function readProject(src: TodaySource, p: TodaySource["projects"][number], now: Date): Promise<TodayProjectInput> {
@@ -97,6 +108,7 @@ async function readProject(src: TodaySource, p: TodaySource["projects"][number],
   // The one ledger-wide read: pages back until one reaches past 14 days.
   const read = await readEvents((before) => ledger.events(undefined, PAGE, before), PAGE, (last) => Date.parse(last.at) < from14);
   const pulseEvents = read.filter((ev) => Date.parse(ev.at) >= from14);
+  const cutShort = read.length > pulseEvents.length;
   const events = pulseEvents.filter((ev) => Date.parse(ev.at) >= from48);
   const recent = [...new Set(events.filter((ev) => ev.kind === "item.merged" && ev.itemId).map((ev) => ev.itemId!))];
   // The reviewer and findings of a task merged today may be older than the window: its own record, to its start.
@@ -108,7 +120,7 @@ async function readProject(src: TodaySource, p: TodaySource["projects"][number],
   const ships = shipsOf(pulseEvents);
   const today = dayInZone(now, EASTERN);
   const shippedToday = ships.filter((s) => s.result === "shipped" && onDay(s.at, today));
-  const carried = mergesShippedBy(pulseEvents, ships);
+  const carried = carriedIn({ pulseEvents, ships, cutShort });
   const postMerge: TodayProjectInput["postMerge"] = {};
   for (const id of new Set(shippedToday.flatMap((s) => carried.get(s.ship) ?? []))) postMerge[id] = (await ledger.postMergeRun(id))?.state ?? null;
   return {
@@ -116,7 +128,7 @@ async function readProject(src: TodaySource, p: TodaySource["projects"][number],
       name: p.name, title: p.title, items: facts.items, stages: facts.stages, owner: attentionFor(p.name, items, inbox, src.offers, now).owner,
       reviewRequests: facts.reviewRequests, landings: facts.landings, progress: facts.progress ?? {}, events, deploys: ships,
     },
-    pulseEvents, ships, postMerge,
+    pulseEvents, ships, postMerge, cutShort,
   };
 }
 
@@ -216,7 +228,7 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
 
   // Deploys of the Eastern day, from each project's ship.recorded events.
   const deploys = inputs.projects.flatMap((p) => {
-    const carried = mergesShippedBy(p.pulseEvents, p.ships);
+    const carried = carriedIn(p);
     return p.ships.filter((s) => onDay(s.at, today)).map((s) => ({ p, s, merges: carried.get(s.ship) ?? [] }));
   }).sort((a, b) => a.s.at.localeCompare(b.s.at) || a.s.ship.localeCompare(b.s.ship));
   const shipped = deploys.filter((d) => d.s.result === "shipped");
