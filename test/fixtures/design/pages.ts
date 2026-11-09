@@ -146,7 +146,6 @@ export function pageStates(s: Seeded): PageState[] {
 export const ALIASES = (s: Seeded): { path: string; audience: Audience; status: number; location: string }[] => [
   { path: "/", audience: "public", status: 401, location: "" },
   { path: "/showcase", audience: "public", status: 302, location: "/home" },
-  { path: "/projects", audience: "owner", status: 301, location: "/home" },
   { path: "/home", audience: "owner", status: 302, location: "/" },
   { path: "/now", audience: "owner", status: 302, location: "/" },
   { path: "/decisions", audience: "owner", status: 302, location: "/" },
