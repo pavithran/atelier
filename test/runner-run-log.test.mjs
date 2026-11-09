@@ -89,7 +89,7 @@ test("200 stderr lines of 2 KiB each are intact in the log after a timeout", asy
 });
 
 test("200 stderr lines of 2 KiB each are intact in the log after exit 1", async () => {
-  const { facts } = await runWith(stub("wide-fail", `${wide} process.exit(1);`));
+  const { facts } = await runWith(stub("wide-fail", `${wide} process.exitCode = 1;`));
   intact(logOf(facts));
 });
 
