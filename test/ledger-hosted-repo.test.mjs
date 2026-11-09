@@ -159,12 +159,12 @@ async function assertIndexedReads(w, name = "relic") {
   const get = w.env.REPOS.get.bind(w.env.REPOS);
   w.env.REPOS.get = async (repo) => { reads.push(repo); return get(repo); };
   try {
-    for (const page of [`/decisions?project=${name}&task=t1`, "/flow"]) {
+    for (const page of [`/p/${name}/t1`, "/flow"]) {
       reads.length = 0;
       const response = await w.request(page);
       const html = await response.text();
       assert.equal(response.status, 200, html);
-      if (page.startsWith("/decisions")) {
+      if (page.startsWith("/p/")) {
         assert.doesNotMatch(html, /The diff could not be read/);
         assert.match(html, /a\.txt/);
       }
