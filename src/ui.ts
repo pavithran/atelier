@@ -6,6 +6,7 @@ import { nowBody, type NowView } from "./now.ts";
 import nowCss from "./now.css";
 import verdictCss from "./task-verdict.css";
 import { renderTaskVerdict } from "./task-verdict.ts";
+import { landBlock, LAND_CALLS } from "./page-actions.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
 // reads fully without script; the Studio refreshes itself with a meta
@@ -255,6 +256,11 @@ export function publicPage(o: { title: string; description: string; brand: strin
 }
 
 export interface Detail {
+  // Set by the entry for a request the page-action guard lets act (src/page-actions.ts): the Land form is drawn, with a request id new to each drawing.
+  pageAct?: { newId: () => string; nonce?: string };
+  // The landing a page or the command line queued, with the head a page asked it at; and the landing record (Ledger.detail).
+  landJob?: { by: string; at: string; quote: string | null; head: string | null } | null;
+  landing?: { failedStep: string | null; requeued?: string; head: string | null } | null;
   runs?: import("./models/reliability").RunReport[];
   ownerActor?: string;
   // The factor the server takes as the owner's confirmation of an override
@@ -298,7 +304,7 @@ export interface Detail {
   // the page is drawn without a ledger, which then reads `events`.
   judgementEvents?: LedgerEvent[];
 }
-export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override"; message: string; note?: string }
+export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override" | "land"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
 // brief and acceptance criteria; every other view shows its short title.
 // `auto` marks the decision Decisions selects itself when the owner picked
@@ -2414,7 +2420,7 @@ function secretNotice(item: Item, revision: string, action: (verb: string) => st
 export interface ReviewParts {
   status: { title: string; detail: string; unknowns: string[]; tone: string };
   text: string; notice: string; ownerState: string; ownerRows: string;
-  actions: string; secret: string; askReview: string; merge: string; reaccept: string; revision: string;
+  actions: string; secret: string; askReview: string; merge: string; reaccept: string; revision: string; land: string;
   origin: string; framing: string; thread: string; brief: string; briefAsk: string;
   openScope: string; fastReady: string; notices: string;
   diff: string; scope: string; protectedNote: string; checks: string; fast: string;
@@ -2547,11 +2553,25 @@ export function reviewParts({ project: p, detail: d, diff, thread, full }: Revie
         <button>Accept this revision again</button>
       </form></details>`
     : "";
+  // Land, for an owner call of land or accept (t594): the form while nothing waits at this head, the queued landing in its place, the failed step or the moved head said.
+  const landed = d.events.filter((x) => x.kind === "land.requested" || x.kind === "land.stopped").sort((a, b) => a.seq - b.seq).at(-1);
+  const failedStep = d.landing?.failedStep && !d.landing.requeued && d.landing.head === item.head ? d.landing.failedStep : null;
+  // A landing that failed at this head keeps its row, unoffered; it is not "queued" for the reader, who is shown the failure and the form.
+  const waiting = d.landJob && !failedStep && (d.landJob.head === null || d.landJob.head === item.head) ? d.landJob : null;
+  const land = item.head && LAND_CALLS.has(decision.action) && item.state === "submitted"
+    ? landBlock({
+      project: p.name, id: item.id, head: item.head, criteria: bindingOf(item).criteria, back: "task", act: d.pageAct ?? null,
+      queuedAt: waiting?.at ?? null,
+      failedStep,
+      movedFrom: waiting ? null : d.landJob?.head ?? (landed?.kind === "land.stopped" && landed.data.reason === "stale_head" && landed.data.current === item.head ? String(landed.data.shown) : null),
+      error: fail("land"),
+    })
+    : "";
   // A refused form the page no longer draws (an Accept refused as not ready,
   // an override the project now forbids) has its refusal said first among
   // the actions, so no refusal is lost, and the reason typed into it is shown
   // beside it, unrecorded, so it can be copied rather than typed again.
-  const unplaced = d.formError && ![approve, accept, override, reject].some((f) => f.includes(`id="error-${d.formError!.verb}"`))
+  const unplaced = d.formError && ![approve, accept, override, reject, land].some((f) => f.includes(`id="error-${d.formError!.verb}"`))
     ? formErrorText(d.formError, d.formError.verb, reload) + (d.formError.note
       ? `<div class="kept-note"><p class="meta">The reason you typed, which was not recorded:</p><blockquote>${e(d.formError.note)}</blockquote></div>`
       : "")
@@ -2636,7 +2656,7 @@ export function reviewParts({ project: p, detail: d, diff, thread, full }: Revie
   const common: ReviewParts = {
     status: { title: presentation.title, detail: presentation.detail, unknowns: presentation.unknowns, tone: decision.tone },
     text: taskText(item), notice: evidenceNotice, ownerState: ownerStateBlock(state), ownerRows: ownerStateBlock(state, false),
-    actions: `${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}`, secret: secretBox, askReview, merge, reaccept,
+    actions: `${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}`, secret: secretBox, askReview, merge, reaccept, land,
     revision: `<p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>`,
     origin: defectOrigin, framing, thread: "", brief: "", briefAsk: "", openScope, fastReady: fastReadyBlock(d), notices,
     diff: "", scope: "", protectedNote: "", checks: "", fast: "",
