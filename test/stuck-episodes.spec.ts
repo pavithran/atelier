@@ -123,91 +123,88 @@ it("an older observation recorded after a newer one changes nothing", async () =
   expect((await I().recordStuckTick(key, found, true, at(30))).length).toBe(1);
 });
 
-// t199: an episode still open 60 minutes after it opened is sent to the
-// notify topic, in one message per project.
-const notifyEnv = { ...testEnv, NTFY_TOPIC: "stuck-topic" } as typeof env;
-// The requests sent for one project; other tests' projects share the index and may be due too.
-const sentFor = (send: { mock: { calls: unknown[][] } }, name: string) => send.mock.calls.map(([r]) => r as Request).filter((r) => r.headers.get("Click")?.endsWith(`/p/${name}`));
+// t199, t533: an episode still open 60 minutes after it opened is one
+// stuck.digest_notice event in its project's ledger, one per tick that finds
+// episodes due, and nothing is sent to anything.
+// NTFY_TOPIC set or not, the same events are recorded and no request leaves.
+const withTopic = { ...testEnv, NTFY_TOPIC: "stuck-topic" } as typeof env;
+const SINCE = new Date(0).toISOString();
+const digests = async (name: string) => (await L(name).notices(SINCE)).filter((e) => e.kind === "stuck.digest_notice");
+const told = async (name: string) => (await digests(name)).flatMap((e) => (e.data.episodes as { item: string; cause: string; episode: number }[]).map((x) => [x.item, x.cause.split(":")[0], x.episode]));
 afterEach(() => vi.restoreAllMocks());
 
-it("a batch: episodes open for an hour go out together once, and later ticks send nothing more", async () => {
-  await project("nt-a");
-  const one = await claimed("nt-a", "First");
-  const two = await claimed("nt-a", "Second");
-  const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
-  await tick(7, notifyEnv);
-  await tick(7.5, notifyEnv);
-  expect(sentFor(send, "nt-a")).toHaveLength(0);
-  await tick(8.1, notifyEnv);
-  expect(sentFor(send, "nt-a")).toHaveLength(1);
-  const body = await sentFor(send, "nt-a")[0].text();
-  expect(body).toContain(one);
-  expect(body).toContain(two);
-  await tick(9, notifyEnv);
-  expect(sentFor(send, "nt-a")).toHaveLength(1);
-});
-
-it("a failed send is retried on the next tick and recorded once it succeeds", async () => {
-  await project("nt-b");
-  await claimed("nt-b", "Work");
-  // The first answer for this project fails; every other request succeeds.
-  let failed = false;
-  const send = vi.spyOn(globalThis, "fetch").mockImplementation(async (r) => {
-    if (!failed && (r as Request).headers.get("Click")?.endsWith("/p/nt-b")) { failed = true; return new Response("no", { status: 503 }); }
-    return new Response(null);
+for (const [label, e] of [["unset", testEnv], ["set", withTopic]] as const) {
+  it(`a digest with NTFY_TOPIC ${label}: episodes open for an hour are recorded together once, and later ticks record nothing more`, async () => {
+    const name = `nt-a-${label}`;
+    await project(name);
+    const one = await claimed(name, "First");
+    const two = await claimed(name, "Second");
+    const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
+    await tick(7, e);
+    await tick(7.5, e);
+    expect(await digests(name)).toHaveLength(0);
+    await tick(8.1, e);
+    const first = await digests(name);
+    expect(first).toHaveLength(1);
+    expect(first[0].itemId).toBeNull();
+    expect(first[0].data.project).toBe(name);
+    // Each task has two causes (task, task-idle), each its own episode.
+    expect([...new Set((await told(name)).map((x) => x[0]))].sort()).toEqual([one, two].sort());
+    await tick(9, e);
+    expect(await digests(name)).toHaveLength(1);
+    expect(send).not.toHaveBeenCalled();
   });
-  await tick(7, notifyEnv);
-  await tick(8.1, notifyEnv);
-  expect(sentFor(send, "nt-b")).toHaveLength(1);
-  await tick(8.3, notifyEnv);
-  expect(sentFor(send, "nt-b")).toHaveLength(2);
-  await tick(8.5, notifyEnv);
-  expect(sentFor(send, "nt-b")).toHaveLength(2);
+}
+
+it("a digest the index did not mark told is not recorded twice when the next tick finds the episode due again", async () => {
+  await project("nt-b");
+  const id = await claimed("nt-b", "Work");
+  await tick(7);
+  await tick(8.1);
+  expect(await digests("nt-b")).toHaveLength(1);
+  // The episode is due again, as after a crash between the event and the index's mark.
+  const due = (await I().stuckEpisodes("nt-b")).filter((t) => t.kind === "opened");
+  await L("nt-b").recordStuckDigest("nt-b", due);
+  await L("nt-b").recordStuckDigest("nt-b", due);
+  expect(await digests("nt-b")).toHaveLength(1);
+  expect((await told("nt-b")).map((x) => x[0])).toContain(id);
 });
 
-it("an ambiguous failure is sent again: ntfy may have received the first, so a duplicate can arrive", async () => {
+it("the index marks an episode told only after its event is recorded, so a crash between leaves it due", async () => {
   await project("nt-c");
   await claimed("nt-c", "Work");
-  // The request is lost after ntfy may have taken it, as a timeout awaiting the answer is.
-  let lost = false;
-  const send = vi.spyOn(globalThis, "fetch").mockImplementation(async (r) => {
-    if (!lost && (r as Request).headers.get("Click")?.endsWith("/p/nt-c")) { lost = true; throw new DOMException("timed out", "TimeoutError"); }
-    return new Response(null);
-  });
-  await tick(7, notifyEnv);
-  await tick(8.1, notifyEnv);
-  await tick(8.3, notifyEnv);
-  const sent = sentFor(send, "nt-c");
-  expect(sent).toHaveLength(2);
-  expect(await sent[1].text()).toBe(await sent[0].text());
-  await tick(8.5, notifyEnv);
-  expect(sentFor(send, "nt-c")).toHaveLength(2);
+  await tick(7);
+  const later = new Date(Date.now() + 9 * HOUR).toISOString();
+  const due = await I().stuckDue("nt-c", later);
+  expect(due.length).toBeGreaterThan(0);
+  // The event is recorded; the process dies before stuckNotified.
+  await L("nt-c").recordStuckDigest("nt-c", due);
+  expect(await digests("nt-c")).toHaveLength(1);
+  expect(await I().stuckDue("nt-c", later)).toEqual(due);
 });
 
-it("an episode that cleared before the hour is not sent", async () => {
+it("an episode that cleared before the hour is not recorded", async () => {
   await project("nt-d");
   const id = await claimed("nt-d", "Work");
-  const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
-  await tick(7, notifyEnv);
+  await tick(7);
   await L("nt-d").release(id, AGENT, "stop");
-  await tick(7.5, notifyEnv);
-  await tick(9, notifyEnv);
-  expect(sentFor(send, "nt-d")).toHaveLength(0);
+  await tick(7.5);
+  await tick(9);
+  expect(await digests("nt-d")).toHaveLength(0);
 });
 
-it("a recurrence is a new episode and notifies again after its own hour", async () => {
+it("a recurrence is a new episode and is recorded again after its own hour", async () => {
   await project("nt-e");
   const id = await claimed("nt-e", "Work");
-  const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
-  await tick(7, notifyEnv);
-  await tick(8.1, notifyEnv);
-  expect(sentFor(send, "nt-e")).toHaveLength(1);
+  await tick(7);
+  await tick(8.1);
+  expect(await digests("nt-e")).toHaveLength(1);
   await L("nt-e").release(id, AGENT, "stop");
-  await tick(9, notifyEnv);
+  await tick(9);
   await L("nt-e").claim(id, AGENT);
-  await tick(16, notifyEnv);
-  await tick(16.5, notifyEnv);
-  expect(sentFor(send, "nt-e")).toHaveLength(1);
-  await tick(17.1, notifyEnv);
-  expect(sentFor(send, "nt-e")).toHaveLength(2);
+  await tick(16);
+  await tick(16.5);
+  expect(await digests("nt-e")).toHaveLength(1);
+  await tick(17.1);
+  expect(await digests("nt-e")).toHaveLength(2);
 });

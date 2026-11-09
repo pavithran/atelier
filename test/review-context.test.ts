@@ -132,7 +132,6 @@ for (const merged of [false, true]) test(`recording a ${merged ? "post-merge" : 
   const { ledger, db, task, request, pending } = setup(t);
   const sent: Request[] = [];
   t.mock.method(globalThis, "fetch", async (req: Request) => { sent.push(req); return new Response(null); });
-  ledger.setNotificationOrigin(task.id, "https://atelier.test");
   // t521, per PAVI ("drop ntfy"): a rejection posts no message of its own;
   // a session is woken by ledger notices instead.
   db.prepare("INSERT INTO notifications (item_id, head) VALUES (?, ?)").run(task.id, H2);
