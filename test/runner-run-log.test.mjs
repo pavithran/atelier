@@ -93,6 +93,34 @@ test("200 stderr lines of 2 KiB each are intact in the log after exit 1", async 
   intact(logOf(facts));
 });
 
+const longEnd = `process.stdout.write("x".repeat(70000) + "ERROR: the real cause`;
+const longChecked = (text) => {
+  const line = text.split("\n").find((l) => l.endsWith("ERROR: the real cause"));
+  assert.ok(line, "the end of the long line is in the log");
+  assert.match(line, /^\[cut \d+ characters\] x+ERROR: the real cause$/);
+  assert.equal(Number(/^\[cut (\d+) /.exec(line)[1]), 70021 - 65536);
+};
+
+test("a 70,000-character stdout line keeps its ending and a cut marker after a timeout", async () => {
+  const { facts } = await runWith(stub("long-hang", `${longEnd}\\n"); setInterval(() => {}, 1000);`));
+  longChecked(logOf(facts));
+});
+
+test("a 70,000-character stdout line keeps its ending and a cut marker after exit 1", async () => {
+  const { facts } = await runWith(stub("long-fail", `${longEnd}\\n"); process.exitCode = 1;`));
+  longChecked(logOf(facts));
+});
+
+test("a pending 70,000-character stdout line with no newline keeps its ending and a cut marker after a timeout", async () => {
+  const { facts } = await runWith(stub("pending-hang", `${longEnd}"); setInterval(() => {}, 1000);`));
+  longChecked(logOf(facts));
+});
+
+test("a pending 70,000-character stdout line with no newline keeps its ending and a cut marker after exit 1", async () => {
+  const { facts } = await runWith(stub("pending-fail", `${longEnd}"); process.exitCode = 1;`));
+  longChecked(logOf(facts));
+});
+
 test("a harness that ends normally keeps the log content it had", () => {
   const state = { phase: "done", reason: null, output: "all done" };
   const facts = runFacts({ project: "atelier", item: assignment.item, agent: "claude-code" }, state, { dir });

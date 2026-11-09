@@ -10,20 +10,33 @@ const lastLines = (text, count) =>
 
 const LINE_MAX = 64 * 1024;
 
+// A line longer than LINE_MAX keeps its last LINE_MAX characters, after a
+// marker that says how many were dropped: the end of a line is where an error is.
+const kept = (text, cut) => {
+  const over = Math.max(0, text.length - LINE_MAX);
+  const dropped = cut + over;
+  return dropped ? `[cut ${dropped} characters] ${over ? text.slice(-LINE_MAX) : text}` : text;
+};
+
 // A ring of the last 200 non-empty lines of one stream, fed chunks as they
 // arrive, apart from the byte buffer the executor keeps. A line is whole when
 // its newline arrives, or at `lines()` for the one the stream ended on.
 export function lineRing(count = HARNESS_LOG_LINES) {
   const ring = [];
   let open = "";
-  const push = (line) => { const text = line.replace(/\r/g, ""); if (text.trim()) { ring.push(text.slice(0, LINE_MAX)); if (ring.length > count) ring.shift(); } };
+  let openCut = 0;
+  const push = (line, cut) => { const text = line.replace(/\r/g, ""); if (text.trim()) { ring.push(kept(text, cut)); if (ring.length > count) ring.shift(); } };
   return {
     write(chunk) {
       const parts = (open + chunk).split("\n");
-      open = parts.pop().slice(0, LINE_MAX);
-      for (const part of parts) push(part);
+      const last = parts.pop();
+      let cut = openCut;
+      for (const part of parts) { push(part, cut); cut = 0; }
+      // Only the last LINE_MAX characters of the unfinished line are held.
+      openCut = cut + Math.max(0, last.length - LINE_MAX);
+      open = last.slice(-LINE_MAX);
     },
-    lines() { const out = [...ring]; if (open.replace(/\r/g, "").trim()) out.push(open.replace(/\r/g, "")); return out.slice(-count); },
+    lines() { const out = [...ring]; const text = open.replace(/\r/g, ""); if (text.trim()) out.push(kept(text, openCut)); return out.slice(-count); },
   };
 }
 
