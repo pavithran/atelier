@@ -4195,6 +4195,9 @@ async function inbox(env: Env, token?: AgentToken) {
   return { entries, unread };
 }
 
+// How the index's notices (usage alerts) are named when they cannot be read.
+const INDEX_NOTICE_SOURCE = "usage alerts (index)";
+
 // The notices of the last 24 hours across the index (usage alerts) and every
 // project, each project read on its own.
 async function noticesOf(env: Env, now: Date): Promise<{ notices: Notice[]; unread: string[] }> {
@@ -4204,8 +4207,9 @@ async function noticesOf(env: Env, now: Date): Promise<{ notices: Notice[]; unre
   const unread: string[] = [];
   const notices = reads.flatMap((r, i): (Notice & { seq: number })[] => {
     if (r.status === "rejected") {
-      console.error("project notices unavailable", i === 0 ? "index" : projects[i - 1].name, codeOf(r.reason).trim());
-      if (i > 0) unread.push(projects[i - 1].name);
+      const source = i === 0 ? INDEX_NOTICE_SOURCE : projects[i - 1].name;
+      console.error("project notices unavailable", source, codeOf(r.reason).trim());
+      unread.push(source);
       return [];
     }
     return r.value.map((e) => ({ seq: e.seq, at: e.at, kind: e.kind as NoticeKind, project: e.kind === USAGE_ALERT ? null : projects[i - 1].name, item: e.itemId, text: noticeText(e.kind as NoticeKind, e.data) }));

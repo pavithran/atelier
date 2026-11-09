@@ -403,7 +403,7 @@ or the developer allows the address with `--agent-email`.
 Nothing is sent to a phone or any outside service, and there is nothing to
 set up. A notice is a ledger event, and the orchestrating session reports it
 in chat: notices are read in chat through `atelier status`, which lists those
-of the last 24 hours, newest first, and atelier-pulse reads the same events.
+of the last 24 hours, newest first, and an outside reader such as atelier-pulse may read them.
 Three things record one:
 
 - **A decision waiting.** When submission, review or check results put a

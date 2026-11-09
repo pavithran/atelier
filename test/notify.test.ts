@@ -68,5 +68,6 @@ test("the status section lists the notices as the server returned them, newest f
 });
 
 test("a project the server could not read is named, not passed over as having no notices", () => {
-  assert.deepEqual(noticeLines({ notices: [], unread: ["broken"] }), ["Notices (last 24 hours, newest first)", "  not read: broken"]);
+  assert.deepEqual(noticeLines({ notices: [], unread: ["broken"] }), ["Notices (last 24 hours, newest first)", "  could not be read: broken"]);
+  assert.deepEqual(noticeLines({ notices: [], unread: ["usage alerts (index)"] }), ["Notices (last 24 hours, newest first)", "  could not be read: usage alerts (index)"]);
 });

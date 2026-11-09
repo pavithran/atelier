@@ -30,7 +30,7 @@ export function noticeLines(read: { notices?: Notice[]; unread?: string[] } | nu
   return [
     "Notices (last 24 hours, newest first)",
     ...notices.map((n) => `  ${n.at} ${n.project ?? "usage"}${n.item ? ` ${n.item}` : ""}: ${n.text}`),
-    ...(unread.length ? [`  not read: ${unread.join(", ")}`] : []),
+    ...(unread.length ? [`  could not be read: ${unread.join(", ")}`] : []),
   ];
 }
 

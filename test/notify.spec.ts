@@ -17,8 +17,13 @@ async function fixture(name: string, test: (state: DurableObjectState) => Promis
   const stub = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await runInDurableObject(stub, async (_instance, state) => test(state));
 }
-function ledger(state: DurableObjectState, topic: string | undefined = TOPIC) {
-  return new Ledger(state, { ...env, NTFY_TOPIC: topic } as typeof env);
+// The environment with NTFY_TOPIC set, or without the key at all.
+function envOf(configured: boolean) {
+  const { NTFY_TOPIC: _drop, ...rest } = env as unknown as Record<string, unknown>;
+  return (configured ? { ...rest, NTFY_TOPIC: TOPIC } : rest) as unknown as typeof env;
+}
+function ledger(state: DurableObjectState, configured = true) {
+  return new Ledger(state, envOf(configured));
 }
 const notices = (L: Ledger) => L.notices(SINCE).filter((e) => e.kind === "inbox.notice");
 function setup(L: Ledger, name: string) {
@@ -31,11 +36,11 @@ function setup(L: Ledger, name: string) {
 function evidence(L: Ledger, head = H1) {
   L.addEvidence({ itemId: "t1", head, claim: "npm test", grade: "observed", passed: true, by: A, at: new Date().toISOString(), changedPaths: ["src/a.ts"], where: "sandbox" });
 }
-function submit(L: Ledger, name: string) {
+function submit(L: Ledger, name: string, configured = true) {
   const LEDGER = { idFromName: env.LEDGER.idFromName.bind(env.LEDGER), get: () => L } as unknown as typeof env.LEDGER;
   return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/t1/submit`, {
     method: "POST", headers: { authorization: "Bearer test-token", "x-atelier-actor": A, "content-type": "application/json" }, body: "{}",
-  }), { ...env, LEDGER, ATELIER_TOKEN: "test-token", NTFY_TOPIC: TOPIC } as typeof env);
+  }), { ...envOf(configured), LEDGER, ATELIER_TOKEN: "test-token" } as typeof env);
 }
 
 it("submission records one notice per revision, durably, and sends nothing", async () => {
@@ -83,12 +88,12 @@ it("cloud results record the notice after a waiting submission", async () => {
 
 it("an unset topic records the same notice as a set one, and neither sends", async () => {
   const seen: unknown[] = [];
-  for (const topic of [undefined, TOPIC]) {
-    await fixture(`notify-topic-${topic ? "set" : "unset"}`, async (state) => {
+  for (const configured of [false, true]) {
+    await fixture(`notify-topic-${configured ? "set" : "unset"}`, async (state) => {
       const send = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null));
       try {
-        const L = ledger(state, topic); setup(L, `notify-topic-${topic ? "set" : "unset"}`); evidence(L);
-        expect((await submit(L, `notify-topic-${topic ? "set" : "unset"}`)).status).toBe(200);
+        const L = ledger(state, configured); setup(L, `notify-topic-${configured ? "set" : "unset"}`); evidence(L);
+        expect((await submit(L, `notify-topic-${configured ? "set" : "unset"}`, configured)).status).toBe(200);
         expect(send).not.toHaveBeenCalled();
         seen.push(notices(L).map((e) => [e.kind, e.itemId, e.data]));
         expect(state.storage.sql.exec("SELECT * FROM notifications").toArray()).toEqual([{ item_id: "t1", head: H1 }]);

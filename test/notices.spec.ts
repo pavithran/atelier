@@ -69,3 +69,16 @@ it("answers the same with NTFY_TOPIC set or unset", async () => {
   const read = async (e: typeof env) => ((await (await worker.fetch(new Request("https://atelier.test/api/notices", { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), e)).json()) as Read).notices;
   expect(await read({ ...testEnv, NTFY_TOPIC: "some-topic" } as typeof env)).toEqual(await read(testEnv));
 });
+
+it("names the index in unread when its usage notices cannot be read, and still answers", async () => {
+  const indexId = env.LEDGER.idFromName("__index");
+  const LEDGER = {
+    idFromName: env.LEDGER.idFromName.bind(env.LEDGER),
+    get: (id: DurableObjectId) => id.equals(indexId)
+      ? new Proxy(env.LEDGER.get(id), { get: (t, k) => k === "notices" ? () => Promise.reject(new Error("index down")) : Reflect.get(t, k) })
+      : env.LEDGER.get(id),
+  } as unknown as typeof env.LEDGER;
+  const res = await worker.fetch(new Request("https://atelier.test/api/notices", { headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner" } }), { ...testEnv, LEDGER } as typeof env);
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as Read).unread).toContain("usage alerts (index)");
+});
