@@ -2,6 +2,7 @@ import { env, runInDurableObject } from "./support/workers.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import worker from "../src/index.ts";
 import { makeDispatch } from "../src/dispatch/rules.ts";
 // @ts-expect-error plain JavaScript formatter
 import { formatStatus, statusJson } from "../cli/status.mjs";
@@ -9,8 +10,9 @@ import { formatStatus, statusJson } from "../cli/status.mjs";
 const builder = "codex/gpt-6-astra", reviewer = "claude-code/opus-5.5";
 const head = "a".repeat(40), base = "0".repeat(40);
 const runner = { runner: "home:test", kind: "home" } as const;
-const pool: ModelEntry[] = [{ id: "opus-5.5", harness: "claude-code", where: "home", provider: "subscription", aliases: [], family: familyOf("opus-5.5"), note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
-async function setup(name: string, intent: boolean | "default" = true, chosen = reviewer) {
+const pool: ModelEntry[] = [{ id: "opus-5.5", harness: "claude-code", where: "home", provider: "subscription", aliases: [], family: familyOf("opus-5.5"), note: "", addedBy: "owner", addedAt: new Date().toISOString() },
+  { id: "sonnet-5.5", harness: "claude-code", where: "home", provider: "subscription", aliases: [], family: familyOf("sonnet-5.5"), note: "", addedBy: "owner", addedAt: new Date().toISOString() }];
+async function setup(name: string, intent: boolean | "default" = true, chosen = reviewer, changed = ["src/a.ts"]) {
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: new Date().toISOString() }, "owner");
   await L.poolChanged(pool);
@@ -21,7 +23,7 @@ async function setup(name: string, intent: boolean | "default" = true, chosen = 
   await L.claim(id, builder, runner);
   await L.setWorkspace(id, `fork-${id}`, base, builder);
   await L.recordPush(id, builder, head, head);
-  await L.addEvidence({ itemId: id, head, claim: "npm test", grade: "observed", passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["src/a.ts"] });
+  await L.addEvidence({ itemId: id, head, claim: "npm test", grade: "observed", passed: true, by: "owner", at: new Date().toISOString(), changedPaths: changed });
   return { L, id, name };
 }
 
@@ -30,6 +32,8 @@ test("dispatch records a named reviewer and landing intent; submit asks and queu
   assert.equal((await L.item(id)).dispatch?.reviewer, reviewer);
   await L.submit(id, builder, "Checked", undefined, false, head);
   assert.equal((await L.reviewRequests(id))[0]?.reviewer, reviewer);
+  assert.equal((await L.events(id)).filter(e => e.kind === "review.requested").length, 1);
+  assert.equal((await L.events(id)).filter(e => e.kind === "submission.review_wait").length, 0);
   assert.equal((await L.events(id)).filter(e => e.kind === "land.requested").length, 1);
   await L.submit(id, builder, "Checked", undefined, false, head);
   assert.equal((await L.reviewRequests(id)).length, 1);
@@ -97,4 +101,123 @@ test("status JSON carries the same unasked head and orchestrator command", async
   assert.equal(view.items[0].reviewAskedHead, null);
   assert.equal(view.orchestratorWaits[0].id, id);
   assert.match(view.orchestratorWaits[0].command, /atelier land/);
+});
+
+const head2 = "b".repeat(40);
+
+// t523: a first round asked, rejected, released, then dispatched again with the
+// same reviewer and an old land job, and pushed at a new head.
+async function secondRound(name: string, changed = ["src/a.ts"]) {
+  const { L, id } = await setup(name, true, reviewer, changed);
+  await L.submit(id, builder, "Round one", undefined, false, head);
+  const first = (await L.reviewRequests(id))[0];
+  await L.addReview({ itemId: id, by: reviewer, head, criteria: await L.criteria(id), approve: false, note: "fix it", at: new Date().toISOString() });
+  await L.release(id, builder, "parked");
+  await L.dispatch(id, "owner", { agent: "codex", model: "gpt-6-astra", reviewer, land: true });
+  await L.claim(id, builder, runner);
+  await L.recordPush(id, builder, head2, head2);
+  await L.addEvidence({ itemId: id, head: head2, claim: "npm test", grade: "observed", passed: true, by: "owner", at: new Date().toISOString(), changedPaths: changed });
+  return { L, id, first, name };
+}
+
+test("a second-round submit, dispatched with the reviewer after a rejection and a release, asks the review of its new head (t523)", async () => {
+  const { L, id } = await secondRound("submission-round-two");
+  await L.submit(id, builder, "Round two");
+  const events = await L.events(id);
+  assert.ok(events.some(e => e.kind === "review.requested" && e.data.head === head2), "review.requested at the new head");
+  assert.equal(events.filter(e => e.kind === "submission.review_wait").length, 0);
+  assert.equal((await L.item(id)).reviewAskedHead, head2);
+});
+
+test("a submit the ledger refuses with a RuleError logs submission.review_wait and status lists the task", async () => {
+  const { L, id, name } = await setup("submission-wait-ruleerror", true, "claude-code/unlisted-9");
+  await L.submit(id, builder, "Checked", undefined, false, head);
+  const waits = (await L.events(id)).filter(e => e.kind === "submission.review_wait");
+  assert.equal(waits.length, 1);
+  assert.equal(waits[0].data.head, head);
+  assert.match(String(waits[0].data.reason), /not a registered, eligible reviewer/);
+  assert.equal(waits[0].data.next, "atelier land " + id + " --reviewer claude-code/unlisted-9");
+  assert.equal((await L.item(id)).reviewAskedHead, null);
+  assert.match(formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);
+});
+
+// The real KeptRequests path (src/ledger.ts askReview): the head already has a
+// counted review, so the submit's review is not wanted; that review is a
+// rejection, so none is needed; another reviewer's older open request is
+// withdrawn for the dispatched reviewer and, with no replacement asked, the
+// withdrawal rolls back and requestReview answers instead of throwing.
+test("a submit whose redirect is rolled back (KeptRequests) leaves the standing request asked and logs no wait", async () => {
+  const { L, id, name } = await setup("submission-wait-kept", false);
+  await L.submit(id, builder, "Checked", undefined, false, head);
+  await L.requestReview(id, "owner", "claude-code/sonnet-5.5", pool, false);
+  await L.addReview({ itemId: id, by: "owner", head, criteria: await L.criteria(id), approve: false, note: "not yet", at: new Date().toISOString() });
+  const open = (await L.reviewRequests(id)).filter(r => r.state === "open");
+  assert.equal(open.length, 1, "the older request is still open before the dispatched submit");
+  await runInDurableObject(L, async (instance: any) => {
+    const d = instance.item(id).dispatch;
+    instance.sql.exec("UPDATE items SET dispatch = ? WHERE id = ?", JSON.stringify({ ...d, reviewer, land: true }), id);
+    const wanted = !instance.reviewsFor(id).some((r: any) => r.head === head);
+    assert.equal(wanted, false, "a counted review of the head makes wanted false, so the refusal is KeptRequests, not RuleError");
+    const answer = instance.requestReview(id, "owner", reviewer, pool, wanted);
+    assert.equal(answer.needed, false);
+    assert.match(answer.reason, /no review of claude-code\/opus-5\.5 was asked, so request \d+ for claude-code\/sonnet-5\.5 stands/);
+    instance.submit(id, builder, "Checked", undefined, false, head);
+  });
+  const requests = await L.reviewRequests(id);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].reviewer, "claude-code/sonnet-5.5");
+  assert.equal(requests[0].state, "open");
+  assert.equal((await L.item(id)).reviewAskedHead, head);
+  assert.equal((await L.events(id)).filter(e => e.kind === "submission.review_wait").length, 0);
+  assert.doesNotMatch(formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);
+});
+
+// An answer that asks nothing (not a RuleError, no request standing): the head
+// carries a counted rejection, so no review is needed and none is asked.
+test("a submit whose answer asks no review, with no request standing, logs submission.review_wait and status lists the task", async () => {
+  const { L, id, name } = await setup("submission-wait-answer");
+  await L.addReview({ itemId: id, by: "owner", head, criteria: await L.criteria(id), approve: false, note: "not yet", at: new Date().toISOString() });
+  await L.submit(id, builder, "Checked", undefined, false, head);
+  assert.equal((await L.reviewRequests(id)).length, 0);
+  const waits = (await L.events(id)).filter(e => e.kind === "submission.review_wait");
+  assert.equal(waits.length, 1);
+  assert.match(String(waits[0].data.reason), /rejected/);
+  assert.equal(waits[0].data.next, `atelier land ${id} --reviewer ${reviewer}`);
+  assert.match(formatStatus([{ name, items: await L.items(), inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);
+});
+
+async function routeSubmit(name: string, id: string, headSent?: string) {
+  const token = "submission-route-token";
+  await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: new Date().toISOString() } as never);
+  return worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${id}/submit`, {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "x-atelier-actor": builder, "content-type": "application/json" },
+    body: JSON.stringify(headSent ? { head: headSent } : {}),
+  }), { ...env, ATELIER_TOKEN: token } as typeof env);
+}
+
+test("t523 replayed through the runner's submit route: the new head's review is asked at submit", async () => {
+  const { L, id, name } = await secondRound("submission-route-round-two");
+  const res = await routeSubmit(name, id, head2);
+  assert.equal(res.status, 200);
+  const events = await L.events(id);
+  assert.ok(events.some(e => e.kind === "review.requested" && e.data.head === head2), JSON.stringify(events.map(e => [e.kind, e.data.head])));
+  assert.equal((await L.item(id)).reviewAskedHead, head2);
+});
+
+test("t523 through the runner's submit route for a docs-only change: the dispatched reviewer is still asked at the new head", async () => {
+  const { L, id, name } = await secondRound("submission-route-docs", ["docs/a.md"]);
+  const res = await routeSubmit(name, id, head2);
+  assert.equal(res.status, 200);
+  const events = await L.events(id);
+  assert.ok(events.some(e => e.kind === "review.requested" && e.data.head === head2 && e.data.reviewer === reviewer), JSON.stringify(events.map(e => [e.kind, e.data.head, e.data.reason])));
+  assert.equal(events.filter(e => e.kind === "submission.review_wait").length, 0);
+  assert.equal((await L.item(id)).reviewAskedHead, head2);
+});
+
+test("a first-round submit through the route for a docs-only change asks exactly one review", async () => {
+  const { L, id, name } = await setup("submission-route-first", true, reviewer, ["docs/a.md"]);
+  assert.equal((await routeSubmit(name, id, head)).status, 200);
+  assert.equal((await routeSubmit(name, id, head)).status, 200);
+  assert.equal((await L.events(id)).filter(e => e.kind === "review.requested").length, 1);
+  assert.equal((await L.reviewRequests(id)).length, 1);
 });

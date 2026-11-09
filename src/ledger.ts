@@ -3697,18 +3697,32 @@ export class Ledger extends DurableObject<Env> {
     return reviewer ? { ...input, reviewer } : input;
   }
 
+  // Asks the review the dispatch named, and records why when none was asked:
+  // a refusal (RuleError) or an answer that asks nothing (a review no
+  // longer needed, or KeptRequests with no request standing for the head), so the orchestrator's
+  // wait is on the record and in atelier status, never silent.
   private askSubmissionReview(id: string): void {
     const item = this.item(id), d = item.dispatch;
     if (item.state !== "submitted" || !d?.reviewer) return;
+    let reason: string | null = null;
+    // The dispatch named the reviewer, so the review is asked whether or not
+    // the gate needs one (a docs-only change needs none, t566), as atelier land
+    // --reviewer asks it. Once a review of this head is recorded, a rerun
+    // asks as the gate does, so a verdict is not asked for again.
+    const wanted = !this.reviewsFor(id).some((r) => r.head === item.head);
     try {
       this.ctx.storage.transactionSync(() => {
-        this.requestReview(id, this.owner, d.reviewer!, this.poolStanding(), false);
+        const asked = this.requestReview(id, this.owner, d.reviewer!, this.poolStanding(), wanted);
+        if (!asked.needed) reason = asked.reason;
         if (d.land) this.requestLand(id, this.owner);
       });
     } catch (error) {
       if (!(error instanceof RuleError)) throw error;
-      this.log(id, "atelier", "submission.review_wait", { head: item.head, reason: error.message, next: `atelier land ${id} --reviewer ${d.reviewer}` }, new Date().toISOString());
+      reason = error.message;
     }
+    // A request that stands open for this head (requestReview's KeptRequests
+    // answer keeps one) is the review asked, so no wait is recorded for it.
+    if (reason !== null && this.item(id).reviewAskedHead === null) this.log(id, "atelier", "submission.review_wait", { head: item.head, reason, next: `atelier land ${id} --reviewer ${d.reviewer}` }, new Date().toISOString());
   }
 
   // The project owner puts an open task in the queue for a kind of runner.
