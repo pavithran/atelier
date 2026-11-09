@@ -9,7 +9,8 @@ import { mkdtempSync, readFileSync, readdirSync, writeFileSync, chmodSync, mkdir
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTask, runFacts, startHarness } from "../cli/runner.mjs";
-import { progressTracker } from "../cli/progress.mjs";
+import { progressTracker, newStream, foldStream } from "../cli/progress.mjs";
+import { logTextOf } from "../cli/run-log-text.mjs";
 import { fixture } from "./runner-shared.mjs";
 
 const entry = { agent: "claude-code", models: ["sonnet-5.5"], command: ["claude", "{model}", "{brief_file}", "{workspace}"] };
@@ -63,6 +64,33 @@ test("the run log lists each command the progress record saw start, with its sta
   assert.match(text, /^\d{4}-\d\d-\d\dT[\d:.]+Z Bash npm$/m);
   assert.match(text, /^\d{4}-\d\d-\d\dT[\d:.]+Z Bash git$/m);
   assert.ok(text.indexOf(" Bash npm") < text.indexOf(" Bash git"), "in the order they started");
+});
+
+test("the run log lists the first and the last of 1,001 commands", () => {
+  const state = newStream();
+  const lines = Array.from({ length: 1001 }, (_, i) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: `t${i}`, name: "Bash", input: { command: `cmd${i} --flag` } }] } }));
+  foldStream(state, lines.join("\n") + "\n", "2026-11-08T22:00:00.000Z");
+  const text = logTextOf({ harnessTail: { stdout: [], stderr: [] }, commandTrail: state.trail });
+  assert.match(text, /\(1001\)/);
+  assert.match(text, /^2026-11-08T22:00:00\.000Z Bash cmd0$/m);
+  assert.match(text, /^2026-11-08T22:00:00\.000Z Bash cmd1000$/m);
+});
+
+const wide = `for (let i = 1; i <= 200; i++) console.error("E" + String(i).padStart(3, "0") + ":" + "x".repeat(2000));`;
+const intact = (text) => {
+  const found = text.split("\n").filter((l) => /^E\d{3}:/.test(l));
+  assert.equal(found.length, 200, "all 200 stderr lines");
+  found.forEach((l, i) => assert.equal(l, "E" + String(i + 1).padStart(3, "0") + ":" + "x".repeat(2000), "no line partial"));
+};
+
+test("200 stderr lines of 2 KiB each are intact in the log after a timeout", async () => {
+  const { facts } = await runWith(stub("wide-hang", `${wide} setInterval(() => {}, 1000);`));
+  intact(logOf(facts));
+});
+
+test("200 stderr lines of 2 KiB each are intact in the log after exit 1", async () => {
+  const { facts } = await runWith(stub("wide-fail", `${wide} process.exit(1);`));
+  intact(logOf(facts));
 });
 
 test("a harness that ends normally keeps the log content it had", () => {

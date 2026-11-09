@@ -46,7 +46,7 @@ import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
 import { progressTracker } from "./progress.mjs";
-import { harnessTailOf, logTextOf } from "./run-log-text.mjs";
+import { harnessTailOf, lineRing, logTextOf } from "./run-log-text.mjs";
 import { automaticNote } from "../src/run-facts.ts";
 import { checkLimits, limitMs, stopLine, stopOf } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
@@ -511,6 +511,7 @@ export function execute(argv, { cwd, signal, raw = false, capture = false, captu
     // The harness's pid goes to the progress tracker (G21), which reads the
     // processes below it.
     if (pid) onSpawn?.(pid);
+    const rings = { stdout: lineRing(), stderr: lineRing() };
     let output = "", stderr = "", error, timedOut = false, stopped, closed, ending = false, ended = !pid;
     // A signal to every process in the group; false once none is left.
     const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
@@ -520,7 +521,7 @@ export function execute(argv, { cwd, signal, raw = false, capture = false, captu
       watch.end();
       signal?.removeEventListener("abort", end);
       if (error) reject(error);
-      else resolve({ ...closed, output: raw ? output : output.trim(), stderr: stderr.trim(), timedOut, ...(stopped ? { stopped } : {}) });
+      else resolve({ ...closed, output: raw ? output : output.trim(), stderr: stderr.trim(), timedOut, tails: { stdout: rings.stdout.lines(), stderr: rings.stderr.lines() }, ...(stopped ? { stopped } : {}) });
     };
     const end = () => {
       if (ending || ended) return;
@@ -545,8 +546,8 @@ export function execute(argv, { cwd, signal, raw = false, capture = false, captu
       onStop: (stop) => { if (closed || ending) return; stopped = stop; timedOut = true; end(); },
     });
     signal?.addEventListener("abort", end, { once: true });
-    child.stdout?.on("data", (chunk) => { watch.output(); output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
-    child.stderr?.on("data", (chunk) => { watch.output(); stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
+    child.stdout?.on("data", (chunk) => { watch.output(); rings.stdout.write(String(chunk)); output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
+    child.stderr?.on("data", (chunk) => { watch.output(); rings.stderr.write(String(chunk)); stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
     child.on("exit", () => { clearTimeout(deadline); end(); });

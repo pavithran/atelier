@@ -8,11 +8,35 @@ export const HARNESS_LOG_LINES = 200;
 const lastLines = (text, count) =>
   String(text ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-count);
 
+const LINE_MAX = 64 * 1024;
+
+// A ring of the last 200 non-empty lines of one stream, fed chunks as they
+// arrive, apart from the byte buffer the executor keeps. A line is whole when
+// its newline arrives, or at `lines()` for the one the stream ended on.
+export function lineRing(count = HARNESS_LOG_LINES) {
+  const ring = [];
+  let open = "";
+  const push = (line) => { const text = line.replace(/\r/g, ""); if (text.trim()) { ring.push(text.slice(0, LINE_MAX)); if (ring.length > count) ring.shift(); } };
+  return {
+    write(chunk) {
+      const parts = (open + chunk).split("\n");
+      open = parts.pop().slice(0, LINE_MAX);
+      for (const part of parts) push(part);
+    },
+    lines() { const out = [...ring]; if (open.replace(/\r/g, "").trim()) out.push(open.replace(/\r/g, "")); return out.slice(-count); },
+  };
+}
+
 // The harness's last output, taken where it ends: the last 200 non-empty
-// lines of each stream. Null for a harness that succeeded or never ran.
+// lines of each stream, from the executor's rings when it kept them. Null for
+// a harness that succeeded or never ran.
 export function harnessTailOf(result) {
   if (!result || (!result.timedOut && result.code === 0)) return null;
-  return { stdout: lastLines(result.output, HARNESS_LOG_LINES), stderr: lastLines(result.stderr, HARNESS_LOG_LINES) };
+  const rings = result.tails;
+  return {
+    stdout: rings?.stdout ?? lastLines(result.output, HARNESS_LOG_LINES),
+    stderr: rings?.stderr ?? lastLines(result.stderr, HARNESS_LOG_LINES),
+  };
 }
 
 // The commands the progress record saw start, oldest first, one per line:

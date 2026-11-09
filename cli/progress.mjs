@@ -54,8 +54,9 @@ export function summaryOf(name, input = {}) {
   return null;
 }
 
-// The commands kept in the trail the run log lists; the oldest go first.
-export const TRAIL_KEEP = 1000;
+// The trail the run log lists keeps every command that started, none dropped;
+// each is cut to this many characters.
+const TRAIL_COMMAND_MAX = 200;
 
 // A fresh reading of one run's log.
 export function newStream() {
@@ -84,8 +85,7 @@ export function foldStream(state, text, at) {
       for (const c of content) {
         if (c?.type !== "tool_use" || typeof c.id !== "string") continue;
         state.started++;
-        state.trail.push({ at, name: toolName(c.name), summary: summaryOf(c.name, c.input) });
-        if (state.trail.length > TRAIL_KEEP) state.trail.shift();
+        state.trail.push({ at, name: toolName(c.name), summary: summaryOf(c.name, c.input)?.slice(0, TRAIL_COMMAND_MAX) ?? null });
         state.pending.set(c.id, { name: toolName(c.name), summary: summaryOf(c.name, c.input), since: at });
       }
     } else if (event.type === "user") {
