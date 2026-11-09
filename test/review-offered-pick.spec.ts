@@ -104,8 +104,11 @@ it("land with no --reviewer asks nothing when the only runner's offer has expire
   expect(events.some((e) => e.kind === "review.requested")).toBe(false);
 });
 
-it("a reviewer the developer names is still asked when no runner is live", async () => {
+// t591: a named reviewer no live runner offers is refused; only --hand asks it.
+it("a reviewer the developer names is refused when no runner is live, and asked with --hand", async () => {
   const id = await landable("offered-pick-g", ["opus-5.5", "fable-5.1"], 24);
   const res = await call("POST", `/projects/offered-pick-g/items/${id}/review-request`, { reviewer: "claude-code/fable-5.1" });
-  expect(res.status, await res.clone().text()).toBe(200);
+  expect(res.status, await res.clone().text()).toBe(409);
+  const hand = await call("POST", `/projects/offered-pick-g/items/${id}/review-request`, { reviewer: "claude-code/fable-5.1", hand: true });
+  expect(hand.status, await hand.clone().text()).toBe(200);
 });
