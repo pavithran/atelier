@@ -8,8 +8,13 @@ changes no code.
 
 Every `file:line` below is read at main as it stood when this report was
 written, commit `c86e6077` (Merge t595), the parent of the commit that adds
-this file. Unless a path is given, a bare line number is in `src/ledger.ts`.
-A test is named by the line of its `it(` or `test(` call.
+this file. The fix round that added the post-merge run (section 5b) was
+written on main at `928978c0` (Merge t565), the parent of that fix commit;
+between the two, `src/ledger.ts` changes two lines in place at `:3436-3437`
+and `src/index.ts` gains two lines at `:4121-4123`, after every line this
+report cites, so every number holds at both. Unless a path is given, a bare
+line number is in `src/ledger.ts`. A test is named by the line of its `it(`
+or `test(` call.
 
 ## How to read this report
 
@@ -34,11 +39,12 @@ What this workspace could and could not measure:
 
 | Machine | Where its state lives | States | Transition sites | States with more than one entry path | Transitions with no test |
 | --- | --- | --- | --- | --- | --- |
-| 1 Task lifecycle | `items.state`, `items.owner`, `items.dispatch`, `items.blocked`, derived `events.stage` | 8 stored, 12 derived stages | 29 | 6 of 8 | 1 |
+| 1 Task lifecycle | `items.state`, `items.owner`, `items.dispatch`, `items.blocked`, derived `events.stage` | 8 stored, 12 derived stages | 29 | 6 of 8 | 0 |
 | 2 Review requests and reviews | `review_requests.state` plus 8 flag columns, `reviews` | 7 | 24 | 4 | 3 |
 | 3 Criteria reviews | `criteria_reviews.state`, `criteria_revisions`, `criteria_resolutions` | 6 | 12 | 2 | 3 |
 | 4 Pre-reviews | `prereviews.state`, `same_exits` | 9 | 22 | 5 | 3 |
 | 5 Land jobs and landing | `land_jobs` (no state column), 7 `meta` keys, events | 8 | 21 | 6 | 2 |
+| 5b The post-merge run | `meta post-merge:RUN` JSON, `meta post-merge-item:ID`, `meta post-merge-active`, events `post-merge.*` | 6, plus step and attempt outcomes | 15 | 3 of 6 | 1 |
 | 6 Ships and deploy steps | events only, `deploy_notices`, `revert_notices`, a local file, `meta` | 7 | 19 | 4 | 2 |
 | 7 Runner runs and test slots | `runs`, `runner_offers`, 6 `meta` key families, host SQLite pool | 10 | 22 | 4 | 0 |
 | 8 Stuck episodes | `stuck_episodes.kind`, `stuck_notices`, `stuck_ticks` | 4 | 5 | 1 | 0 |
@@ -94,7 +100,7 @@ time an event is logged, and only the result lands in `events.stage`.
 | accept | submitted or accepted to accepted; `accepted_head` set | `accept` `:5515`, write `:5575`; rule `gate` `src/rules.ts:2204` | `item.accepted` `:5583` | `test/ledger.spec.ts:135` |
 | a review of accepted work | accepted to submitted | `addReview` `:4907`, write `:5024` | `review.approved` or `review.rejected` `:5025` | `test/ledger.spec.ts:135` |
 | criteria change on accepted work | accepted to claimed; an open queued build undispatched | `criteriaChanged` `:3040`, writes `:3075`, `:3082` | `item.criteria_changed` `:3084`, `item.undispatched` `:3076` | `test/ledger.spec.ts:1723` |
-| task refresh of accepted work | accepted to submitted | `taskRefreshed` `:11641`, write `:11676` | `item.refreshed` `:11682` | no test |
+| task refresh of accepted work | accepted to submitted; `accepted_head` cleared | `taskRefreshed` `:11641`, write `:11676` | `item.refreshed` `:11682` | `test/task-refresh.spec.ts:115` |
 | merge | accepted to merged; owner, dispatch and token cleared | `merged` `:6926`, write `:6948`; a plan's parts `:6970` | `item.merged` `:6953`, `:6971` | `test/ledger.spec.ts:135` |
 | merge recorded from outside | any live state to merged | `recordMerge` `:7605`, write `:7617` | `item.merge_recorded` `:7626`, `item.merged` `:7629` | `test/record-merge.spec.ts:69` |
 | landed fast | any open state to merged | `landedFast` `:7520`, write `:7532`; no CLI caller found | `item.landed_fast` `:7534`, `item.merged` `:7535` | `test/fast-mode.spec.ts:104` |
@@ -140,7 +146,10 @@ task's job goes back to its holder's runner through `heldJobs` `:4394`
 
 ### Transitions with no test
 
-- A task refresh that returns accepted work to submitted (`:11676`).
+None found. The first draft of this report listed the task refresh that
+returns accepted work to submitted (`:11676`); `test/task-refresh.spec.ts:115`
+enters it, asserting the submitted state, the cleared acceptance and the
+`item.refreshed` event.
 
 ## 2. Review requests and reviews
 
@@ -299,7 +308,7 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 | claimed to conflict or preparation | `prereviewOutcome` `:6583` | `prereview.conflict`, `prereview.preparation` | `:391` |
 | to stale, outcome note | `:6584` | `prereview.stale` | no test |
 | to stale, tick drift | `prereviewTick` `:6290` | `prereview.stale` | `:536` |
-| to stale, claim drift | `bindPrereview` `:6519` | `prereview.stale` | not confirmed |
+| to stale, claim drift | `bindPrereview` `:6519` | `prereview.stale` | no test (`test/prereview.spec.ts:536` covers the tick's drift and `:304` the verdict's; no test claims against a drifted binding) |
 | to stale, verdict drift | `prereviewVerdict` `:6651` | `prereview.stale` | `:304`, `:507` |
 | to stale, left the queue before a result | `:6665` | `prereview.stale` | no test |
 | lost claim, state unchanged | `:6617` | `prereview.stale` | `:340` |
@@ -322,7 +331,7 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 ### Transitions with no test
 
 - The stale outcome note (`:6584`), stale after leaving the queue
-  (`:6665`), and the claim-drift stale (`:6519`, not confirmed).
+  (`:6665`), and the claim-drift stale (`:6519`).
 
 ## 5. Land jobs and landing
 
@@ -378,6 +387,79 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 - The kind `land.cancelled` is never asserted in `test/`; the behaviour is
   tested at `test/land-node-2.test.mjs:75`.
 - `confirmLeaseMain` has a route test and no CLI caller.
+
+## 5b. The post-merge run
+
+A landing with post-merge steps (checks, a deploy, a publication) carries a
+second machine beside the land job: the run that executes those steps after
+the merge is recorded. The developer's `atelier land` runs it; the server
+holds every transition and refuses the next merge in the project until the
+run is complete. The first draft of this report left it out.
+
+### States and storage
+
+| State | Stored as | Declared |
+| --- | --- | --- |
+| reserved, pending, running, failed, uncertain, complete | `state` inside the run's JSON, `meta post-merge:RUN` (`:6802`) | `PostMergeRun.state`, `src/post-merge.ts:40` |
+| which run is a task's | `meta post-merge-item:ID` (`:6803`); deleted at `:5719` when the policy is cleared after a cancelled reservation | |
+| the one run that blocks merges | `meta post-merge-active` (`:6804-6805`): set on every save, deleted when the run is complete | |
+| the merge the run follows | `before` from the landing row (`:5721`); `after` null until the merge is recorded (`:6942`) | `src/post-merge.ts:38` |
+| each step: pending, not_applicable, passed, waived | `steps[].outcome` | `src/post-merge.ts:42` |
+| each attempt: running, uncertain, failed, passed, waived, with `commandOutcome`, `deployment`, `publication`, `retry` | `steps[].attempts[]` | `Attempt`, `src/post-merge.ts:28-36` |
+| diff prepared | `paths`, null until prepared (`src/post-merge.ts:96`) | |
+| every change | event `post-merge.<action>` with the whole run in its data (`:6806`): reserved, merged, prepared, start, command, finish, retry, skip, reconcile, uncertain, cancelled | |
+
+The ledger does not compute the state: every write goes through
+`savePostMerge` (`:6800`), which stores the run, points each member task at
+it, sets or clears the active key and logs one event. The state itself is
+set by the pure functions of `src/post-merge.ts`, which the ledger calls.
+
+### Transitions
+
+| Transition | Function | Event | Test |
+| --- | --- | --- | --- |
+| none to reserved, at the start of a landing with steps | `beginLanding` `:5720-5722` via `reservePostMerge` `src/post-merge.ts:83`; route `src/index.ts:3484` | `post-merge.reserved` | `test/post-merge.spec.ts:68`, `:148` |
+| reserved to complete, landing cancelled before the merge | `cancelLanding` `:5661-5663`; refused once `after` is set `:5662`; route `src/index.ts:3474-3477` | `post-merge.cancelled` | `test/post-merge.spec.ts:204` |
+| reserved, the merge recorded (`after` set, state unchanged) | `merged` `:6938-6943`; refused when the run is not reserved `:6941` | `post-merge.merged` | `test/post-merge.spec.ts:68`; the refusal with no reservation `:168` |
+| reserved to pending, or to complete when no step applies | `preparePostMerge` `:6810` (`:6814`) via `src/post-merge.ts:92` (`:98`); route `src/index.ts:2406-2413`; CLI `cli/post-merge.mjs:179` | `post-merge.prepared` | `test/post-merge.spec.ts:68`; unit `test/post-merge.test.mjs:41` |
+| pending to running | `postMergeAction` `:6822` via `startAttempt` `src/post-merge.ts:100` (`:106`); route `src/index.ts:2437`; CLI `cli/post-merge.mjs:198` | `post-merge.start` | `test/post-merge.spec.ts:68` (two racing starts, one refused) |
+| running, the command's outcome recorded (state unchanged) | `:6823` via `recordCommand` `src/post-merge.ts:129`; CLI `cli/post-merge.mjs:204` | `post-merge.command` | `test/post-merge.spec.ts:181` |
+| running to pending or complete, step passed | `:6824-6826` via `finishAttempt` `src/post-merge.ts:138` (`:145`); a deploy needs the version the route verified, `src/index.ts:2416-2436`; CLI `cli/post-merge.mjs:209` | `post-merge.finish` | `test/post-merge.spec.ts:68`, `:181` |
+| running to failed | same `:145`; a failed check also logs the failing test names `:6827-6829` via `recordCheckFailure` `:7158`; CLI `cli/post-merge.mjs:209`, `:216` | `post-merge.finish`, `check.failed_tests` with `where: "main"` `:7161` | `test/post-merge.spec.ts:68`; the names `test/finding-cause.spec.ts:156` |
+| running to uncertain, deadline passed | `expireAttempt` `src/post-merge.ts:88` (`:90`), run on every read by `postMergeRun` `:6782-6783`, and before a start `:101` or a recovery `:148` | `post-merge.uncertain`, from the read only | `test/post-merge.spec.ts:101`; unit `test/post-merge.test.mjs:63` |
+| uncertain or running to failed, reconciled as no-effect | `:6832` via `recoverPostMerge` `src/post-merge.ts:152-162` (`:161`); CLI `cli/land.mjs:231` | `post-merge.reconcile` | `test/post-merge.spec.ts:101`; unit `test/post-merge.test.mjs:63` |
+| uncertain or running to pending or complete, reconciled as completed | same `:161`; a deploy needs the verified deployment `:154-157`, `src/index.ts:2416` | `post-merge.reconcile` | no test |
+| failed to pending, retry | `src/post-merge.ts:169-172`; CLI `cli/land.mjs:231`, then the executor `:236` | `post-merge.retry` | `test/post-merge.spec.ts:101`; unit `test/post-merge.test.mjs:41` |
+| failed, or reserved with a recorded merge, to pending, reserved or complete, step waived | `src/post-merge.ts:173-175`; the reserved waiver `:167` | `post-merge.skip` | `test/post-merge.spec.ts:68`, `:127`; unit `test/post-merge.test.mjs:77`; CLI `:96` |
+| refusal: a merge of another task while a run is not complete | `assertPostMergeFree` `:6795-6797`, from `beginLanding` `:5670`, `beginProjectLanding` `:5930`, `merged` `:6937`, `landedFast` `:7529`, `recordMerge` `:7587` | none | `test/post-merge.spec.ts:68`, `:127`; the CLI's wait on that refusal, against a fake server, `test/land-4.test.mjs:145` |
+| a merged task's land job kept while the run is open, dropped when complete or failed | `landJobs` `:11440-11441` | none | `test/land-job.spec.ts:72`, `:95` |
+| the executor runs each pending step in turn, then hands a failed check to the revert | `executePostMerge` `cli/post-merge.mjs:176-216`, from `cli/land.mjs:305` and `:236`; the barrier the land queue reads before starting another landing `cli/land-queue.mjs:131`, `:182` | the events above | `test/post-merge.test.mjs:164`, `:258`, `:381`; `test/land-queue.test.mjs:102`, `:137` |
+
+### States reached by more than one path
+
+- pending: prepared (`src/post-merge.ts:98`), a step passed with more to
+  run (`:145`), reconciled as completed (`:161`), retry (`:172`), a waiver
+  with more to run (`:175`).
+- complete: prepared with no step applying (`:98`), the last step passed
+  (`:145`), reconciled as completed (`:161`), the last step waived (`:175`),
+  a reservation cancelled before the merge (`:5663`).
+- failed: a step failed (`:145`) or reconciled as no-effect (`:161`).
+- reserved, running and uncertain each have one entry.
+- The kind `post-merge.uncertain` is logged by a read, `postMergeRun`
+  (`:6783`), under the owner's name whoever asked; the other kinds are
+  logged by the write that made them.
+
+### Transitions with no test
+
+- Reconciling an uncertain attempt as completed (`src/post-merge.ts:161`,
+  resolution `completed`). No test in `test/` passes that resolution; the
+  no-effect resolution is tested at `test/post-merge.spec.ts:101`.
+
+Also: `post-merge-item:ID` is deleted at `:5719` only when the policy is
+cleared and the last run was a cancelled reservation; with the policy kept,
+a complete run stays the task's run, and the next landing of the same task
+reserves a new one (`:5720`), so one task can have two runs in `meta` and
+only the latest reachable.
 
 ## 6. Ships and deploy steps
 
@@ -638,6 +720,24 @@ atelier events --project atelier --from 2026-11-01 --kind item.dispatched \
 atelier events --project atelier --from 2026-11-01 --kind item.redispatch_refused_notice | jq length
 ```
 
+The post-merge run (machine 5b):
+
+```sh
+# finishes that left the run failed, then the same by the step that failed
+atelier events --project atelier --from 2026-11-01 --kind post-merge.finish \
+  | jq '[.[] | select(.data.run.state == "failed")] | length'
+atelier events --project atelier --from 2026-11-01 --kind post-merge.finish \
+  | jq '[.[] | select(.data.run.state == "failed") | (.data.run.steps | map(select(.outcome == "pending")) | first | .name)] | group_by(.) | map({step: .[0], n: length})'
+# the developer's recoveries: retries, waivers and reconciliations
+atelier events --project atelier --from 2026-11-01 --kind post-merge.retry --kind post-merge.skip --kind post-merge.reconcile \
+  | jq 'group_by(.kind) | map({kind: .[0].kind, n: length})'
+# attempts that went uncertain (executor died or timed out)
+atelier events --project atelier --from 2026-11-01 --kind post-merge.uncertain | jq length
+```
+
+A merge refused because another run was open (`post_merge_blocked`) is a
+refusal, not an event, so its count is not measurable from the ledger.
+
 The three cases:
 
 ```sh
@@ -683,6 +783,18 @@ git log --since=2026-11-01 --format=%s | grep -c '^Merge main at\|^Merge baselin
 Output: `94` (merges of main into task branches: each is a conflict or a
 rebase the landing machine demanded).
 
+```sh
+git log --since=2026-11-01 --format=%s -- src/post-merge.ts cli/post-merge.mjs | wc -l
+git log --since=2026-11-01 --format=%s -- src/post-merge.ts cli/post-merge.mjs | grep -ci revert
+git log --since=2026-11-01 --format=%s | grep -c '^Merge t524'
+```
+
+Output: `16`, `10`, `1`. Sixteen commits touched the post-merge run's two
+files; ten of them are t524's automatic revert, which hangs off a failed
+post-merge check, and the rest are t519's deploy on landing (machine 6),
+t536's failing test names and t460's runner logs. Each command was run at
+`928978c0`.
+
 The 114 merged tasks, by the machine their title names:
 
 | Machine | Merged repairs | Tasks |
@@ -690,10 +802,11 @@ The 114 merged tasks, by the machine their title names:
 | 2 Review requests and reviews | 19 | t566 t513 t502 t496 t495 t554 t523 t571 t536 t436 t431 t437 t455 t445 t446 t421 t531 t441 t505 |
 | 7 Runner runs and test slots | 19, of which 5 concern the run or slot machine itself (t336 t465 t480 t528 t590); the rest are the suite's health on the runners | t595 t590 t570 t573 t336 t465 t458 t486 t480 t483 t479 t485 t453 t478 t516 t528 t460 t482 t489 |
 | 1 Task lifecycle | 16 | t583 t539 t548 t537 t538 t522 t510 t503 t335 t456 t443 t432 t419 t521 t434 t435 |
-| 6 Ships and deploy steps | 13 | t584 t515 t519 t501 t475 t481 t472 t468 t447 t439 t452 t293 t524 |
+| 6 Ships and deploy steps | 12 | t584 t515 t519 t501 t475 t481 t472 t468 t447 t439 t452 t293 |
 | 5 Land jobs and landing | 9 | t520 t512 t517 t509 t451 t450 t429 t547 t466 |
 | 8 Stuck episodes | 6 | t474 t467 t427 t461 t518 t430 |
 | 3 Criteria reviews | 2 | t535 t504 |
+| 5b The post-merge run | 1 (the first draft counted it under machine 6) | t524 |
 | 4 Pre-reviews | 0 | |
 | none (pages, docs, usage, help) | 30 | the rest |
 
@@ -709,12 +822,15 @@ about.
 | 1 | 2 Review requests and reviews | 19 merged repairs, 7 named fix rounds | rejections, not measurable here | The most repairs, and structurally the worst: seven states, eight flag columns of which two are never written, fifteen writes to one state from twelve functions, one event kind for two states, two stale comments. Every rejection and every rework round passes through it. |
 | 2 | 1 Task lifecycle | 16 merged repairs | unblock-to-claimed and release-then-claim, not measurable here | Two of the three cases of 2026-11-09. Six of eight states have more than one entry; owner, dispatch and blocked are four columns read as one machine and written separately. |
 | 3 | 7 Runner runs and test slots | 19 by title, 5 on the machine itself | gave-ups and claim refusals, not measurable here | The raw count is the suite's health on the runners, not the run machine. The machine itself is small and fully tested, with no event of its own. |
-| 4 | 6 Ships and deploy steps | 13 merged repairs | failed `ship.recorded`, not measurable here | No row at all: state is events, a local file and memory. Failed is reached six ways. |
+| 4 | 6 Ships and deploy steps | 12 merged repairs | failed `ship.recorded`, not measurable here | No row at all: state is events, a local file and memory. Failed is reached six ways. |
 | 5 | 5 Land jobs and landing | 9 merged repairs, 94 merges of main into branches | land requests with no head, not measurable here | One of the three cases. Seven meta keys and a table with no state or head column. |
 | 6 | 8 Stuck episodes | 6 merged repairs | episodes by cause, only since 2026-11-09 | Two states, well tested; its history was lost twice this month (t518, t533). |
 | 7 | 3 Criteria reviews | 2 merged repairs | criteria rejections, not measurable here | One hidden state (lapsed as failed with a text search). |
-| 8 | 4 Pre-reviews | 0 | pre-review outcomes, not measurable here | Nine states and the most write paths per state, but no repair this month traced to it. |
+| 8 | 5b The post-merge run | 1 merged repair, 16 commits to its files | failed finishes and recoveries, not measurable here | The best-written of the nine: a closed state list, one save function, one event per change. Its one untested transition is the reconcile-as-completed path; its harm is that an open run blocks every merge in the project. |
+| 9 | 4 Pre-reviews | 0 | pre-review outcomes, not measurable here | Nine states and the most write paths per state, but no repair this month traced to it. |
 
+Adding the post-merge run moved no rank above it: it enters at 8 of 9 with
+one merged repair, and machine 6 drops from 13 to 12 and stays fourth.
 The ledger counts may reorder ranks 1 to 3. The git proxy counts repairs
 that merged; it does not count rejections, nor the orchestrator's workaround
 moves, which only the ledger holds.
