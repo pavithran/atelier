@@ -118,7 +118,7 @@ import { parseReport } from "./refresh/mechanical.ts";
 import { pickResolver, resolverRefusal } from "./refresh/resolver.ts";
 import { refreshReview } from "./refresh/review.ts";
 import { SIZE_REFUSED } from "./large-diff.ts";
-import { assertRequestId, ensureRequestTable, keepRequest, usedRequest } from "./page-requests.ts";
+import { assertShown, ensureRequestTable, keepRequest, planLand, replayOf, type ShownLand } from "./page-requests.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -11364,50 +11364,32 @@ export class Ledger extends DurableObject<Env> {
   // task's now, the job and its event written, and the id kept with the first
   // answer, all or none. A used id returns that first answer and acts not
   // again. Without `shown` (the command line's --queue) it acts as before.
-  requestLand(id: string, by: string, quote?: string, shown?: { head: string; requestId: string }): LandRequested {
+  requestLand(id: string, by: string, quote?: string, shown?: ShownLand): LandRequested {
     return this.ctx.storage.transactionSync(() => this.requestLandIn(id, by, quote, shown));
   }
 
-  private requestLandIn(id: string, by: string, quote: string | undefined, shown: { head: string; requestId: string } | undefined): LandRequested {
+  private requestLandIn(id: string, by: string, quote: string | undefined, shown: ShownLand | undefined): LandRequested {
     if (shown) {
-      assertRequestId(shown.requestId);
-      const first = usedRequest(this.sql, shown.requestId, id, "land", new Date().toISOString());
-      if (first) return { ...JSON.parse(first) as LandRequested, replayed: true };
+      const first = replayOf<LandRequested>(this.sql, shown.requestId, id, "land", new Date().toISOString());
+      if (first) return first;
     }
     const item = this.item(id);
-    if (shown && shown.head !== item.head) throw new RuleError("stale_head", `${id} changed since this page was drawn (it showed ${shown.head.slice(0, 8)}, the task is at ${(item.head ?? "no head").slice(0, 8)}); reload it and land the revision it shows`, 409, `run atelier show ${id}, then land the new head`);
+    if (shown) assertShown(shown, id, item.head ?? null, criteriaOf(item));
     this.assertParallelCriteriaReviewed(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409, "run atelier ls to pick another task");
     const at = new Date().toISOString();
     if (item.state === "blocked") throw new RuleError("blocked", `${id} is blocked, so it is not queued to land: ${item.blocked?.reason ?? "no reason recorded"}`, 409, `run atelier unblock ${id}, then atelier land ${id} --queue`);
-    const existing = this.sql.exec(`SELECT by, at, quote, at_head AS head FROM land_jobs WHERE item = ?`, id).toArray()[0];
+    const existing = this.landJobOf(id);
     // A landing that failed at this head is queued again only by asking
     // again (G1): the record says so, and the lander may take it once more.
     const stopped = this.landingStopped(item);
-    const said = quote?.trim().slice(0, 500) || null;
-    const head = shown?.head ?? null;
-    const headed = head ? { head } : {};
-    let answer: LandRequested;
-    if (stopped) {
-      this.saveLandingRecord(id, { ...stopped, requeued: at });
-      if (existing) this.sql.exec(`UPDATE land_jobs SET at = ?, at_head = ? WHERE item = ?`, at, head ?? existing.head ?? null, id);
-      else this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote, at_head) VALUES (?, ?, ?, ?, ?)`, id, by, at, said, head);
-      this.log(id, by, "land.requested", { by, ...headed, requeued: true, failedStep: stopped.failedStep, attempt: stopped.attempt, ...(said ? { quote: said } : {}) }, at);
-      answer = { item: id, by, at, ...(said ? { quote: said } : {}), queued: true, requeued: { failedStep: stopped.failedStep!, attempt: stopped.attempt } };
-    } else if (existing && head && existing.head && existing.head !== head) {
-      // A job waiting at an older head: the newer head replaces it.
-      this.sql.exec(`UPDATE land_jobs SET at = ?, at_head = ?, by = ? WHERE item = ?`, at, head, by, id);
-      this.log(id, by, "land.requested", { by, head, replaces: existing.head as string, ...(said ? { quote: said } : {}) }, at);
-      answer = { item: id, by, at, ...(said ? { quote: said } : {}), queued: true };
-    } else if (existing) {
-      answer = { item: id, by: existing.by as string, at: existing.at as string, ...(existing.quote ? { quote: existing.quote as string } : {}), queued: false };
-    } else {
-      this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote, at_head) VALUES (?, ?, ?, ?, ?)`, id, by, at, said, head);
-      this.log(id, by, "land.requested", { by, ...headed, ...(said ? { quote: said } : {}) }, at);
-      answer = { item: id, by, at, ...(said ? { quote: said } : {}), queued: true };
-    }
-    if (shown) keepRequest(this.sql, shown.requestId, id, "land", JSON.stringify(answer), at);
-    return answer;
+    const plan = planLand({ id, by, at, said: quote?.trim().slice(0, 500) || null, head: shown?.head ?? null, existing, stopped });
+    if (plan.requeue && stopped) this.saveLandingRecord(id, { ...stopped, requeued: at });
+    if (plan.write === "insert") this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote, at_head) VALUES (?, ?, ?, ?, ?)`, id, plan.row.by, plan.row.at, plan.row.quote, plan.row.head);
+    else if (plan.write === "update") this.sql.exec(`UPDATE land_jobs SET by = ?, at = ?, at_head = ? WHERE item = ?`, plan.row.by, plan.row.at, plan.row.head, id);
+    if (plan.event) this.log(id, by, "land.requested", plan.event, at);
+    if (shown) keepRequest(this.sql, shown.requestId, id, "land", JSON.stringify(plan.answer), at);
+    return plan.answer;
   }
 
   // The landing enters its merge (G1): `atelier merge ID --landing` calls

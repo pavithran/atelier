@@ -187,6 +187,9 @@ it("a missing or malformed request id answers 400; one used for another task 409
   const page = await (await get(`/p/${project}/${a}`)).text();
   expect(page).toContain("failed at its regenerate step");
   expect(page).toContain(landForm(project, a));
+  // The head did not move, so the page does not say it did (finding 3).
+  expect(page).not.toContain("The head moved");
+  expect(page).not.toContain("was dropped");
   expect((await land(project, a)).status).toBe(303);
   const asked = await events(project, a, "land.requested");
   expect(asked).toHaveLength(2);
@@ -199,11 +202,23 @@ it("a job queued at H whose task moves to H2 is dropped when a runner polls; the
   const id = ready(name)[0];
   const before = await bound(name, id);
   expect((await land(name, id)).status).toBe(303);
-  await runInDurableObject(ledger(name), async (_i: Ledger, st: DurableObjectState) => st.storage.sql.exec(`UPDATE items SET head = ? WHERE id = ?`, "c".repeat(40), id));
+  // The builder pushes a new revision, which then passes its checks and is reviewed again: ready at a new head.
+  const moved = "c".repeat(40);
+  const holder = (await ledger(name).item(id)).owner as string;
+  await ledger(name).recordPush(id, holder, moved, moved);
+  for (const claim of (await ledger(name).project()).policy.checks ?? []) await ledger(name).addEvidence({ itemId: id, claim, grade: "observed", head: moved, passed: true, by: holder, at: new Date().toISOString(), changedPaths: [], where: "runner" } as never);
+  await ledger(name).submit(id, holder, "Pushed again.");
+  await ledger(name).addReview({ itemId: id, head: moved, criteria: before.criteria, by: "codex/gpt-6-astra", approve: true, note: "Reviewed", at: new Date().toISOString() }, undefined, true);
   const offer = { runner: "home:studio", kind: "home", agents: [], jobs: ["land"], checkouts: [name] };
   expect((await ledger(name).landJobs(offer as never, [name])).map((j) => j.id)).not.toContain(id);
   const stopped = await events(name, id, "land.stopped");
   expect(stopped.map((e) => e.data)).toEqual([expect.objectContaining({ reason: "stale_head", shown: before.head, current: "c".repeat(40) })]);
+  // The task page says the head moved, and draws Land again at the new head (finding 6).
+  const page = await (await get(`/p/${name}/${id}`)).text();
+  expect(page).toContain(`The head moved from ${before.head.slice(0, 8)} to cccccccc`);
+  expect(page).not.toContain("Landing queued since");
+  expect(page).toContain(landForm(name, id));
+  expect(page).toContain(`name="head" value="${"c".repeat(40)}"`);
 });
 
 // Criterion 11: the table of owner calls and whether the Land form is drawn.
@@ -238,4 +253,106 @@ it("the Land form is drawn only for the owner calls land and accept: ready and r
   expect(pressed.headers.get("location")).toBe(`${ORIGIN}/`);
   const viaTask = await land(project, acceptId, { back: "task" });
   expect(viaTask.headers.get("location")).toBe(`${ORIGIN}/p/${project}/${acceptId}`);
+});
+
+// Finding 1: the replay of a used id is looked up before the head and the criteria are checked.
+it("a replay of a used id answers the first 303 even after the task's head and criteria changed", async () => {
+  const id = ready()[3];
+  const request = crypto.randomUUID();
+  const shown = await bound(NAME, id);
+  const first = await press(NAME, id, { ...shown, request });
+  expect(first.status).toBe(303);
+  const setHead = (head: string) => runInDurableObject(ledger(NAME), async (_i: Ledger, st: DurableObjectState) => st.storage.sql.exec(`UPDATE items SET head = ? WHERE id = ?`, head, id));
+  await setHead("d".repeat(40));
+  try {
+    const replay = await press(NAME, id, { ...shown, request });
+    expect(replay.status).toBe(303);
+    expect(replay.headers.get("location")).toBe(first.headers.get("location"));
+    const other = await press(NAME, id, { head: shown.head, criteria: "0".repeat(64), request });
+    expect(other.status).toBe(303);
+    expect(await events(NAME, id, "land.requested")).toHaveLength(1);
+  } finally { await setHead(shown.head); }
+});
+
+// Finding 4: a refusal's page carries the nonce and the submit handler with its Land form.
+it("the Land form drawn beside a refusal carries the page's nonce and the handler that disables the button", async () => {
+  const id = ready()[3];
+  await resetJobs(NAME);
+  for (const fields of [{ head: "e".repeat(40) }, { criteria: "0".repeat(64) }, { request: "nope" }] as Record<string, string>[]) {
+    const res = await land(NAME, id, fields);
+    expect([Object.keys(fields)[0], res.status]).toEqual([Object.keys(fields)[0], Object.keys(fields)[0] === "request" ? 400 : 409]);
+    const body = await res.text();
+    expect(body).toContain(landForm(NAME, id));
+    expect(body).toContain("data-once");
+    const nonce = /<script nonce="([^"]+)">document\.addEventListener\("submit"/.exec(body)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(res.headers.get("content-security-policy")).toContain(`'nonce-${nonce}'`);
+  }
+});
+
+// Finding 5: the POST-level evidence for atomic recording.
+async function resetJobs(project: string) {
+  await runInDurableObject(ledger(project), async (_i: Ledger, st: DurableObjectState) => { st.storage.sql.exec(`DELETE FROM land_jobs`); st.storage.sql.exec(`DELETE FROM page_requests`); });
+}
+it("a POST that timed out while its Ledger call ran: the retry with its id is the replay, and one land.requested stands", async () => {
+  const id = ready()[3];
+  await resetJobs(NAME);
+  const before = (await events(NAME, id, "land.requested")).length;
+  const shown = { ...(await bound(NAME, id)), request: crypto.randomUUID() };
+  const slow = press(NAME, id, shown);
+  await Promise.race([slow.then(() => "answered"), new Promise((r) => setTimeout(() => r("timed out"), 0))]);
+  const retry = await press(NAME, id, shown);
+  expect(retry.status).toBe(303);
+  expect((await slow).status).toBe(303);
+  expect(await events(NAME, id, "land.requested")).toHaveLength(before + 1);
+});
+it("a POST whose Ledger call failed before completing leaves no id, and the retry is a first request", async () => {
+  const id = ready()[3];
+  await resetJobs(NAME);
+  const before = (await events(NAME, id, "land.requested")).length;
+  const shown = { ...(await bound(NAME, id)), request: crypto.randomUUID() };
+  await runInDurableObject(ledger(NAME), async (instance: Ledger) => {
+    const live = instance as unknown as { log: (...a: unknown[]) => number };
+    const real = live.log;
+    live.log = (...a: unknown[]) => { if (a[2] === "land.requested") { live.log = real; throw new Error("crash"); } return real.apply(instance, a); };
+  });
+  expect((await press(NAME, id, shown)).status).toBeGreaterThanOrEqual(500);
+  expect(await events(NAME, id, "land.requested")).toHaveLength(before);
+  expect((await runInDurableObject(ledger(NAME), async (_i: Ledger, st: DurableObjectState) => st.storage.sql.exec(`SELECT * FROM page_requests`).toArray())).length).toBe(0);
+  const retry = await press(NAME, id, shown);
+  expect(retry.status).toBe(303);
+  expect(await events(NAME, id, "land.requested")).toHaveLength(before + 1);
+});
+it("concurrent POSTs of one id, and of two ids, at one head record one land.requested", async () => {
+  const id = ready()[3];
+  await resetJobs(NAME);
+  let before = (await events(NAME, id, "land.requested")).length;
+  const shown = await bound(NAME, id);
+  const one = crypto.randomUUID();
+  const same = await Promise.all([1, 2, 3].map(() => press(NAME, id, { ...shown, request: one })));
+  expect(same.map((r) => r.status)).toEqual([303, 303, 303]);
+  expect(await events(NAME, id, "land.requested")).toHaveLength(before + 1);
+  await resetJobs(NAME);
+  before = (await events(NAME, id, "land.requested")).length;
+  const two = await Promise.all([crypto.randomUUID(), crypto.randomUUID()].map((request) => press(NAME, id, { ...shown, request })));
+  expect(two.map((r) => r.status)).toEqual([303, 303]);
+  expect(await events(NAME, id, "land.requested")).toHaveLength(before + 1);
+});
+
+// Finding 2: a retained job of a failed landing is not "queued" on Today.
+it("Today does not call a retained failed job queued: it names the failed step and draws Land again", async () => {
+  const name = Object.keys(seeded.byShape).filter((p) => p !== NAME)[1];
+  const id = ready(name)[1];
+  const shown = await bound(name, id);
+  expect((await land(name, id)).status).toBe(303);
+  expect(card(await (await get("/")).text(), name, id)).toContain("Queued to land");
+  await ledger(name).landEvent(id, "owner", "start", 1, { head: shown.head, attempt: 1 });
+  await ledger(name).landEvent(id, "owner", "regenerate", 5, { failed: true, tail: "generator exited 1", attempt: 1 });
+  const failed = card(await (await get("/")).text(), name, id);
+  expect(failed).not.toContain("Queued to land");
+  expect(failed).toContain(landForm(name, id));
+  expect(failed).toContain("failed at its regenerate step");
+  expect(failed).not.toContain("The head moved");
+  expect((await land(name, id)).status).toBe(303);
+  expect(card(await (await get("/")).text(), name, id)).toContain("Queued to land");
 });

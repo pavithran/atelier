@@ -28,6 +28,26 @@ export function easternClock(at: string): string {
   return `${ps.find((p) => p.type === "hour")?.value ?? "00"}:${ps.find((p) => p.type === "minute")?.value ?? "00"}`;
 }
 
+// What a task's landing is at its head now, for the page that draws Land
+// (Today's card and the task page alike): since when a job waits, the step a
+// landing failed at, and the head a dropped or waiting job was queued at when
+// the task has moved on. `stopped` is the newest land.stopped event, if any.
+export interface LandFacts {
+  head: string;
+  job: { at: string; head: string | null } | null;
+  landing: { failedStep: string | null; requeued?: string; head: string | null } | null;
+  stopped?: { reason?: unknown; shown?: unknown; current?: unknown } | null;
+}
+export function landStateOf(f: LandFacts): { queuedAt: string | null; failedStep: string | null; movedFrom: string | null } {
+  // A landing that failed at this head keeps its row, unoffered: it is not
+  // "queued" for the reader, who is shown the failure and the form.
+  const failedStep = f.landing?.failedStep && !f.landing.requeued && f.landing.head === f.head ? f.landing.failedStep : null;
+  const here = f.job && (f.job.head === null || f.job.head === f.head);
+  const moved = f.job && f.job.head !== null && f.job.head !== f.head ? f.job.head : null;
+  const dropped = !f.job && f.stopped?.reason === "stale_head" && f.stopped.current === f.head ? String(f.stopped.shown) : null;
+  return { queuedAt: here && !failedStep ? f.job!.at : null, failedStep, movedFrom: moved ?? dropped };
+}
+
 export const landAction = (project: string, id: string) => `/ui/${encodeURIComponent(project)}/${encodeURIComponent(id)}/land`;
 
 // The owner calls a Land form is drawn for: the revision is ready to land, or

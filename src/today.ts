@@ -23,7 +23,7 @@ import { vendorOf } from "./graph.ts";
 import { machineName, runnerNameOf } from "./runner-names.ts";
 import { criteriaOf } from "./criteria.ts";
 import { dayInZone } from "./time.ts";
-import { landBlock, LAND_CALLS } from "./page-actions.ts";
+import { landBlock, landStateOf, LAND_CALLS } from "./page-actions.ts";
 import { escapeText as e, page, type Live } from "./ui";
 import todayCss from "./today.css";
 
@@ -168,7 +168,7 @@ export interface TodayTile {
 export interface TodayCard {
   id: string; project: string; title: string; href: string; call: string; why: string; family: string; age: string;
   // Set for an owner call of land or accept: the head and criteria the Land form binds to, and whether a landing already waits at that head (t594).
-  land?: { head: string; criteria: string; queuedAt: string | null };
+  land?: { head: string; criteria: string; queuedAt: string | null; failedStep: string | null; movedFrom: string | null };
 }
 // What a Running row says of its run, from the task's progress record (or, for a review, its request). A field the
 // record does not hold is null and the page leaves it out.
@@ -313,7 +313,7 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
     const bound = p?.heads?.[r.id];
     const job = p?.landJobs?.find((j) => j.item === r.id);
     const land = call && LAND_CALLS.has(call) && bound?.head
-      ? { head: bound.head, criteria: bound.criteria, queuedAt: job && (job.head === null || job.head === undefined || job.head === bound.head) ? job.at : null }
+      ? { head: bound.head, criteria: bound.criteria, ...landStateOf({ head: bound.head, job: job ? { at: job.at, head: job.head ?? null } : null, landing: p?.now.landings[r.id] ?? null }) }
       : undefined;
     return { id: r.id, project: r.project, title: r.title, href: r.href, call: r.waitingOn.replace(/^you: /, ""), why: r.next, family: familyOf(r), age: age(at.getTime() - Date.parse(r.since)), ...(land ? { land } : {}) };
   });
@@ -407,7 +407,7 @@ const section = (id: string, title: string, count: string, body: string, more = 
   `<section id="${id}" aria-labelledby="${id}-h"><div class="today-sh"><h2 id="${id}-h">${title}</h2><span class="today-c">${e(count)}</span>${more}</div>${body}</section>`;
 
 function cardHtml(c: TodayCard, act: TodayAct | undefined): string {
-  const land = c.land ? `<div class="today-land">${landBlock({ project: c.project, id: c.id, head: c.land.head, criteria: c.land.criteria, back: "today", act: act ?? null, queuedAt: c.land.queuedAt, failedStep: null, movedFrom: null })}</div>` : "";
+  const land = c.land ? `<div class="today-land">${landBlock({ project: c.project, id: c.id, head: c.land.head, criteria: c.land.criteria, back: "today", act: act ?? null, queuedAt: c.land.queuedAt, failedStep: c.land.failedStep, movedFrom: c.land.movedFrom })}</div>` : "";
   return `<div class="today-ask"><div class="today-t"><a class="today-title" href="${e(c.href)}">${e(c.title)}</a></div><div class="today-meta"><span class="mono">${e(c.project)} · ${e(c.id)}</span>${chip(c.call, "you")}<span>${famDot(c.family)}waiting ${e(c.age)}</span></div><div class="today-why">${e(c.why)}</div>${land}<a class="today-open" href="${e(c.href)}" aria-label="Open ${e(c.id)}">Open →</a></div>`;
 }
 

@@ -6,7 +6,7 @@ import { nowBody, type NowView } from "./now.ts";
 import nowCss from "./now.css";
 import verdictCss from "./task-verdict.css";
 import { renderTaskVerdict } from "./task-verdict.ts";
-import { landBlock, LAND_CALLS } from "./page-actions.ts";
+import { landBlock, landStateOf, LAND_CALLS } from "./page-actions.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
 // reads fully without script; the Studio refreshes itself with a meta
@@ -2555,17 +2555,9 @@ export function reviewParts({ project: p, detail: d, diff, thread, full }: Revie
     : "";
   // Land, for an owner call of land or accept (t594): the form while nothing waits at this head, the queued landing in its place, the failed step or the moved head said.
   const landed = d.events.filter((x) => x.kind === "land.requested" || x.kind === "land.stopped").sort((a, b) => a.seq - b.seq).at(-1);
-  const failedStep = d.landing?.failedStep && !d.landing.requeued && d.landing.head === item.head ? d.landing.failedStep : null;
-  // A landing that failed at this head keeps its row, unoffered; it is not "queued" for the reader, who is shown the failure and the form.
-  const waiting = d.landJob && !failedStep && (d.landJob.head === null || d.landJob.head === item.head) ? d.landJob : null;
+  const landState = landStateOf({ head: item.head ?? "", job: d.landJob ?? null, landing: d.landing ?? null, stopped: landed?.kind === "land.stopped" ? landed.data : null });
   const land = item.head && LAND_CALLS.has(decision.action) && item.state === "submitted"
-    ? landBlock({
-      project: p.name, id: item.id, head: item.head, criteria: bindingOf(item).criteria, back: "task", act: d.pageAct ?? null,
-      queuedAt: waiting?.at ?? null,
-      failedStep,
-      movedFrom: waiting ? null : d.landJob?.head ?? (landed?.kind === "land.stopped" && landed.data.reason === "stale_head" && landed.data.current === item.head ? String(landed.data.shown) : null),
-      error: fail("land"),
-    })
+    ? landBlock({ project: p.name, id: item.id, head: item.head, criteria: bindingOf(item).criteria, back: "task", act: d.pageAct ?? null, ...landState, error: fail("land") })
     : "";
   // A refused form the page no longer draws (an Accept refused as not ready,
   // an override the project now forbids) has its refusal said first among
