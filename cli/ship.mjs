@@ -18,6 +18,7 @@ import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
 import { directionText, matchesAny } from "../src/rules.ts";
 import { runGroup } from "./group.mjs";
 import { pushCheckoutRemote } from "./checkout-push.mjs";
+import { failedStepReport } from "./ship-log.mjs";
 
 export const SHIP_FILE = "docs/atelier/ship.json";
 
@@ -695,6 +696,11 @@ export async function ship(ctx) {
       print(`${s.step}: ${r.passed ? "passed" : "FAILED"}${r.command ? `: ${r.command}` : ""}${r.status !== null && r.status !== undefined ? `, exit ${r.status}` : ""}${r.durationMs ? ` in ${(r.durationMs / 1000).toFixed(1)}s` : ""}${r.note ? ` (${r.note})` : ""}. Recorded.`);
     }
     ctx.stage(null);
+    const lost = results.at(-1)?.passed === false ? results.at(-1) : null;
+    if (lost) {
+      const report = failedStepReport({ dir: ctx.logDir, ship: id, step: s.step, output: lost.output, secrets: ctx.secrets, redact: ctx.redact, io: ctx.logIo });
+      if (report) print(report);
+    }
     // A run that failed and then passed on a retry does not stop the ship.
     const failed = results.at(-1)?.passed === false ? results.at(-1) : null;
     if (failed) {

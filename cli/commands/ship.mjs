@@ -81,6 +81,7 @@ export default async function shipCommand() {
       env: process.env,
       secrets: shipSecrets(process.env, [apiToken(), ...workspaceTokens(cwd)]),
       redact,
+      logDir: shipStateDir(gitDir),
       dryRun: args["dry-run"] === true,
       push: args.push === true,
       identity,
@@ -91,6 +92,14 @@ export default async function shipCommand() {
       checkpoint: (step, ran) => stayHeld(checkout, (lost) => deployed({ ...begun, result: "failed", step, ran: [...ran], note: lost.detail.slice(0, 1000) })),
     });
   } finally { process.off("exit", onExit); await checkout?.release(); }
+}
+
+// The folder ship keeps its state in: the deploy store's files and the logs of
+// failed steps.
+function shipStateDir(gitDir) {
+  const dir = join(gitDir, "atelier-auto-deploy");
+  mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
 // The process cli/post-merge.mjs starts after a merge, when the standing
@@ -109,8 +118,7 @@ async function deployOnLandingWorker() {
   const cwd = cfg.projects?.[name]?.path;
   if (!cwd || !existsSync(cwd)) die(`deploy on landing runs in ${name}'s registered checkout, and this machine has none`);
   const gitDir = git(["rev-parse", "--absolute-git-dir"], { cwd });
-  const dir = join(gitDir, "atelier-auto-deploy");
-  mkdirSync(dir, { recursive: true });
+  const dir = shipStateDir(gitDir);
   const print = (line) => appendFileSync(join(dir, "auto-deploy.log"), `${new Date().toISOString()} ${line}\n`);
   const store = fileDeployStore(dir);
   const env = { ...process.env };
