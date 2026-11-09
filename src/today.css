@@ -44,12 +44,41 @@
 .today-chip::before { content: ""; width: 7px; height: 7px; border-radius: 1px; transform: rotate(45deg); background: currentColor; }
 .today-chip.you { color: var(--on-accent); background: var(--signal); }
 .today-fam { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: var(--fam); flex: none; }
-.today-lane { display: grid; grid-template-columns: 22px 1fr 220px 90px; gap: 16px; align-items: center; padding: 14px 4px; border-bottom: 1px solid var(--line); }
-.today-lane .today-title { font-weight: 500; font-size: inherit; }
-.today-sub { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
-.today-st { font-size: 12px; color: var(--text-muted); margin-top: 6px; overflow-wrap: anywhere; }
-.today-el { text-align: right; font: 13px var(--font-mono); color: var(--text-muted); }
-.today-lane.stuck .today-el { color: var(--warn); }
+.today-runlist { border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--surface-raised); overflow: hidden; }
+.today-lane { display: grid; grid-template-columns: 14px minmax(0, 1fr) 250px 132px; gap: 18px; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--line); border-left: 3px solid var(--text-dim); }
+.today-lane:last-child { border-bottom: 0; }
+/* The row's edge is its actor's company, in the theme's own colours. */
+.today-lane.co-anthropic { border-left-color: var(--signal-hot); }
+.today-lane.co-openai { border-left-color: var(--observed); }
+.today-lane.co-google { border-left-color: var(--music-accent); }
+.today-lane.co-other { border-left-color: var(--text-dim); }
+.today-lane.quiet { background: rgba(var(--caution-rgb), .06); }
+.today-lane .today-title { font-weight: 600; font-size: inherit; }
+.today-lane .today-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; margin-top: 5px; }
+.today-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-dim); flex: none; }
+.today-where { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.today-mg { display: inline-flex; color: var(--text-muted); }
+.today-mg svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
+.today-rn { font: 12px var(--font-mono); color: var(--text-dim); margin-left: 2px; }
+.today-who { display: inline-flex; align-items: center; white-space: nowrap; }
+.today-att { color: var(--warn); font-weight: 500; white-space: nowrap; }
+/* Live: filled and breathing while the run changes. Quiet: a hollow diamond. Stalled: the same, in the fault colour. */
+.today-pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px rgba(var(--observed-rgb), .15); animation: today-breathe 2.4s var(--ease) infinite; }
+.today-pulse.quiet, .today-pulse.stalled { width: 9px; height: 9px; background: transparent; border: 2px solid var(--warn); border-radius: 2px; transform: rotate(45deg); box-shadow: none; animation: none; }
+.today-pulse.stalled { border-color: var(--bad); }
+.today-pulse.none { background: transparent; border: 2px solid var(--text-dim); box-shadow: none; animation: none; width: 8px; height: 8px; }
+@keyframes today-breathe { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+.today-st { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12.5px; color: var(--text-muted); margin-top: 7px; overflow-wrap: anywhere; }
+.today-stg { color: var(--text); font-weight: 500; }
+.today-how b { font: 500 12.5px var(--font-mono); color: var(--text); }
+.today-quiet { color: var(--warn); }
+.today-lane.quiet .today-how b { color: var(--warn); }
+.today-lane[data-pulse="stalled"] .today-quiet { color: var(--bad); font-weight: 500; }
+.today-cnt2 { display: none; margin-left: auto; font: 12px var(--font-mono); white-space: nowrap; }
+.today-el { text-align: right; display: flex; flex-direction: column; gap: 3px; font: inherit; color: inherit; }
+.today-big { font: 500 15px var(--font-mono); color: var(--text); }
+.today-cnt { font: 12px var(--font-mono); color: var(--text-muted); white-space: nowrap; }
+.today-lane.stuck .today-big { color: var(--warn); }
 .today-track { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
 .today-track i { height: 5px; border-radius: 3px; background: rgba(var(--text-rgb), .12); }
 .today-track i.done, .today-track i.now { background: var(--fam, var(--ok)); }
@@ -82,8 +111,13 @@ a.today-proj:hover, a.today-proj:focus-visible { border-color: var(--line-bright
   .today-tile .n { font-size: 28px; }
   .today-ask { grid-template-columns: 1fr; }
   .today-open { grid-row: auto; grid-column: 1; margin-top: 8px; justify-self: start; }
-  .today-lane { grid-template-columns: 14px 1fr 70px; }
+  .today-lane { grid-template-columns: 12px minmax(0, 1fr) auto; gap: 8px 12px; padding: 14px 14px 14px 13px; align-items: start; }
+  .today-pulse { margin-top: 6px; }
   .today-trk { grid-column: 2 / span 2; }
+  .today-lane .today-el { grid-column: 3; grid-row: 1; }
+  .today-rn { display: none; }
+  .today-lane .today-cnt { display: none; }
+  .today-cnt2 { display: inline; }
   .today-projects { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .today * { animation: none !important; transition: none !important; } }

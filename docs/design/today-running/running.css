@@ -1,0 +1,103 @@
+/* The Running section, three ways. Tokens from theme.css (src/theme.css) and base.css. */
+.where { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.where .mg { display: inline-flex; color: var(--text-muted); }
+.mg svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; }
+.where .rn { font: 12px var(--font-mono); color: var(--text-dim); margin-left: 2px; }
+.where.sm .rn { display: none; }
+.sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-dim); flex: none; }
+.who-m { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.att { color: var(--warn); font-weight: 500; white-space: nowrap; }
+.how b { font: 500 12.5px var(--font-mono); color: var(--text); }
+
+/* Live dot: filled and breathing while it changes; a hollow diamond when quiet. */
+.pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px rgba(var(--observed-rgb), .15); animation: breathe 2.4s var(--ease) infinite; }
+.pulse.quiet { background: transparent; border: 2px solid var(--warn); border-radius: 2px; transform: rotate(45deg); box-shadow: none; animation: none; width: 9px; height: 9px; }
+
+/* ---------- A ---------- */
+.list-a { border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--surface-raised); overflow: hidden; }
+.lane-a { display: grid; grid-template-columns: 14px minmax(0, 1fr) 250px 132px; gap: 18px; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--line); border-left: 3px solid var(--fam); }
+.lane-a:last-child { border-bottom: 0; }
+.lane-a .t { font-weight: 600; }
+.lane-a .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; margin-top: 5px; font-size: 13px; color: var(--text-muted); }
+.lane-a .id { color: var(--text-muted); }
+.lane-a .st { display: flex; gap: 10px; font-size: 12.5px; color: var(--text-muted); margin-top: 7px; }
+.lane-a .stg { color: var(--text); font-weight: 500; }
+.lane-a .el { text-align: right; display: flex; flex-direction: column; gap: 3px; }
+.lane-a .big { font: 500 15px var(--font-mono); }
+.lane-a .cnt { font: 12px var(--font-mono); color: var(--text-muted); white-space: nowrap; }
+.lane-a .cnt2 { display: none; margin-left: auto; font: 12px var(--font-mono); white-space: nowrap; }
+.sh .c { white-space: nowrap; }
+.lane-a.quiet { background: rgba(var(--caution-rgb), .06); }
+.lane-a.quiet .how { color: var(--warn); }
+.lane-a.quiet .how b { color: var(--warn); }
+
+/* ---------- B ---------- */
+.machines { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
+.mach { border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--surface-raised); padding: 14px 16px; }
+.mh { display: flex; align-items: center; gap: 8px; }
+.mh .mg { display: inline-flex; color: var(--text-muted); } .mh .mg svg { width: 18px; height: 18px; }
+.mn { font: 700 16px var(--font-display); }
+.use { margin-left: auto; font: 12px var(--font-mono); color: var(--text-muted); }
+.pips { display: flex; gap: 4px; margin: 12px 0 10px; }
+.pips i { flex: 1; height: 8px; border-radius: 3px; background: var(--fam); }
+.pips i.q { background: transparent; border: 2px solid var(--warn); }
+.pips i.idle { background: transparent; border: 1.5px dashed var(--line-bright); }
+.mach ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.mach li { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; font-size: 13px; align-items: baseline; }
+.mach li .rn { font: 12px var(--font-mono); color: var(--text-muted); }
+.mach li .tk { font: 500 12.5px var(--font-mono); color: var(--fam); }
+.mach li .md { color: var(--text-muted); min-width: 76px; text-align: right; }
+.mach li.quiet .tk { color: var(--warn); }
+.lane-b .sub { display: flex; flex-wrap: wrap; gap: 0 6px; align-items: center; }
+.lane-b .st span { white-space: normal; }
+.lane-b .wb { display: inline-flex; gap: 6px; align-items: center; }
+.lane-b .el .q { color: var(--warn); font-size: 12px; }
+.lane-b .where { color: var(--text-muted); }
+.lane-b .where .mg svg { width: 13px; height: 13px; }
+
+/* ---------- C ---------- */
+.axis-c, .lane-c { display: grid; grid-template-columns: minmax(0, 1fr) 380px 64px; gap: 20px; align-items: center; }
+.axis-c { padding: 0 20px 6px; }
+.ax { display: flex; justify-content: space-between; font: 11px var(--font-mono); color: var(--text-dim); }
+.list-c { border: 1px solid var(--line); border-radius: var(--radius-medium); background: var(--surface-raised); }
+.lane-c { padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.lane-c:last-child { border-bottom: 0; }
+.lane-c .t { font-weight: 600; }
+.lane-c .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; margin-top: 5px; font-size: 13px; color: var(--text-muted); }
+.lane-c .el { text-align: right; font: 500 14px var(--font-mono); }
+.rib { position: relative; height: 14px; border-bottom: 1px solid var(--line); }
+.rib .run { position: absolute; top: 2px; height: 10px; border-radius: 3px; background: var(--fam); }
+.rib .tail { position: absolute; top: 6px; height: 0; border-top: 2px dashed var(--warn); }
+.rib .tick { position: absolute; top: -2px; width: 4px; height: 18px; border-radius: 2px; background: var(--text); }
+.rib .nowline { position: absolute; right: -1px; top: -4px; bottom: -4px; width: 1px; background: var(--text-dim); }
+.lane-c .st { display: flex; gap: 10px; font-size: 12.5px; color: var(--text-muted); margin-top: 8px; }
+.lane-c .stg { color: var(--text); font-weight: 500; }
+.lane-c .cnt { margin-left: auto; font: 12px var(--font-mono); white-space: nowrap; }
+.lane-c.quiet .how, .lane-c.quiet .how b { color: var(--warn); }
+.legend { display: flex; gap: 18px; margin-top: 10px; font-size: 12px; color: var(--text-muted); }
+.legend i { display: inline-block; vertical-align: middle; margin-right: 6px; }
+.lg-run { width: 18px; height: 8px; border-radius: 3px; background: var(--text-muted); }
+.lg-tail { width: 18px; border-top: 2px dashed var(--warn); }
+.lg-tick { width: 4px; height: 12px; border-radius: 2px; background: var(--text); }
+
+@media (max-width: 760px) {
+  .lane-a { grid-template-columns: 12px minmax(0, 1fr) auto; gap: 8px 12px; padding: 14px 14px 14px 13px; align-items: start; }
+  .lane-a .pulse { margin-top: 6px; }
+  .lane-a .trk { grid-column: 2 / span 2; }
+  .lane-a .el { grid-column: 3; grid-row: 1; }
+  .lane-a .where .rn { display: none; }
+  .lane-a .st { flex-wrap: wrap; gap: 2px 10px; }
+  .lane-a .cnt { display: none; } .lane-a .cnt2 { display: inline; }
+  .lane-a .meta .id + .sep { display: none; } .lane-a .meta .id { width: 100%; }
+  .machines { grid-template-columns: 1fr; gap: 8px; }
+  .lane-b .wb { display: none; }
+  .lane-b .el { grid-column: 3; grid-row: 1; white-space: nowrap; }
+  .lane-b { grid-template-columns: 14px minmax(0,1fr) auto; }
+  .axis-c { display: none; }
+  .lane-c { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; padding: 14px; align-items: start; }
+  .lane-c .tl { grid-column: 1 / span 2; }
+  .lane-c .el { grid-column: 2; grid-row: 1; }
+  .lane-c .where .rn { display: none; }
+  .lane-c .st { flex-wrap: wrap; gap: 2px 10px; }
+  .legend { flex-wrap: wrap; gap: 6px 14px; }
+}

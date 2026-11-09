@@ -17,8 +17,10 @@ import { buildNow, EASTERN, readEvents, type NowProject, type NowRow, type NowVi
 import { buildPulse } from "./pulse.ts";
 import type { PostMergeRun } from "./post-merge.ts";
 import type { InboxEntry, Item } from "./rules.ts";
-import type { SituationFacts } from "./situation.ts";
+import { STALL_MS, type ProgressRecord, type SituationFacts } from "./situation.ts";
+import { splitActor } from "./floor.ts";
 import { vendorOf } from "./graph.ts";
+import { machineName, runnerNameOf } from "./runner-names.ts";
 import { dayInZone } from "./time.ts";
 import { escapeText as e, page, type Live } from "./ui";
 import todayCss from "./today.css";
@@ -28,6 +30,8 @@ export const PULSE_WINDOW_MS = 14 * 24 * 3_600_000;
 const PAGE = 500;
 const LANES_SHOWN = 12;
 const DOTS_SHOWN = 24;
+// A run whose progress has not changed for this long is drawn quiet, not live.
+export const QUIET_MS = 10 * 60_000;
 
 // ── the reader ─────────────────────────────────────────────────────────────
 
@@ -47,6 +51,9 @@ export interface TodaySource {
   // The actor that stands for the owner (the pulse counts the owner's decisions apart).
   owner: string;
 }
+
+// A review request as the ledger reports it; Today reads the head under review and the reviewer's runner when it has them.
+type ReviewFacts = NowProject["reviewRequests"][number] & { head?: string; runner?: string | null };
 
 export interface TodayProjectInput {
   // For buildNow: the events of the last 48 hours (and each task merged in them, whole).
@@ -152,7 +159,29 @@ export interface TodayTile {
   note: string;
 }
 export interface TodayCard { id: string; project: string; title: string; href: string; call: string; why: string; family: string; age: string }
-export interface TodayLane { id: string; project: string; title: string; href: string; family: string; holder: string; step: number; wait: boolean; status: string; elapsed: string; stuck: boolean }
+// What a Running row says of its run, from the task's progress record (or, for a review, its request). A field the
+// record does not hold is null and the page leaves it out.
+export interface TodayRun {
+  // The actor behind the row (the builder, or the reviewer), its model and its company, which colours the row's edge.
+  actor: string | null; model: string | null; company: Company;
+  // The model's family, for the dot beside its name.
+  family: string;
+  // The runner id as recorded, the machine it names and the runner's own name after the host.
+  runner: string | null; machine: string | null; runnerName: string | null;
+  attempt: number | null;
+  // live: changed under QUIET_MS ago; quiet: longer; stalled: STALL_MS quiet with no child process alive; none: no progress to judge by.
+  pulse: "live" | "quiet" | "stalled" | "none";
+  pulseTitle: string;
+  stage: string;
+  // What the run is doing, in three parts so the command can be set apart: "" + Bash + "running 40 s", "last" + Edit + "3 min ago", "" + null + "sends no commands · changed 2 min ago".
+  how: { before: string; command: string | null; after: string };
+  quiet: string | null;
+  // How long the run has gone, from its record's start; null without a record (the row then says how long its stage has).
+  started: string | null;
+  counts: string | null;
+}
+export type Company = "anthropic" | "openai" | "google" | "other";
+export interface TodayLane { id: string; project: string; title: string; href: string; family: string; holder: string; step: number; wait: boolean; run: TodayRun; elapsed: string; stuck: boolean }
 export interface TodayEvent { kind: "merge" | "deploy" | "failed"; at: string; time: string; title: string; sub: string; family: string; passed?: boolean }
 export interface TodayProjectCard { name: string; title: string; unread: boolean; need: number; running: number; lastMerge: string; days: number[]; family: string }
 export interface TodayView {
@@ -209,6 +238,54 @@ export function postMergeText(merges: string[] | null, states: Record<string, Po
   return merges.length ? { text: "post-merge checks passed", passed: true } : { text: "post-merge run not recorded", passed: false };
 }
 
+// "40 s", "12 min", "3 h": a duration the way a Running row reads it.
+const span = (ms: number) => ms < 60_000 ? `${Math.max(1, Math.floor(ms / 1000))} s` : age(ms);
+// Whole minutes without a change, as the quiet marker names them.
+const quietFor = (ms: number) => ms < 120 * 60_000 ? `${Math.floor(ms / 60_000)} min` : age(ms);
+const companyOf = (actor: string | null, owner: string): Company => {
+  const v = actor ? vendorOf(actor, owner) : "other";
+  return v === "anthropic" || v === "openai" || v === "google" ? v : "other";
+};
+
+// The run behind a Running row. A building task with a record of a run that has not ended is read from that record;
+// a review from its request (its head, its reviewer's runner); anything else, a record of an earlier run included,
+// has no progress to show, and only its stage and holder are said.
+function runOf(r: NowRow, p: TodayProjectInput, holder: string | null, owner: string, at: Date): TodayRun {
+  const stage = TRACK[Math.min(stepOf(r.stage), 4)];
+  const rec: ProgressRecord | undefined = r.stage === "building" ? p.now.progress[r.id] : undefined;
+  const review = r.group === "running" && r.stage !== "building"
+    ? (p.now.reviewRequests as ReviewFacts[]).find((q) => q.item === r.id && q.state === "claimed" && q.claimedBy) : undefined;
+  if (rec && !rec.endedAt) return recordRun(rec, stage, owner, at);
+  const actor = review?.claimedBy ?? holder;
+  const runner = review?.runner ?? null;
+  const head = review?.head ? review.head.slice(0, 8) : null;
+  return {
+    actor, model: actor ? splitActor(actor).model : null, company: companyOf(actor, owner), family: actor ? vendorOf(actor, owner) : "other",
+    runner, machine: runner ? machineName(runner) : null, runnerName: runner ? runnerNameOf(runner) : null,
+    attempt: null, pulse: "none", pulseTitle: review ? "review running" : "no progress reported yet", stage,
+    how: { before: "", command: null, after: review ? `Reviewing${head ? ` ${head}` : ""}` : r.waitingOn }, quiet: null, started: null, counts: null,
+  };
+}
+
+function recordRun(rec: ProgressRecord, stage: string, owner: string, at: Date): TodayRun {
+  const now = at.getTime(), quietMs = Math.max(0, now - Date.parse(rec.changedAt));
+  const stalled = quietMs >= STALL_MS && rec.childAlive === false;
+  const pulse = stalled ? "stalled" : quietMs >= QUIET_MS ? "quiet" : "live";
+  const quiet = stalled ? `stalled: no change for ${quietFor(quietMs)}, no child process` : pulse === "quiet" ? `no change for ${quietFor(quietMs)}` : null;
+  let how: TodayRun["how"] = { before: "", command: null, after: "no command reported yet" };
+  if (rec.telemetry === false) how = { before: "", command: null, after: `${splitActor(rec.actor).harness || "this harness"} sends no commands · changed ${span(quietMs)} ago` };
+  else if (rec.current) how = { before: "", command: rec.current.name, after: `running ${span(now - Date.parse(rec.current.since))}` };
+  else if (rec.last) how = { before: rec.last.error ? "last, failed:" : "last", command: rec.last.name, after: `${span(now - Date.parse(rec.last.at))} ago` };
+  const attempt = rec.attempt ?? rec.runs.length;
+  const counts = [rec.commits ? plural(rec.commits, "commit") : "", rec.changedFiles ? plural(rec.changedFiles, "file") : ""].filter(Boolean).join(" · ");
+  return {
+    actor: rec.actor, model: splitActor(rec.actor).model, company: companyOf(rec.actor, owner), family: vendorOf(rec.actor, owner),
+    runner: rec.runner, machine: machineName(rec.runner), runnerName: runnerNameOf(rec.runner),
+    attempt: attempt > 1 ? attempt : null, pulse, pulseTitle: quiet ?? `last change ${span(quietMs)} ago`, stage,
+    how, quiet, started: span(now - Date.parse(rec.startedAt)), counts: counts || null,
+  };
+}
+
 export function buildToday(inputs: TodayInputs, at: Date): TodayView {
   const view = { ...buildNow(inputs.projects.map((p) => p.now), at), unread: inputs.unread };
   const today = dayInZone(at, EASTERN);
@@ -217,16 +294,23 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
   const familyOf = (row: NowRow) => { const h = holders.get(`${row.project}/${row.id}`); return h ? vendorOf(h, inputs.owner) : "other"; };
 
   const needs = group("needs-you");
-  const live = [...group("running"), ...group("waiting").sort((a, b) => Number(!!b.stuck) - Number(!!a.stuck))];
+  const live = [...group("running"), ...group("waiting")];
   const landed = group("landed");
   const cards: TodayCard[] = needs.map((r) => ({
     id: r.id, project: r.project, title: r.title, href: r.href, call: r.waitingOn.replace(/^you: /, ""), why: r.next, family: familyOf(r), age: age(at.getTime() - Date.parse(r.since)),
   }));
-  const lanes: TodayLane[] = live.map((r) => ({
-    id: r.id, project: r.project, title: r.title, href: r.href, family: familyOf(r), holder: holders.get(`${r.project}/${r.id}`) ?? "no builder yet",
-    step: stepOf(r.stage), wait: r.group === "waiting", status: `${TRACK[Math.min(stepOf(r.stage), 4)]} · ${r.waitingOn}`,
-    elapsed: r.stuck ? `${age(at.getTime() - Date.parse(r.since))} · stuck` : age(at.getTime() - Date.parse(r.since)), stuck: !!r.stuck,
-  }));
+  const lanes: TodayLane[] = live.map((r) => {
+    const run = runOf(r, inputs.projects.find((p) => p.now.name === r.project)!, holders.get(`${r.project}/${r.id}`) ?? null, inputs.owner, at);
+    const waited = age(at.getTime() - Date.parse(r.since));
+    return {
+      id: r.id, project: r.project, title: r.title, href: r.href, family: familyOf(r), holder: holders.get(`${r.project}/${r.id}`) ?? "no builder yet",
+      step: stepOf(r.stage), wait: r.group === "waiting", run, elapsed: run.started ?? (r.stuck ? `${waited} · stuck` : waited), stuck: !!r.stuck,
+    };
+  });
+  // Running rows first. Of the waiting rows, a stalled run comes first, then a silent run a machine still reports
+  // on, then a task stuck at its stage, then the rest, so the twelve shown are the ones to look at.
+  const rank = (l: TodayLane) => (l.run.pulse === "stalled" ? 3 : l.run.pulse !== "none" ? 2 : l.stuck ? 1 : 0);
+  lanes.sort((a, b) => Number(a.wait) - Number(b.wait) || (a.wait ? rank(b) - rank(a) : 0));
 
   // Deploys of the Eastern day, from each project's ship.recorded events.
   const deploys = inputs.projects.flatMap((p) => {
@@ -308,9 +392,28 @@ function cardHtml(c: TodayCard): string {
   return `<div class="today-ask"><div class="today-t"><a class="today-title" href="${e(c.href)}">${e(c.title)}</a></div><div class="today-meta"><span class="mono">${e(c.project)} · ${e(c.id)}</span>${chip(c.call, "you")}<span>${famDot(c.family)}waiting ${e(c.age)}</span></div><div class="today-why">${e(c.why)}</div><a class="today-open" href="${e(c.href)}" aria-label="Open ${e(c.id)}">Open →</a></div>`;
 }
 
+// The machine glyphs of the chosen mockup (docs/design/today-running/a-running.html), by display name.
+const MACHINE_GLYPH: Record<string, string> = {
+  "Mac Studio": '<rect x="2.5" y="4" width="11" height="8" rx="2"/><path d="M5 9.5h1.5"/>',
+  "Mac mini": '<rect x="1.5" y="6.5" width="13" height="4.5" rx="1.6"/><path d="M4 9h1"/>',
+  "MacBook Pro": '<rect x="3" y="3.5" width="10" height="7" rx="1"/><path d="M1.5 12.5h13"/>',
+};
+const glyph = (machine: string) => MACHINE_GLYPH[machine] ? `<span class="today-mg"><svg viewBox="0 0 16 16" aria-hidden="true">${MACHINE_GLYPH[machine]}</svg></span>` : "";
+const sep = `<span class="today-sep"></span>`;
+
 function laneHtml(l: TodayLane): string {
+  const { run } = l;
   const cells = TRACK.map((_, i) => `<i class="${i < l.step ? "done" : i === l.step ? (l.wait ? "wait" : "now") : ""}"></i>`).join("");
-  return `<div class="today-lane${l.stuck ? " stuck" : ""}">${famDot(l.family)}<div><div class="today-t"><a class="today-title" href="${e(l.href)}">${e(l.title)}</a></div><div class="today-sub"><span class="mono">${e(l.project)} · ${e(l.id)}</span> · ${e(l.holder)}</div></div><div class="today-trk"><div class="today-track" aria-hidden="true">${cells}</div><div class="today-st">${e(l.status)}</div></div><div class="today-el">${e(l.elapsed)}</div></div>`;
+  const where = run.runner ? `<span class="today-where" title="${e(run.runner)}">${glyph(run.machine!)}${e(run.machine!)}${run.runnerName ? `<span class="today-rn">${e(run.runnerName)}</span>` : ""}</span>` : "";
+  const who = run.model ? `<span class="today-who">${famDot(run.family)}${e(run.model)}</span>` : `<span class="today-who">${e(l.holder)}</span>`;
+  const meta = [`<span class="mono">${e(l.project)} · ${e(l.id)}</span>`, where, who, run.attempt ? `<span class="today-att">attempt ${run.attempt}</span>` : ""].filter(Boolean).join(sep);
+  const how = `${run.how.before ? `${e(run.how.before)} ` : ""}${run.how.command ? `<b>${e(run.how.command)}</b> ` : ""}${e(run.how.after)}`;
+  const counts = (cls: string) => run.counts ? `<span class="${cls}">${e(run.counts)}</span>` : "";
+  const attrs = `data-task="${e(l.id)}" data-project="${e(l.project)}" data-pulse="${run.pulse}" data-company="${run.company}"${run.runner ? ` data-runner="${e(run.runner)}"` : ""}`;
+  return `<div class="today-lane co-${run.company}${l.stuck ? " stuck" : ""}${run.pulse === "quiet" || run.pulse === "stalled" ? " quiet" : ""}" ${attrs}><span class="today-pulse ${run.pulse}" title="${e(run.pulseTitle)}"></span>`
+    + `<div><div class="today-t"><a class="today-title" href="${e(l.href)}">${e(l.title)}</a></div><div class="today-sub">${meta}</div></div>`
+    + `<div class="today-trk"><div class="today-track" aria-hidden="true">${cells}</div><div class="today-st"><span class="today-stg">${e(run.stage)}</span><span class="today-how">${how}</span>${run.quiet ? `<span class="today-quiet">${e(run.quiet)}</span>` : ""}${counts("today-cnt2")}</div></div>`
+    + `<div class="today-el"><span class="today-big">${e(l.elapsed)}</span>${counts("today-cnt")}</div></div>`;
 }
 
 function eventHtml(ev: TodayEvent): string {
@@ -329,7 +432,7 @@ export function todayBody(v: TodayView): string {
   const empty = (line: string) => `<p class="today-empty">${blind ? "Not read." : line}</p>`;
   const merges = v.timeline.filter((ev) => ev.kind === "merge").length, ships = v.ships.filter((s) => s.shipped).length;
   const unread = v.unread.length ? `<p class="today-unread" role="alert">Not read: ${e(v.unread.join(", "))}. Their figures are not in the totals below.</p>` : "";
-  const running = v.lanes.length ? v.lanes.map(laneHtml).join("") + (v.lanesMore ? `<p class="meta">and ${v.lanesMore} more · <a href="/flow">Flow</a></p>` : "") : empty("No task is running.");
+  const running = v.lanes.length ? `<div class="today-runlist">${v.lanes.map(laneHtml).join("")}</div>` + (v.lanesMore ? `<p class="meta">and ${v.lanesMore} more · <a href="/flow">Flow</a></p>` : "") : empty("No task is running.");
   return `<div class="today"><div class="today-date">${e(v.dateText)}</div>${headline(v)}${unread}${tiles(v)}`
     + section("needs-you", "Needs you", String(v.cards.length), v.cards.length ? v.cards.map(cardHtml).join("") : empty("Nothing waits for you."))
     + section("running", "Running", String(v.tiles.running.value ?? 0), running, `<a href="/flow">Flow →</a>`)
