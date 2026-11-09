@@ -13,10 +13,20 @@ import { afterEach, beforeEach } from "node:test";
 
 const WAIT_MS = 10_000;
 
-// Whether argv (file first) starts `atelier runner`.
+// Whether argv (file first) starts `atelier runner`: the first word after the
+// atelier file that is not a flag or a flag's value, as cli/atelier.mjs takes
+// it, so `atelier.mjs --name home:a runner` counts.
+const VALUE_FLAGS = new Set(["name", "config", "project", "as"]);
 export function isRunnerStart(argv) {
   const at = argv.findIndex((a) => /(?:^|\/)atelier(?:\.mjs)?$/.test(a));
-  return at >= 0 && argv[at + 1] === "runner";
+  if (at < 0) return false;
+  for (let i = at + 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") return false;
+    if (!a.startsWith("-")) return a === "runner";
+    if (a.startsWith("--") && !a.includes("=") && VALUE_FLAGS.has(a.slice(2))) i++;
+  }
+  return false;
 }
 
 // The file's tree reaches every child, even one given an environment that
@@ -29,10 +39,22 @@ export function keepTestProcess(envPairs, pid) {
 
 // One set of runners per test that is running, innermost last.
 const open = [];
+// Every pid seen below a runner while it ran. A runner that crashes leaves
+// its children parented to launchd, outside its tree, so they are noted
+// while it lives (a child that lives less than SAMPLE_MS is missed).
+const SAMPLE_MS = 50;
+const seen = new WeakMap();
 
 // A runner the test running now has started, when argv says it is one.
 export function trackRunner(child, argv) {
-  if (open.length && isRunnerStart(argv)) open[open.length - 1].add(child);
+  if (!open.length || !isRunnerStart(argv)) return;
+  open[open.length - 1].add(child);
+  const pids = new Set();
+  seen.set(child, pids);
+  const sample = () => { for (const pid of below(child.pid)) pids.add(pid); };
+  const timer = setInterval(sample, SAMPLE_MS);
+  timer.unref();
+  child.once("exit", () => clearInterval(timer));
 }
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
@@ -49,8 +71,9 @@ const below = (root) => {
 
 // SIGKILL each runner and what it started, then wait until all are gone.
 export async function endRunners(children) {
-  const running = [...children].filter((c) => c.pid && c.exitCode === null && c.signalCode === null);
-  const pids = running.flatMap((c) => [c.pid, ...below(c.pid)]);
+  const all = [...children];
+  const running = all.filter((c) => c.pid && c.exitCode === null && c.signalCode === null);
+  const pids = [...new Set([...running.flatMap((c) => [c.pid, ...below(c.pid)]), ...all.flatMap((c) => [...(seen.get(c) ?? [])])])];
   for (const pid of pids.reverse()) { try { process.kill(pid, "SIGKILL"); } catch { /* it has ended */ } }
   const deadline = Date.now() + WAIT_MS;
   while (Date.now() < deadline && (running.some((c) => c.exitCode === null && c.signalCode === null) || pids.some(alive))) await new Promise((ok) => setTimeout(ok, 20));

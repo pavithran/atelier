@@ -42,11 +42,14 @@ test("a runner started with the test file's ATELIER_* variables scrubbed is not 
 
 test("isRunnerStart tells a runner's start from other atelier commands", () => {
   assert.equal(isRunnerStart(["/bin/node", "/x/cli/atelier.mjs", "runner", "--name", "home:a"]), true);
+  assert.equal(isRunnerStart(["/bin/node", "/x/cli/atelier.mjs", "--name", "home:a", "runner"]), true);
+  assert.equal(isRunnerStart(["/bin/node", "/x/cli/atelier.mjs", "--config=/x/c.json", "--name", "home:a", "runner", "--once"]), true);
+  assert.equal(isRunnerStart(["/bin/node", "/x/cli/atelier.mjs", "--name", "runner", "status"]), false);
   assert.equal(isRunnerStart(["/bin/node", "/x/cli/atelier.mjs", "status"]), false);
   assert.equal(isRunnerStart(["/bin/node", "/x/other.mjs", "runner"]), false);
 });
 
-test("every runner a test starts is gone before the test ends, whether it exited, ended running, threw or timed out", async () => {
+test("every runner a test starts is gone before the test ends, whether it exited, crashed, ended running, threw or timed out", async () => {
   const pids = join(dir, "pids");
   writeFileSync(pids, "");
   const env = { ...process.env, ATELIER_FIXTURE_PIDS: pids };
