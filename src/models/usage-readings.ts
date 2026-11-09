@@ -16,7 +16,9 @@ import { claimants, offersFor, type Dispatch, type SeenOffer } from "../dispatch
 import type { ProviderPause } from "../runners/memory.ts";
 import { isStaleProbe, type Readiness } from "../runners/readiness.ts";
 import type { UsageReport, UsageWindow } from "../usage/report.ts";
+import type { ProjectPolicy } from "../rules.ts";
 import type { ModelEntry } from "./pool.ts";
+import { eligibilityRefusal } from "./suggest.ts";
 
 // A reading older than this says nothing about the tool now, unless it holds
 // a limit that has not yet ended.
@@ -104,14 +106,10 @@ export function toolOf(entry: Pick<ModelEntry, "harness" | "family">): string | 
   return null;
 }
 
-// The model as the builder candidates list it: the entry, and the refusal
-// builderCandidates (src/models/suggest.ts) gave it, or null when eligible.
-export type AvailabilityEntry = Pick<ModelEntry, "id" | "harness" | "family" | "where"> & { refusal: string | null };
-
 export interface Availability {
   available: boolean;
   // Why not, or null when available. The eligibility refusal is
-  // builderCandidates' own sentence; the others are "not-offered",
+  // builderCandidates' own sentence (eligibilityRefusal); the others are "not-offered",
   // "signed-out", "stale-readiness", "provider-paused", "weekly-over-80"
   // and "limit-reached".
   reason: string | null;
@@ -126,8 +124,8 @@ export type ReadinessByRunner = Readonly<Record<string, Readiness | null | undef
 // project and job; harness ready and not stale; no provider pause before its
 // reset; weekly at most 80%; 5-hour not at its limit.
 export function availabilityOf(
-  entry: AvailabilityEntry,
-  ask: { project: string; job?: Dispatch["job"] | "build" },
+  entry: ModelEntry,
+  ask: { project: string; job?: Dispatch["job"] | "build"; policy: ProjectPolicy; owner?: string },
   readings: Readings,
   offers: readonly SeenOffer[] | null,
   readiness: ReadinessByRunner,
@@ -140,7 +138,8 @@ export function availabilityOf(
   const flags = have && have.size ? [] : [UNKNOWN_USAGE];
   const no = (reason: string, until: string | null = null): Availability => ({ available: false, reason, until, flags });
 
-  if (entry.refusal) return no(entry.refusal);
+  const refused = eligibilityRefusal(entry, ask);
+  if (refused) return no(refused);
 
   // Offered: the runners that would be handed this dispatch. With no live
   // runner nothing is restricted, as in builderCandidates.

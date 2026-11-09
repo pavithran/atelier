@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { availabilityOf, keepsStored, READING_TTL_MS, readingsFor, toolOf, UNKNOWN_USAGE, type AvailabilityEntry } from "../src/models/usage-readings.ts";
+import { availabilityOf, keepsStored, READING_TTL_MS, readingsFor, toolOf, UNKNOWN_USAGE } from "../src/models/usage-readings.ts";
+import type { ModelEntry } from "../src/models/pool.ts";
+import type { ProjectPolicy } from "../src/rules.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
 import type { ProviderPause } from "../src/runners/memory.ts";
 import type { Readiness } from "../src/runners/readiness.ts";
@@ -14,13 +16,15 @@ const MIN = 60_000, HOUR = 3_600_000;
 const win = (name: string, usedPercent: number, over: Partial<UsageWindow> = {}): UsageWindow => ({ name, usedPercent, resetsAt: null, at: iso(NOW - HOUR), ...over });
 const report = (tool: string, windows: UsageWindow[], over: Partial<UsageReport> = {}): UsageReport =>
   ({ tool, runner: "home:studio", at: iso(NOW - HOUR), windows, models: [], balances: [], notes: [], ...over });
-const entry = (over: Partial<AvailabilityEntry> = {}): AvailabilityEntry => ({ id: "gpt-6-astra", harness: "codex", family: "openai", where: "home", refusal: null, ...over });
+const entry = (over: Partial<ModelEntry> = {}): ModelEntry =>
+  ({ id: "gpt-6-astra", harness: "codex", where: "home", provider: "subscription", aliases: [], family: "openai", note: "", addedBy: "pavi", addedAt: "2026-10-13T12:00:00.000Z", ...over });
+const POLICY: ProjectPolicy = {};
 const offer = (runner: string, agent = "codex", model = "gpt-6-astra", over: Partial<SeenOffer> = {}): SeenOffer =>
   ({ runner, kind: "home", agents: [{ agent, models: [model] }], jobs: ["build", "review"], at: iso(NOW - MIN), ...over });
 const ready = (state: "ready" | "signed-out" | "unknown", probedAt: string, harness = "codex"): Readiness =>
   ({ harnesses: [{ harness, state, probedAt, recovery: null }], tokens: [] });
-const ASK = { project: "atelier", job: "build" as const };
-const check = (e: AvailabilityEntry, reports: UsageReport[], extra: { offers?: SeenOffer[] | null; readiness?: Record<string, Readiness>; pauses?: ProviderPause[]; ask?: typeof ASK } = {}) =>
+const ASK = { project: "atelier", job: "build" as const, policy: POLICY };
+const check = (e: ModelEntry, reports: UsageReport[], extra: { offers?: SeenOffer[] | null; readiness?: Record<string, Readiness>; pauses?: ProviderPause[]; ask?: typeof ASK } = {}) =>
   availabilityOf(e, extra.ask ?? ASK, readingsFor(reports, NOW), extra.offers === undefined ? [offer("home:studio")] : extra.offers, extra.readiness ?? {}, extra.pauses ?? [], NOW);
 
 test("readingsFor keeps the newest reading per tool and window by the window's own at, a null at counting as the report's arrival, and the higher percent on equal at", () => {
@@ -98,7 +102,7 @@ test("availabilityOf gives the first failing check in order, and an available mo
   const pause: ProviderPause = { harness: "codex", reason: "limit", resetAt: iso(NOW + 3 * HOUR), since: iso(NOW - HOUR), fallback: false };
   const signedOut = { "home:studio": ready("signed-out", iso(NOW - MIN)) };
   // Everything fails: eligibility is the reason.
-  assert.equal(check(entry({ refusal: "paused since 2026-11-01" }), over, { offers: [], readiness: signedOut, pauses: [pause] }).reason, "paused since 2026-11-01");
+  assert.match(check(entry({ state: "paused", stateAt: "2026-11-01T00:00:00.000Z" }), over, { offers: [], readiness: signedOut, pauses: [pause] }).reason!, /^paused since 2026-11-01/);
   // Eligible but not offered (live runner offers another model).
   assert.equal(check(entry(), over, { offers: [offer("home:studio", "codex", "other")], readiness: signedOut, pauses: [pause] }).reason, "not-offered");
   // Offered for the job: a runner offering no review job does not offer a review.
@@ -120,6 +124,20 @@ test("availabilityOf gives the first failing check in order, and an available mo
   assert.deepEqual([limited.available, limited.reason, limited.until], [false, "limit-reached", iso(NOW + 2 * HOUR)]);
   // All pass.
   assert.deepEqual(check(entry(), [report("codex", [win("weekly", 80), win("5-hour", 99)])]), { available: true, reason: null, until: null, flags: [] });
+});
+
+test("availabilityOf runs builderCandidates' eligibility itself, one check each, from a registry entry", () => {
+  const why = (e: ModelEntry, policy: ProjectPolicy = POLICY) => check(e, [], { ask: { ...ASK, policy } });
+  const state = why(entry({ state: "reserved" }));
+  assert.deepEqual([state.available, state.reason], [false, why(entry({ state: "reserved" })).reason]);
+  assert.match(state.reason!, /^reserved since/);
+  assert.match(why(entry({ roles: ["review"] })).reason!, /^not a builder; its roles are review/);
+  assert.match(why(entry({ noRole: [["review"]] })).reason!, /^not a builder; the entries running its model share no role/);
+  assert.equal(why(entry({ status: { state: "refused", at: iso(NOW - HOUR), by: "home:studio" } })).reason, "provider refused");
+  assert.equal(why(entry({ status: { state: "refused", at: iso(NOW - 30 * 24 * HOUR), by: "home:studio" } })).available, true);   // an old refusal no longer refuses
+  assert.equal(why(entry({ provider: "openai", where: "cloud" } as Partial<ModelEntry>)).reason, "per-token spending is not authorized");
+  assert.equal(why(entry(), { familyMode: { single: "anthropic" } } as ProjectPolicy).reason, "not one of anthropic's models (single-family mode)");
+  assert.equal(why(entry(), { familyMode: { single: "openai" } } as ProjectPolicy).available, true);
 });
 
 test("weekly over 80% gives the weekly window's resetsAt, or null when it has none", () => {
@@ -145,12 +163,12 @@ test("two runners offering a model: one ready is available; both unready, the ne
 test("no reading for the tool is available with the flag, and every disqualifier still gives its own reason", () => {
   assert.deepEqual(check(entry(), []), { available: true, reason: null, until: null, flags: [UNKNOWN_USAGE] });
   const pause: ProviderPause = { harness: "codex", reason: "limit", resetAt: iso(NOW + HOUR), since: iso(NOW - HOUR), fallback: false };
-  assert.equal(check(entry({ refusal: "provider refused" }), []).reason, "provider refused");
+  assert.equal(check(entry({ status: { state: "refused", at: iso(NOW - HOUR), by: "home:studio" } }), []).reason, "provider refused");
   assert.equal(check(entry(), [], { offers: [offer("home:studio", "codex", "other")] }).reason, "not-offered");
   assert.equal(check(entry(), [], { readiness: { "home:studio": ready("signed-out", iso(NOW - MIN)) } }).reason, "signed-out");
   assert.equal(check(entry(), [], { readiness: { "home:studio": ready("ready", iso(NOW - 40 * MIN)) } }).reason, "stale-readiness");
   assert.equal(check(entry(), [], { pauses: [pause] }).reason, "provider-paused");
-  for (const r of ["provider refused"]) assert.deepEqual(check(entry({ refusal: r }), []).flags, [UNKNOWN_USAGE]);
+  assert.deepEqual(check(entry({ state: "paused" }), []).flags, [UNKNOWN_USAGE]);
   // With no live runner, nothing about offers or readiness restricts the model.
   assert.equal(check(entry(), [], { offers: null }).available, true);
 });
@@ -158,6 +176,6 @@ test("no reading for the tool is available with the flag, and every disqualifier
 test("the module imports no ledger, fetch or clock", () => {
   const source = readFileSync(new URL("../src/models/usage-readings.ts", import.meta.url), "utf8");
   const code = source.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  assert.deepEqual([...code.matchAll(/^import .* from "([^"]+)"/gm)].map((m) => m[1]).sort(), ["../dispatch/rules.ts", "../runners/memory.ts", "../runners/readiness.ts", "../usage/report.ts", "./pool.ts"]);
+  assert.deepEqual([...code.matchAll(/^import .* from "([^"]+)"/gm)].map((m) => m[1]).sort(), ["../dispatch/rules.ts", "../rules.ts", "../runners/memory.ts", "../runners/readiness.ts", "../usage/report.ts", "./pool.ts", "./suggest.ts"]);
   assert.doesNotMatch(code, /\bfetch\(|Date\.now|new Date\(\)/);
 });
