@@ -91,11 +91,12 @@ export function mergesShippedBy(events: Pick<LedgerEvent, "kind" | "at" | "itemI
 }
 
 // mergesShippedBy for a 14-day read: with the read cut short, the first shipped
-// deploy in it has no known previous deploy, so its merges are not known.
-export function carriedIn(p: Pick<TodayProjectInput, "pulseEvents" | "ships" | "cutShort">): Map<string, string[]> {
-  const carried = mergesShippedBy(p.pulseEvents, p.ships);
+// deploy in it has no known previous deploy, so its merges are not known: null,
+// which is not the same as an empty list.
+export function carriedIn(p: Pick<TodayProjectInput, "pulseEvents" | "ships" | "cutShort">): Map<string, string[] | null> {
+  const carried: Map<string, string[] | null> = mergesShippedBy(p.pulseEvents, p.ships);
   const first = p.ships.filter((s) => s.result === "shipped").sort((a, b) => a.at.localeCompare(b.at))[0];
-  if (p.cutShort && first) carried.delete(first.ship);
+  if (p.cutShort && first) carried.set(first.ship, null);
   return carried;
 }
 
@@ -198,8 +199,9 @@ export const stepOf = (stage: string): number => STEP[stage] ?? 0;
 
 // What a deploy reads for its post-merge checks: passed only when every merge
 // it carried has a complete run, else the state of the first that has not, or
-// that none is recorded.
-export function postMergeText(merges: string[], states: Record<string, PostMergeRun["state"] | null>): { text: string; passed: boolean } {
+// that none is recorded. Unknown membership (null) is never passed.
+export function postMergeText(merges: string[] | null, states: Record<string, PostMergeRun["state"] | null>): { text: string; passed: boolean } {
+  if (!merges) return { text: "post-merge run not recorded", passed: false };
   for (const id of merges) {
     const state = states[id] ?? null;
     if (state !== "complete") return { text: state ? `post-merge run ${state}` : "post-merge run not recorded", passed: false };
@@ -229,7 +231,7 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
   // Deploys of the Eastern day, from each project's ship.recorded events.
   const deploys = inputs.projects.flatMap((p) => {
     const carried = carriedIn(p);
-    return p.ships.filter((s) => onDay(s.at, today)).map((s) => ({ p, s, merges: carried.get(s.ship) ?? [] }));
+    return p.ships.filter((s) => onDay(s.at, today)).map((s) => ({ p, s, merges: carried.get(s.ship) ?? (carried.has(s.ship) ? null : []) }));
   }).sort((a, b) => a.s.at.localeCompare(b.s.at) || a.s.ship.localeCompare(b.s.ship));
   const shipped = deploys.filter((d) => d.s.result === "shipped");
   const latest = deploys.at(-1);
@@ -243,7 +245,7 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
     ...deploys.map(({ p, s, merges }): TodayEvent => {
       if (s.result !== "shipped") return { kind: "failed", at: s.at, time: clockText(s.at), title: `Deploy of ${p.now.name} failed${s.step ? ` at ${s.step}` : ""}`, sub: s.note ?? "nothing shipped", family: "other" };
       const state = postMergeText(merges, p.postMerge);
-      return { kind: "deploy", at: s.at, time: clockText(s.at), title: `Deployed ${p.now.name} at ${s.head.slice(0, 8)}`, sub: `${plural(merges.length, "merge")} shipped · ${state.text}`, family: "other", passed: state.passed };
+      return { kind: "deploy", at: s.at, time: clockText(s.at), title: `Deployed ${p.now.name} at ${s.head.slice(0, 8)}`, sub: `${merges ? `${plural(merges.length, "merge")} shipped` : "merges shipped: not recorded"} · ${state.text}`, family: "other", passed: state.passed };
     }),
   ].sort((a, b) => b.at.localeCompare(a.at));
 

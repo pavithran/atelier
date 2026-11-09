@@ -138,6 +138,11 @@ it("a deploy today whose previous shipped deploy is 15 days old reads 'not recor
   const html = await today();
   expect(tile(html, "deploys").text).toContain("post-merge run not recorded");
   expect(tile(html, "deploys").text).not.toContain("post-merge checks passed");
+  // Fix round 2: unknown membership is not an empty one: the timeline gives no count.
+  // Other projects on this day ship no merges; the old-prev line is the one asserted.
+  const line = /Deployed old-prev[^<]*<\/div><div class="today-sub">([^<]*)</.exec(html)?.[1];
+  expect(line).toBe("merges shipped: not recorded · post-merge run not recorded");
+  expect(line).not.toMatch(/\b0 merges\b/);
 });
 
 // Criterion 9: an empty day, read from ledgers that hold nothing.
