@@ -11,8 +11,7 @@ if (process.argv.includes("--crash")) {
   const { appendFileSync } = await import("node:fs");
   const child = spawn(process.execPath, ["-e", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"], { stdio: "ignore" });
   appendFileSync(process.env.ATELIER_FIXTURE_PIDS, `${child.pid}\n`);
-  setTimeout(() => process.exit(1), 400);
-  await new Promise(() => {});
+  process.exit(1);
 }
 process.on("SIGTERM", () => {});
 process.on("SIGINT", () => {});

@@ -39,11 +39,17 @@ export function keepTestProcess(envPairs, pid) {
 
 // One set of runners per test that is running, innermost last.
 const open = [];
-// Every pid seen below a runner while it ran. A runner that crashes leaves
-// its children parented to launchd, outside its tree, so they are noted
-// while it lives (a child that lives less than SAMPLE_MS is missed).
+// Every pid seen below a runner while it ran, for children that left the
+// runner's process group (setsid); the group itself needs no sampling.
 const SAMPLE_MS = 50;
 const seen = new WeakMap();
+
+// Called with a spawn's options before it starts: a runner a test starts leads
+// a process group of its own (detached), so its children stay in that group
+// however briefly they live and whenever the runner dies.
+export function leadRunner(options) {
+  if (open.length && options && !options.detached && isRunnerStart(options.args ?? [])) options.detached = true;
+}
 
 // A runner the test running now has started, when argv says it is one.
 export function trackRunner(child, argv) {
@@ -58,6 +64,7 @@ export function trackRunner(child, argv) {
 }
 
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
+const groupAlive = (pgid) => { try { process.kill(-pgid, 0); return true; } catch (error) { return error.code === "EPERM"; } };
 const below = (root) => {
   const table = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" }).stdout ?? "";
   const rows = table.trim().split("\n").map((line) => line.trim().split(/\s+/).map(Number));
@@ -69,15 +76,18 @@ const below = (root) => {
   return found;
 };
 
-// SIGKILL each runner and what it started, then wait until all are gone.
+// SIGKILL each runner's process group, then each descendant sampled or found
+// now that is not in it, then wait until the groups and those pids are gone.
 export async function endRunners(children) {
   const all = [...children];
-  const running = all.filter((c) => c.pid && c.exitCode === null && c.signalCode === null);
-  const pids = [...new Set([...running.flatMap((c) => [c.pid, ...below(c.pid)]), ...all.flatMap((c) => [...(seen.get(c) ?? [])])])];
+  const groups = all.filter((c) => c.pid).map((c) => c.pid);
+  const pids = [...new Set([...all.filter((c) => c.pid && c.exitCode === null && c.signalCode === null).flatMap((c) => below(c.pid)), ...all.flatMap((c) => [...(seen.get(c) ?? [])])])];
+  for (const pgid of groups) { try { process.kill(-pgid, "SIGKILL"); } catch { /* it has ended */ } }
   for (const pid of pids.reverse()) { try { process.kill(pid, "SIGKILL"); } catch { /* it has ended */ } }
+  const waiting = () => groups.some(groupAlive) || pids.some(alive) || all.some((c) => c.pid && c.exitCode === null && c.signalCode === null);
   const deadline = Date.now() + WAIT_MS;
-  while (Date.now() < deadline && (running.some((c) => c.exitCode === null && c.signalCode === null) || pids.some(alive))) await new Promise((ok) => setTimeout(ok, 20));
-  const left = pids.filter(alive);
+  while (Date.now() < deadline && waiting()) await new Promise((ok) => setTimeout(ok, 20));
+  const left = [...groups.filter(groupAlive).map((g) => -g), ...pids.filter(alive)];
   if (left.length) throw new Error(`a runner this test started is still alive ${WAIT_MS / 1000} s after SIGKILL (pid ${left.join(", ")})`);
 }
 
