@@ -71,3 +71,14 @@ test("a build stopped at its limit fails as harness timed out, releases with tha
   const fits = fixture({ head: "after", jobBrief: brief(10), runsForMs: 9 * MIN });
   assert.notEqual((await runTask(assignment, config, "home:studio", fits.io)).reason, "harness timed out");
 });
+
+test("the brief states a fractional limit exactly, from the millisecond value the harness applies", async () => {
+  const sentence = (text) => /Your harness is stopped (.+?) after it starts\./.exec(text)?.[1];
+  const cases = [[0.001, 60, "0 minutes 0.06 seconds"], [1.5, 90_000, "1 minutes 30 seconds"], [45, 45 * MIN, "45 minutes"], [2.0005, 120_030, "2 minutes 0.03 seconds"]];
+  for (const [limit, ms, words] of cases) {
+    const { io, calls } = fixture({ head: "after", jobBrief: brief(limit) });
+    await runTask(assignment, config, "home:studio", io);
+    assert.equal(Math.round(ceilingOf(calls)), ms);
+    assert.equal(sentence(briefOf(calls)), words);
+  }
+});

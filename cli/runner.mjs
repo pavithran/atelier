@@ -1879,7 +1879,14 @@ export async function runTask(assignment, config, name, io) {
   // tells the builder, in the same minutes.
   let policyBuildMs = null;
   const harnessCeilingMs = () => policyBuildMs ?? config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
-  const harnessLimitLine = () => `Your harness is stopped ${Number((harnessCeilingMs() / 60_000).toFixed(2))} minutes after it starts. A run that reaches that limit fails as "harness timed out" and ends with no submit, so plan the work and run any long check once, early enough to finish and commit inside it.`;
+  // The ceiling in words, exact to the millisecond the harness applies: "N
+  // minutes", or "M minutes S seconds" with S at most three decimals.
+  const ceilingWords = (ms) => {
+    const whole = Math.round(ms);
+    const minutes = Math.floor(whole / 60_000), rest = whole - minutes * 60_000;
+    return rest === 0 ? `${minutes} minutes` : `${minutes} minutes ${Number((rest / 1000).toFixed(3))} seconds`;
+  };
+  const harnessLimitLine = () => `Your harness is stopped ${ceilingWords(harnessCeilingMs())} after it starts. A run that reaches that limit fails as "harness timed out" and ends with no submit, so plan the work and run any long check once, early enough to finish and commit inside it.`;
   // The leftovers of a build's harness (leftoverFiles); `leftovers` is what
   // remains after the one follow-up turn, for the failure and the run report.
   let leftovers = [], rejectedHead = null;
