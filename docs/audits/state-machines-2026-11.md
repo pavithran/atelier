@@ -12,8 +12,12 @@ this file. The fix round that added the post-merge run (section 5b) was
 written on main at `928978c0` (Merge t565), the parent of that fix commit;
 between the two, `src/ledger.ts` changes two lines in place at `:3436-3437`
 and `src/index.ts` gains two lines at `:4121-4123`, after every line this
-report cites, so every number holds at both. Unless a path is given, a bare
-line number is in `src/ledger.ts`. A test is named by the line of its `it(`
+report cites, so every number holds at both. The second fix round, which
+adds the waiver of a pending step and the enumeration by grep described
+below, was written at `928978c0` too: `src`, `cli` and `test` are identical
+between it and this commit's parent (`git diff --stat 928978c0 HEAD -- src
+cli test` prints nothing), so every number holds there as well. Unless a
+path is given, a bare line number is in `src/ledger.ts`. A test is named by the line of its `it(`
 or `test(` call.
 
 ## How to read this report
@@ -23,6 +27,17 @@ transitions with the function that makes them, the event each records and
 the test that enters it, and a short list of states reached by more than one
 path and transitions no test covers. The three cases PAVI saw on 2026-11-09
 are traced in their own section. The ranking comes last, with the commands.
+
+The rows were enumerated by method, not by reading. For each machine, every
+function that writes its state was listed with a grep over the assignments,
+the SQL and the `meta` writes, and for each writer the starting states its
+guards let through were written out and compared with the rows. The grep
+each machine used is named under its transitions table. Two reviews of this
+report found omissions that reading had left; the enumeration found more,
+each marked where it was added: a holder's claim of its own submitted task
+(machine 1), the landing Workflow's record that nothing writes any more
+(machine 5), the two approval events of a protected action (machine 6) and
+five `meta` key families of the runner (machine 7).
 
 What this workspace could and could not measure:
 
@@ -37,17 +52,19 @@ What this workspace could and could not measure:
 
 ## The machines, in brief
 
-| Machine | Where its state lives | States | Transition sites | States with more than one entry path | Transitions with no test |
+| Machine | Where its state lives | States | Transition rows | States with more than one entry path | Transitions with no test |
 | --- | --- | --- | --- | --- | --- |
-| 1 Task lifecycle | `items.state`, `items.owner`, `items.dispatch`, `items.blocked`, derived `events.stage` | 8 stored, 12 derived stages | 29 | 6 of 8 | 0 |
-| 2 Review requests and reviews | `review_requests.state` plus 8 flag columns, `reviews` | 7 | 24 | 4 | 3 |
+| 1 Task lifecycle | `items.state`, `items.owner`, `items.dispatch`, `items.blocked`, derived `events.stage` | 8 stored, 12 derived stages | 35 | 6 of 8 | 1 |
+| 2 Review requests and reviews | `review_requests.state` plus 8 flag columns, `reviews` | 7 | 25 | 4 | 3 |
 | 3 Criteria reviews | `criteria_reviews.state`, `criteria_revisions`, `criteria_resolutions` | 6 | 12 | 2 | 3 |
 | 4 Pre-reviews | `prereviews.state`, `same_exits` | 9 | 22 | 5 | 3 |
-| 5 Land jobs and landing | `land_jobs` (no state column), 7 `meta` keys, events | 8 | 21 | 6 | 2 |
-| 5b The post-merge run | `meta post-merge:RUN` JSON, `meta post-merge-item:ID`, `meta post-merge-active`, events `post-merge.*` | 6, plus step and attempt outcomes | 15 | 3 of 6 | 1 |
-| 6 Ships and deploy steps | events only, `deploy_notices`, `revert_notices`, a local file, `meta` | 7 | 19 | 4 | 2 |
-| 7 Runner runs and test slots | `runs`, `runner_offers`, 6 `meta` key families, host SQLite pool | 10 | 22 | 4 | 0 |
+| 5 Land jobs and landing | `land_jobs` (no state column), 8 `meta` keys, events | 8, plus the 8 stages of a record nothing writes | 20 | 7 | 3 |
+| 5b The post-merge run | `meta post-merge:RUN` JSON, `meta post-merge-item:ID`, `meta post-merge-active`, events `post-merge.*` | 6, plus step and attempt outcomes | 18 | 3 of 6 | 2 |
+| 6 Ships and deploy steps | events, `action_approvals`, `deploy_notices`, `revert_notices`, a local file, `meta` | 7, plus 4 approval statuses | 19 | 4 | 2 |
+| 7 Runner runs and test slots | `runs`, `runner_offers`, 12 `meta` key families, host SQLite pool | 15 | 27 | 4 | 0 |
 | 8 Stuck episodes | `stuck_episodes.kind`, `stuck_notices`, `stuck_ticks` | 4 | 5 | 1 | 0 |
+
+Transition rows counts the rows of the machine's transitions table.
 
 Plans and parts, the refresh queue, secret flags and revert recovery also
 carry state. They are named where a transition of a machine above touches
@@ -82,7 +99,7 @@ time an event is logged, and only the result lands in `events.stage`.
 | Transition | From, to (owner, dispatch, blocked) | Function | Event | Test |
 | --- | --- | --- | --- | --- |
 | create | none to open | `newItem` `:2862`, insert `:2898`; parts `:8876` | `item.created` `:2904` | `test/stage-events.test.mjs:82` |
-| claim | open or claimed to claimed; owner set, `claim_gen` up, `claim_pending` set | `claim` `:3539` via `assignOwner` `:3626`; rules `assertClaimable` `src/rules.ts:1167`, `assertDispatchedClaim` `src/dispatch/rules.ts:842` | `item.claimed` `:3629` | `test/ledger.spec.ts:389` |
+| claim | open or claimed to claimed, and submitted to claimed by its own holder; owner set, `claim_gen` up, `claim_pending` set | `claim` `:3539` via `assignOwner` `:3626`; rules `assertNotTerminal` `src/rules.ts:1161`, `assertClaimable` `src/rules.ts:1167` (not blocked, not merged, abandoned or accepted; owner null or the actor), `assertDispatchedClaim` `src/dispatch/rules.ts:842` (open only) | `item.claimed` `:3629` | `test/ledger.spec.ts:389`; from submitted, no test |
 | claim renewed, runner adopted | claimed to claimed | `claim` `:3615-3622` | `item.runner_adopted` `:3622` | `test/ledger.spec.ts:888` |
 | claim rolled back (branch failed) | claimed to the saved prior state; owner null | `unclaim` `:4454`, write `:4466`; caller `src/index.ts:1367` | `item.claim_failed` `:4468` | `test/ledger.spec.ts:413` |
 | release | claimed or submitted to open; owner and runner null; dispatch kept | `release` `:5455`, write `:5483`; rule `releaseAllowed` `:5406` | `item.released` `:5484` | `test/validation-blocked-task.spec.ts:76` |
@@ -124,13 +141,28 @@ release re-enters the queue in the same write. The queue itself is
 task's job goes back to its holder's runner through `heldJobs` `:4394`
 (`:4422-4423`).
 
+Rows enumerated with `grep -n 'update([^)]*state:' src/ledger.ts` (29
+writes, every one through `update`, whose `UPDATE items SET state` at
+`:11809` is the only such statement), `grep -n 'INSERT INTO items'
+src/ledger.ts` (`:2898`, `:8876`) and `grep -n 'assignOwner(' src/ledger.ts`
+(`:3626`, `:5450`); each write is a row above. The guard of each was then
+read for the states it lets through: `assertLive` (`src/rules.ts:2588`:
+claimed or submitted, not blocked) bounds submit, release and a live push;
+`assertBlockable` (`:1416`) the block; `handoffAllowed` (`:5156`) claimed,
+submitted or accepted; `gate` (`src/rules.ts:2207`) submitted;
+`assertNotTerminal` (`src/rules.ts:1161`) abandon, a recorded merge and a
+fast landing, which therefore take a blocked task too; `assertClaimable`
+(`src/rules.ts:1167`) the claim, which lets a submitted task's own holder
+through, a starting state the first draft did not list.
+
 ### States reached by more than one path
 
 - open: create (`:2898`, `:8876`), release (`:5483`), taken back by a
   dispatch (`:3783`), claim rollback (`:4466`), integration failed
   (`:10884`), part rework (`:5115`), plan reopened (`:10999`), unblock when
   `from` was open (`:5229`, `:10718`, `:10734`).
-- claimed: claim (`:3626`), handoff (`:5450`), push on accepted work
+- claimed: claim (`:3626`, from open, claimed or the holder's own submitted
+  task), handoff (`:5450`), push on accepted work
   (`:4672`), criteria change on accepted work (`:3082`), pre-review rework
   (`:6703`), unblock (`:5229`, `:10718`, `:10734`), claim rollback to a
   claimed snapshot (`:4466`).
@@ -146,7 +178,12 @@ task's job goes back to its holder's runner through `heldJobs` `:4394`
 
 ### Transitions with no test
 
-None found. The first draft of this report listed the task refresh that
+- A holder's claim of its own submitted task (`:3539`, let through by
+  `assertClaimable` `src/rules.ts:1167`), which `assignOwner` `:3626` returns
+  to claimed with a new claim generation. No test in `test/` claims a
+  submitted task; every claim test starts from open or claimed.
+
+The first draft of this report listed the task refresh that
 returns accepted work to submitted (`:11676`); `test/task-refresh.spec.ts:115`
 enters it, asserting the submitted state, the cleared acceptance and the
 `item.refreshed` event.
@@ -194,15 +231,15 @@ which no code does.
 | open to withdrawn, every runner skipped it | `renewSkippedRequest` `:9336` | `:9346` | `review.withdrawn` `:9347` | `test/land-routes.spec.ts:409` |
 | open to withdrawn by the developer | `withdrawReviewRequest` `:10133` | `:10155` | `review.withdrawn` `:10156` | `test/land-routes.spec.ts:552` |
 | open to withdrawn, model held | `withdrawHeldRequest` `:2066` from `poolChanged` `:2015`, `bindReview` `:9505` | `:2067` | `review.withdrawn` `:2068` | `test/review-requests.spec.ts:1050`, `test/model-set.spec.ts:168` |
-| to withdrawn, single-family switch | `withdrawForeignRequests` `:2587` | `:2596` | `review.withdrawn` `:2597` | `test/single-family.spec.ts:71` |
-| to withdrawn, admission withdrawn | `withdrawRequestsOf` `:2722` | `:2726` | `review.withdrawn` `:2727` | `test/reviewer-admission.spec.ts:163` |
-| to withdrawn and superseded, criteria changed | `criteriaChanged` `:3040` | `:3062`, `:3065` | `review.withdrawn` `:3063` | `test/review-head-moves.spec.ts:233` |
-| to withdrawn and moved, head moved | `withdrawStaleRequests` `:9977` from `update` `:11850`, `bindReview` `:9458`, `reviewWaiting` `:9242` | `:9981` | `review.withdrawn` `:9982` | `test/review-head-moves.spec.ts:89` |
+| open or claimed (`:2589`) to withdrawn, single-family switch | `withdrawForeignRequests` `:2587` | `:2596` | `review.withdrawn` `:2597` | `test/single-family.spec.ts:71` |
+| open or claimed (`:2723`) to withdrawn, admission withdrawn | `withdrawRequestsOf` `:2722` | `:2726` | `review.withdrawn` `:2727` | `test/reviewer-admission.spec.ts:163` |
+| open or claimed (`:3060`) to withdrawn and superseded, criteria changed | `criteriaChanged` `:3040` | `:3062`, `:3065` | `review.withdrawn` `:3063` | `test/review-head-moves.spec.ts:233` |
+| open or claimed (`:9978`) to withdrawn and moved, head moved | `withdrawStaleRequests` `:9977` from `update` `:11850`, `bindReview` `:9458`, `reviewWaiting` `:9242` | `:9981` | `review.withdrawn` `:9982` | `test/review-head-moves.spec.ts:89` |
 | open to withdrawn, part's reviewer rerouted | `rerouteReviewer` `:8501` | `:8521` | `review.withdrawn` `:8522` | `test/review-requests.spec.ts:607` |
 | open to withdrawn, part head moved in the tick | `reviewTick` | `:9072` | `review.withdrawn` `:9073` | no test |
-| to withdrawn, contributor or family or standing | `reviewTick` | `:9097` | `review.withdrawn` `:9098` | `test/review-requests.spec.ts:451` |
-| tier requests to withdrawn | `withdrawTierRequests` `:9960` from `:5038`, `:5576`, `:10853` | `:9964` | `review.withdrawn` `:9965` | no test |
-| to withdrawn, task merged or abandoned | `update` `:11793` | `:11823` | `review.withdrawn` `:11824` | `test/ledger.spec.ts:1825` |
+| open or claimed (`:9086`) to withdrawn, contributor or family; open only for standing (`:9095`) | `reviewTick` | `:9097` | `review.withdrawn` `:9098` | `test/review-requests.spec.ts:451` |
+| tier requests, open or claimed, or open only when so asked (`:9961-9962`), to withdrawn | `withdrawTierRequests` `:9960` from `:5038`, `:5576`, `:10853` | `:9964` | `review.withdrawn` `:9965` | no test |
+| open or claimed (`:11821`) to withdrawn, task merged or abandoned | `update` `:11793` | `:11823` | `review.withdrawn` `:11824` | `test/ledger.spec.ts:1825` |
 | verdict kept across a clean regeneration | `reviews` insert | `:4751` | `review.retained` `:4752`, `review.not_retained` `:4737` | `test/review-retention.spec.ts:63` |
 
 Every `review.*` kind the code writes, one site each: requested `:9870`,
@@ -211,6 +248,14 @@ asked_together `:9678`, claimed `:9522`, released `:10120`, unparsable
 `:5025`, tests_unrun `:5017`, round_cap `:5103`, rework `:5116`, overridden
 `:5566`, unasked `:7000`, finding `:7109`, finding_cause `:7137`, skipped
 `:9281`, diff `:9413`, retained `:4752`, not_retained `:4737`.
+
+Rows enumerated with `grep -n "UPDATE review_requests SET\|INSERT INTO
+review_requests" src/ledger.ts`: 27 lines, four inserts, 22 writes of `state`
+and the renewal of `claimedAt` at `:10095`, each a row or a storage entry
+above. `grep -rl review_requests src cli` names only `src/ledger.ts` and
+`src/how-data.ts`, which reads. The starting state of each write is the
+`WHERE state` of the statement or of the select that feeds it, cited in the
+first column.
 
 ### States reached by more than one path
 
@@ -251,20 +296,26 @@ superseded, and `test/ledger.spec.ts:1806` asserts that.
 | Transition | Function | Write | Event | Test |
 | --- | --- | --- | --- | --- |
 | to open | `askCriteriaReview` `:10365` via `requestCriteriaReview` `:10343`, `askCriteriaReviewAtFiling` `:4033`, `resumeRevertRecoveries` `:4120` | `:10414` | `criteria_review.requested` `:10417` | `test/criteria-review.spec.ts:118`; at filing `test/dispatch-on-approval.spec.ts:72` |
-| open to claimed | `claimCriteriaReview` `:10488` | `:10521` | `criteria_review.claimed` `:10522` | `test/criteria-review.spec.ts:118` |
-| claimed to approved or rejected | `addCriteriaReview` `:10592` | `:10647` | `criteria_review.approved` or `.rejected` `:10649` | `:118`, `:170` |
-| claimed to failed, by the runner | `failCriteriaReview` `:10664` | `:10675` | `criteria_review.failed` `:10679` | `test/criteria-review.spec.ts:170` |
+| open (`:10494`) to claimed | `claimCriteriaReview` `:10488` | `:10521` | `criteria_review.claimed` `:10522` | `test/criteria-review.spec.ts:118` |
+| claimed (`:10626`) to approved or rejected | `addCriteriaReview` `:10592` | `:10647` | `criteria_review.approved` or `.rejected` `:10649` | `:118`, `:170` |
+| claimed (`:10670`) to failed, by the runner | `failCriteriaReview` `:10664` | `:10675` | `criteria_review.failed` `:10679` | `test/criteria-review.spec.ts:170` |
 | claimed to failed, lapsed after 2 h (`src/review/criteria.ts:118`) | `lapseCriteriaReviews` `:10313` | `:10318` | `criteria_review.failed` `:10319` | `test/criteria-review.spec.ts:170` |
-| to withdrawn, criteria changed | `withdrawCriteriaReviews` `:10325` from `criteriaChanged` `:3068` | `:10329` | `criteria_review.withdrawn` `:10330` | `test/criteria-review.spec.ts:118` |
-| to withdrawn, stale revision found at claim | `claimCriteriaReview` `:10500` | `:10329` | same | no test |
-| to withdrawn, stale revision found at verdict | `addCriteriaReview` `:10621` | `:10329` | same | no test |
+| open or claimed (`:10328`) to withdrawn, criteria changed | `withdrawCriteriaReviews` `:10325` from `criteriaChanged` `:3068` | `:10329` | `criteria_review.withdrawn` `:10330` | `test/criteria-review.spec.ts:118` |
+| open or claimed to withdrawn, stale revision found at claim | `claimCriteriaReview` `:10500` | `:10329` | same | no test |
+| open or claimed to withdrawn, stale revision found at verdict | `addCriteriaReview` `:10621` | `:10329` | same | no test |
 | open to withdrawn, owner names another reviewer | `askCriteriaReview` | `:10381` | `criteria_review.withdrawn` `:10382` | no test |
-| to withdrawn, model held | `withdrawHeldCriteriaReview` `:2074` from `poolChanged` `:2024`, claim `:10514`, verdict `:10635` | `:2075` | `criteria_review.withdrawn` `:2076` | `test/criteria-review.spec.ts:694`, `:713`, `:736` |
-| to withdrawn, task closed | `update` | `:11815` | `criteria_review.withdrawn` `:11816` | `test/runner-keeps-server.test.mjs:471` |
+| open or claimed (`:2075`) to withdrawn, model held | `withdrawHeldCriteriaReview` `:2074` from `poolChanged` `:2024`, claim `:10514`, verdict `:10635` | `:2075` | `criteria_review.withdrawn` `:2076` | `test/criteria-review.spec.ts:694`, `:713`, `:736` |
+| open or claimed (`:11814`) to withdrawn, task closed | `update` | `:11815` | `criteria_review.withdrawn` `:11816` | `test/runner-keeps-server.test.mjs:471` |
 | finding resolved (no state change) | `resolveCriteriaFinding` `:10688` | `:10701` | `criteria_review.finding` `:10703` | `test/criteria-review.spec.ts:170` |
 
 Related: `criteria.revised` `:10229`; `criteria_review.needed` `:10765`, a
 log with no write.
+
+Rows enumerated with `grep -n "UPDATE criteria_reviews SET\|INSERT INTO
+criteria_reviews" src/ledger.ts`: nine lines, one insert and eight writes of
+`state`, each a row above. Three writes (`:10521`, `:10647`, `:10675`) carry
+no `WHERE state`; their starting state is the check in the code before them,
+cited in the first column. No other file writes the table.
 
 ### States reached by more than one path
 
@@ -318,10 +369,18 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 | to withdrawn, pool hold | `poolChanged` `:2030` | `prereview.withdrawn` | `:658` |
 | to withdrawn, hold at claim or verdict | `:6507`, `:6622` | `prereview.withdrawn` | `:668` |
 | to withdrawn, left the queue | `prereviewTick` `:6278` | `prereview.withdrawn` | `:380` |
-| to withdrawn, ineligible | `retirePrereview` `:6394` from `:6451`, `:6512` | `prereview.withdrawn` | `:571` |
+| to withdrawn, ineligible | `retirePrereview` `:6394` from `:6454`, `:6512` | `prereview.withdrawn` | `:571` |
 | open to withdrawn, task took the lease | `detachPrereviews` `:6419` | `prereview.withdrawn` | `:360` |
 | to withdrawn, task closed | `update` `:11819` | `prereview.withdrawn` | `test/runner-keeps-server.test.mjs:483` |
 | fence lifted, no state change | `unblock` `:5225-5226` | `prereview.retried` `:5226` | `test/prereview.spec.ts:209` |
+
+Rows enumerated with `grep -n "UPDATE prereviews SET\|INSERT INTO prereviews"
+src/ledger.ts`: six lines, the insert `:6345`, the claim `:6523`, its renewal
+`:6539`, the settle `:6401`, the detach flag `:6422`, and at `:6287` a
+rewrite of an open request's binding that gives it the main head first
+observed after it was made, with no state change; and with `grep -n
+"settlePrereview(" src/ledger.ts`: 19 callers, each a row above. Every
+settle starts from open or claimed (`:6401`), the claim from open (`:6523`).
 
 ### States reached by more than one path
 
@@ -347,6 +406,7 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 | main confirmed under the lease | `meta lease-main:ID` (`:6034`) |
 | merge reservation | `meta landing:ID` (`:5654`, `:5724`) |
 | checkout lease and the checkout's last head | `meta checkout-lease`, `meta checkout-head` (`:6073`, `:6078`); expiry `src/checkout-lease.ts:39-41` |
+| the landing Workflow's stage: lease, workspace, conflict, checks, review, merge, done or failed, with its round, the instance it replaced and its last status | `meta landing-workflow:ID`; `LandingWorkflowRecord`, `LandingWorkflowStage` `:428`. Written by `setLandingWorkflow` `:5769`, `claimLandingWorkflow` `:5787`, `setLandingWorkflowStage` `:5811` and `observeLandingWorkflowStatus` `:5819`; deleted with the task's other landing state at `:6946`, `:7011` and `:7619`. No route or CLI command calls a writer: the Workflow was removed, and `test/land-grant.test.mjs:326` requires its route to answer 404. The record is still read, by `fenceLandingInstance` `:5835` and by the t550 refusal in `renewProjectLanding` `:5997`. The first draft left it out. |
 
 ### Transitions
 
@@ -364,6 +424,7 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 | main confirmed under the lease | `confirmLeaseMain` `:6023`; route `src/index.ts:2362-2367` | none | `test/land-routes.spec.ts:300`; no CLI caller found |
 | checkout lease taken, renewed, released | `takeCheckoutLease` `:6090`, `renewCheckoutLease` `:6115`, `releaseCheckoutLease` `:6131`; route `src/index.ts:2380-2384`; CLI `cli/checkout-lease.mjs:27`, `cli/checkout-hold.mjs:11`, `cli/commands/merge.mjs:216` | `checkout.leased`, `checkout.moved` `:6109`, `checkout.released` `:6141`; renew logs none | `test/checkout-lease.test.mjs:180`, `:229`, `:363` |
 | merge begun (step `merge-main`) | `beginLandMerge` `:11382` (`:11396-11397`); route `src/index.ts:3158-3162`; CLI `cli/commands/merge.mjs:236` | none | `test/land-node.test.mjs:247` |
+| Workflow stage recorded or instance replaced | `setLandingWorkflowStage` `:5811`, fenced to the recorded instance `:5800`; `claimLandingWorkflow` `:5787`; no production caller | none | written only by tests of what reads it: `test/land-routes.spec.ts:324`, `test/prereview.spec.ts:209` |
 | merge reservation begun or cancelled | `beginLanding` `:5669` (`:5725`), with `assertLandingChecks` `src/landing-checks.ts:6`; `cancelLanding` `:5659` (`:5665`); route `src/index.ts:3460-3484` | `landing.begun`, `landing.cancelled` | `test/stage-events.test.mjs:243` |
 | each step, and a failed step | `landEvent` `:6839` (`LAND_STEPS` `:477`, log `:6866`), `noteLandingStep` `:6883`; CLI `cli/land.mjs:1114`, `cli/commands/merge.mjs:200`, `:414`, `:543`, `:550`, `:601-667` | `land.<step>` | `test/land-routes.spec.ts:643`; failures `test/land-node.test.mjs:53`, `:77` |
 | review verdict read | `landingVerdict` `src/landing-verdict.ts:33`, read `cli/land.mjs:982` | `land.review` | `test/land-node-2.test.mjs:138` |
@@ -371,6 +432,14 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 | lease released | `cancelProjectLanding` `:6048` (`:6058`); CLI `cli/land.mjs:284`, `:546`, `cli/commands/merge.mjs:575` | `landing.released` | `test/land-routes.spec.ts:195` |
 | queued to removed by cancel | `cancelLand` `:11407`, delete `:11418`; refused past the merge `:11413`; CLI `cli/commands/land.mjs:37` | `land.cancelled` `:11420` | `test/land-node-2.test.mjs:75` |
 | queued to removed because the task merged or was abandoned | lazily in `landJobs` `:11441`; neither `merged` nor `abandon` deletes the row | none | `test/land-job.spec.ts:42`, `:72`, `:95` |
+
+Rows enumerated with `grep -n land_jobs src/ledger.ts` (inserts `:2398`,
+`:11367`, `:11372`; the update of `at` `:11366`; deletes `:11418`, `:11441`)
+and `grep -n "INTO meta\|DELETE FROM meta" src/ledger.ts`, read for the keys
+`landing`, `landing-record`, `landing-queue`, `landing-lease`, `lease-main`,
+`checkout-lease`, `checkout-head` and `landing-workflow`. The last was
+missing from the first draft; `deployed-main` (`:8729`) and `main-head`
+(`:10906`) are the project's record of main, not a landing's.
 
 ### States reached by more than one path
 
@@ -381,12 +450,17 @@ Every settled state is written by `settlePrereview` (`:6400`, write
 - `meta landing:ID` deleted: `merged` `:6945`, `recordMerge` `:7618`,
   `cancelLanding` `:5664`.
 - `failedStep` set: by `cli/land.mjs` or by `cli/commands/merge.mjs`.
+- `meta landing-workflow:ID` deleted: `merged` `:6946`, `abandon` `:7011`,
+  `recordMerge` `:7619`.
 
 ### Transitions with no test
 
 - The kind `land.cancelled` is never asserted in `test/`; the behaviour is
   tested at `test/land-node-2.test.mjs:75`.
 - `confirmLeaseMain` has a route test and no CLI caller.
+- The landing Workflow's record (`:5769-5819`) has no production writer at
+  all; the tests that write it (`test/land-routes.spec.ts:324`,
+  `test/prereview.spec.ts:209`) test the refusals that read it.
 
 ## 5b. The post-merge run
 
@@ -430,16 +504,28 @@ set by the pure functions of `src/post-merge.ts`, which the ledger calls.
 | uncertain or running to failed, reconciled as no-effect | `:6832` via `recoverPostMerge` `src/post-merge.ts:152-162` (`:161`); CLI `cli/land.mjs:231` | `post-merge.reconcile` | `test/post-merge.spec.ts:101`; unit `test/post-merge.test.mjs:63` |
 | uncertain or running to pending or complete, reconciled as completed | same `:161`; a deploy needs the verified deployment `:154-157`, `src/index.ts:2416` | `post-merge.reconcile` | no test |
 | failed to pending, retry | `src/post-merge.ts:169-172`; CLI `cli/land.mjs:231`, then the executor `:236` | `post-merge.retry` | `test/post-merge.spec.ts:101`; unit `test/post-merge.test.mjs:41` |
-| failed, or reserved with a recorded merge, to pending, reserved or complete, step waived | `src/post-merge.ts:173-175`; the reserved waiver `:167` | `post-merge.skip` | `test/post-merge.spec.ts:68`, `:127`; unit `test/post-merge.test.mjs:77`; CLI `:96` |
+| failed to pending or complete, step waived | `recoverPostMerge` `src/post-merge.ts:173-175`; the guard `:168` refuses running, uncertain and reserved and lets failed and pending through | `post-merge.skip` | `test/post-merge.spec.ts:68` (the waiver at `:91`); unit `test/post-merge.test.mjs:41` (`:57`) |
+| pending to pending or complete, step waived: the next step has no attempt, or a retried one | same `:173-175`, through the same guard `:168`; `paths` is set once pending, so `:175` cannot give reserved | `post-merge.skip` | no test: every waiver in `test/` starts from failed or reserved |
+| reserved with a recorded merge to reserved, pending or complete, step waived | same `:173-175`; the reserved waiver `:167` | `post-merge.skip` | `test/post-merge.spec.ts:127` (`:138`); unit `test/post-merge.test.mjs:77` (`:83`); CLI `:96` (`:99`) |
 | refusal: a merge of another task while a run is not complete | `assertPostMergeFree` `:6795-6797`, from `beginLanding` `:5670`, `beginProjectLanding` `:5930`, `merged` `:6937`, `landedFast` `:7529`, `recordMerge` `:7587` | none | `test/post-merge.spec.ts:68`, `:127`; the CLI's wait on that refusal, against a fake server, `test/land-4.test.mjs:145` |
 | a merged task's land job kept while the run is open, dropped when complete or failed | `landJobs` `:11440-11441` | none | `test/land-job.spec.ts:72`, `:95` |
 | the executor runs each pending step in turn, then hands a failed check to the revert | `executePostMerge` `cli/post-merge.mjs:176-216`, from `cli/land.mjs:305` and `:236`; the barrier the land queue reads before starting another landing `cli/land-queue.mjs:131`, `:182` | the events above | `test/post-merge.test.mjs:164`, `:258`, `:381`; `test/land-queue.test.mjs:102`, `:137` |
+
+Rows enumerated with `grep -n "run.state = " src/post-merge.ts` (`:90`,
+`:98`, `:106`, `:145`, `:161`, `:172`, `:175`), the reservation at `:85`, and
+`grep -n "savePostMerge(" src/ledger.ts` (`:5663`, `:5722`, `:6783`, `:6814`,
+`:6833`, `:6943`); for each write the guard's starting states were read. The
+guard at `:168` refuses running, uncertain and reserved, short of the
+reserved waiver at `:167`, so retry and skip both start from failed or
+pending; retry then refuses pending at `:170`, and skip does not. The first
+draft wrote failed and reserved for the skip and missed pending, which the
+second review caught.
 
 ### States reached by more than one path
 
 - pending: prepared (`src/post-merge.ts:98`), a step passed with more to
   run (`:145`), reconciled as completed (`:161`), retry (`:172`), a waiver
-  with more to run (`:175`).
+  with more to run (`:175`), from failed or from pending.
 - complete: prepared with no step applying (`:98`), the last step passed
   (`:145`), reconciled as completed (`:161`), the last step waived (`:175`),
   a reservation cancelled before the merge (`:5663`).
@@ -454,6 +540,12 @@ set by the pure functions of `src/post-merge.ts`, which the ledger calls.
 - Reconciling an uncertain attempt as completed (`src/post-merge.ts:161`,
   resolution `completed`). No test in `test/` passes that resolution; the
   no-effect resolution is tested at `test/post-merge.spec.ts:101`.
+- Waiving a pending step (`src/post-merge.ts:173-175`, entered with the run
+  pending: the next step has no attempt, or a retried one). Every waiver in
+  `test/` starts from failed (`test/post-merge.spec.ts:91`,
+  `test/post-merge.test.mjs:57`) or from a reserved run with a recorded merge
+  (`test/post-merge.spec.ts:138`, `test/post-merge.test.mjs:83`, `:99`); none
+  from pending.
 
 Also: `post-merge-item:ID` is deleted at `:5719` only when the policy is
 cleared and the last run was a cancelled reservation; with the policy kept,
@@ -474,6 +566,7 @@ local file and a meta key for revert recovery.
 | begun | memory only: `ctx.began` (`cli/ship.mjs:636`, `cli/commands/ship.mjs:87`) |
 | step started | event `action.started` (`src/actions.ts:224`) |
 | approval consumed | event `action.consumed` (`src/actions.ts:216`) |
+| approval active, used, withdrawn or expired | `action_approvals (n, id, json)` (`src/actions.ts:142`); the status is derived by `approvalStatus` `:62` from the row's `used`, `withdrawn` and `expiresAt` |
 | step ran, passed or failed | event `action.ran` (`src/actions.ts:239`) |
 | shipped, or failed at a step, with `warning` and `final` | event `ship.recorded` (`:6163`), read back by `deploys` `:6217` |
 | final failure announced | `deploy_notices (ship, at)` (`:6160`, insert `:6164`) and event `deploy.failed_notice` (`:6166`) |
@@ -487,6 +580,8 @@ local file and a meta key for revert recovery.
 | refused before running | `ship` `cli/ship.mjs:549`, refusals `:607-608` | none | `test/ship.test.mjs:716`, `:318` |
 | checkout lease taken | `holdCheckout` `cli/commands/ship.mjs:28` | `checkout.leased` | `test/checkout-lease.test.mjs:304` |
 | begun | `cli/ship.mjs:636` | none | no test |
+| approval given | `approveAction` `src/actions.ts:165`, insert `:178`; ledger `:7726`; route `src/actions-api.ts:37`; CLI `cli/commands/approve.mjs:27` | `action.approved` `:179` | `test/actions.test.ts:60` |
+| approval withdrawn, while active | `withdrawAction` `src/actions.ts:183`, write `:190`; ledger `:7736`; route `src/actions-api.ts:53`, `:66` | `action.withdrawn` `:191` | `test/actions.test.ts:100` |
 | approval consumed | `consumeAction` `src/actions.ts:198`; ledger `:7740`; route `src/actions-api.ts:47`; CLI `cli/ship.mjs:647` | `action.consumed` | `test/actions.test.ts:77` |
 | step started | `startActionRun` `src/actions.ts:221`; CLI `cli/ship.mjs:620-627` | `action.started` | `test/ship-stuck.test.mjs:61` |
 | step ran | `recordActionRun` `src/actions.ts:228`; CLI `cli/ship.mjs:615`, `:697` | `action.ran` | `test/ship.test.mjs:351` |
@@ -501,6 +596,15 @@ local file and a meta key for revert recovery.
 | revert notice, recovery filing | `recordRevertNotice` `:6185` (`:6203`); route `src/index.ts:2396-2398` | `revert.notice` | `test/auto-revert-ledger.test.mjs:211` |
 | recovery filing to recovering to complete, on the tick | `resumeRevertRecoveries` `:4096` (`:4106`, `:4113`) | `item.dispatched` for the fix task | `test/auto-revert-ledger.test.mjs:125`, `:299` |
 | revert could not land | `wake` `cli/post-merge.mjs:484` | `ship.recorded`, step `auto-revert` | `test/auto-revert-production.test.mjs:114` |
+
+Rows enumerated with `grep -rn 'result: "failed"\|result: "shipped"'
+cli/ship.mjs cli/commands/ship.mjs cli/post-merge.mjs` (eight writers of
+`ship.recorded`, each a row above), `grep -n '"action\.' src/actions.ts`
+(five kinds: approved `:179`, withdrawn `:191`, consumed `:216`, started
+`:224`, ran `:239`; the first two were missing from the first draft) and
+`grep -n "deploy_notices\|revert_notices" src/ledger.ts` (the inserts `:6164`
+and `:6206`), with the two writes of the recovery record at `:4101` and
+`:6204`.
 
 ### States reached by more than one path
 
@@ -531,6 +635,11 @@ local file and a meta key for revert recovery.
 | claim refused | `meta claim-refused:ID:R` (`:4328`) |
 | run report | `runs (id, json)` (`:1039`); outcomes `src/models/reliability.ts:33-39` |
 | live log | `meta runner-log:ID` (`:3281`), `src/runner-log.ts:30` |
+| told to forget a task's remembered stop | `meta runner-forget:R` (`:2526`); deleted once the runner's memory no longer holds the task, `:2497` |
+| the offer by token, with its age | `meta runner-offer:TOKEN` (`:3424`), judged against `OFFER_LIVE_MS`; `runner-offer-polls:TOKEN` is deleted at `:3427` and written nowhere |
+| the reports a poll authorised | `meta runner-report:TOKEN:ID:ACTOR:ROLE` (`:3440`), checked by `assertRunnerReport` `:3445` |
+| a build's progress | `meta task-progress:ID` (`:3316`) |
+| a core hold, since when and until | `meta core-holds` (`:4187`) |
 | test slot: queued, started, claimed, idle-reserved | the host pool `/tmp/atelier-test-slots-v2/pool.sqlite`, table `pool(id = 1, data)` (`cli/load.mjs:15`, `:114`) |
 
 No `run.*` or `runner.*` event kind exists. A run is visible in the ledger
@@ -544,6 +653,11 @@ the v2 path.
 | Transition | Function | Event | Test |
 | --- | --- | --- | --- |
 | offer recorded | `askQueue` `:2452` to `putRunnerOffer` `:2443`; route `src/index.ts:1816`, `:1836` | none | `test/runner-routes.test.mjs:670` |
+| offer recorded by token, cut of forgotten tasks | `runnerPoll` `:3419` (`:3424`); `cutForgotten` `:2492` from `askQueue` `:2455`; route `src/index.ts:1883` | none | `test/runner-routes.test.mjs:1086` |
+| a remembered stop forgotten | `forgetSkip` `:2511` (`:2522`, `:2526`); route `src/index.ts:1953`, and on a review request `:3099`; CLI `cli/commands/forget-skip.mjs:11`; the runner drops it at `cli/runner.mjs:4752` | none | `test/review-request-forget.test.mjs:126`; `test/runner-keeps.test.mjs:371` |
+| report authorised | `runnerPoll` `:3440`; checked by `assertRunnerReport` `:3445` from `src/index.ts:5029-5049` | none | `test/claimed-task-review-offer.spec.ts:53` |
+| progress recorded | `recordProgress` `:3297` (`:3316`); route `src/index.ts:1852-1856` | none | `test/progress.test.mjs:194`, `:318` |
+| core hold begun, kept or dropped | `dispatchWaiting` `:4157` (`:4187`) | none | `test/dispatch-hold.spec.ts:52` |
 | heartbeat | `recordRunnerPolls` `:4221`; route `src/index.ts:1863-1864`; CLI `cli/runner.mjs:5374`, `:5380` | none | `test/orphaned-claim.spec.ts:91` |
 | dispatched | `dispatch` `:3749` | `item.dispatched` `:3787` | `test/runner-routes.test.mjs:717` |
 | claimed | `claim` `:3539` | `item.claimed` `:3629` | `test/runner-routes.test.mjs:717` |
@@ -565,6 +679,14 @@ the v2 path.
 | slot wait cancelled | `acquireSlot` `:218` | none | `test/load.test.mjs:86` |
 | capacity set | `setSlotCapacity` `cli/load.mjs:143` | none | `test/load.test.mjs:227` |
 | slot trial applied | `applySlotTrial` `src/runners/slot-trial.ts:54` | none | `test/slot-trial.test.mjs:90` |
+
+Rows enumerated with `grep -n "INTO meta\|DELETE FROM meta" src/ledger.ts`,
+read for every key named `runner-*`, `run-*`, `claim-*`, `task-progress` and
+`core-holds`, with `grep -n "runner_offers\|INTO runs" src/ledger.ts`
+(`:2126`, `:2444`, `:2522`) and `grep -n "function acquireSlot\|function
+releaseSlot\|function poolTransaction" cli/load.mjs`. Five key families were
+missing from the first draft: `runner-forget`, `runner-offer:TOKEN`,
+`runner-report`, `task-progress` and `core-holds`.
 
 ### States reached by more than one path
 
@@ -606,6 +728,10 @@ The timer runs every 10 minutes (`src/limits.ts:29`,
 | stale observation ignored | `:2263` | none | `test/stuck-episodes.spec.ts:110` |
 | opened to notified, after 60 min or the standing `notice-delay` | `dueNotices` `src/stuck/notices.ts:16`; `stuckDue` `:2281`; `recordStuckDigest` `:4848` (`:4852`); `stuckNotified` `:2288`; `notifyStuck` `src/index.ts:3846` | `stuck.digest_notice` (`src/notify.ts:8`) | `test/stuck-episodes.spec.ts:137`, `:173` |
 | read | `GET /stuck/episodes` `src/index.ts:1991-1994`; `openStuck` `src/stuck/view.ts:20`; `atelier status` reads it at `cli/status.mjs:356` | none | `test/stuck-view.test.mjs` |
+
+Rows enumerated with `grep -n "stuck_episodes\|stuck_notices\|stuck_ticks"
+src/ledger.ts`: three writes, the tick `:2264`, the episodes `:2273` and the
+notices `:2290`, each a row above.
 
 ### States reached by more than one path
 
@@ -826,7 +952,7 @@ about.
 | 5 | 5 Land jobs and landing | 9 merged repairs, 94 merges of main into branches | land requests with no head, not measurable here | One of the three cases. Seven meta keys and a table with no state or head column. |
 | 6 | 8 Stuck episodes | 6 merged repairs | episodes by cause, only since 2026-11-09 | Two states, well tested; its history was lost twice this month (t518, t533). |
 | 7 | 3 Criteria reviews | 2 merged repairs | criteria rejections, not measurable here | One hidden state (lapsed as failed with a text search). |
-| 8 | 5b The post-merge run | 1 merged repair, 16 commits to its files | failed finishes and recoveries, not measurable here | The best-written of the nine: a closed state list, one save function, one event per change. Its one untested transition is the reconcile-as-completed path; its harm is that an open run blocks every merge in the project. |
+| 8 | 5b The post-merge run | 1 merged repair, 16 commits to its files | failed finishes and recoveries, not measurable here | The best-written of the nine: a closed state list, one save function, one event per change. Its two untested transitions are the reconcile-as-completed path and the waiver of a pending step; its harm is that an open run blocks every merge in the project. |
 | 9 | 4 Pre-reviews | 0 | pre-review outcomes, not measurable here | Nine states and the most write paths per state, but no repair this month traced to it. |
 
 Adding the post-merge run moved no rank above it: it enters at 8 of 9 with
@@ -834,6 +960,14 @@ one merged repair, and machine 6 drops from 13 to 12 and stays fourth.
 The ledger counts may reorder ranks 1 to 3. The git proxy counts repairs
 that merged; it does not count rejections, nor the orchestrator's workaround
 moves, which only the ledger holds.
+
+The second fix round added the waiver of a pending step (machine 5b), the
+holder's claim of its own submitted task (machine 1), the landing Workflow's
+record (machine 5), the approval events (machine 6) and five `meta` key
+families of the runner (machine 7). None changes a harm figure: the git
+proxy counts merged tasks by title and the ledger commands count events by
+kind, and no added row adds or removes a task or an event kind from those
+counts. The ranking is unchanged.
 
 ## The top machine, and the table it would need
 
