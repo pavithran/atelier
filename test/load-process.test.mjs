@@ -188,7 +188,9 @@ const waitUntil = (read, what) => until(read, `${what} not seen within ${WAIT_MS
 
 function releaseSequence(startDelayMs) {
   const name = `release sequence real processes retain gaps, then yield before the fourth continuation${startDelayMs ? ` when the ordinary run starts ${startDelayMs} ms late` : ""}`;
-  // 7 waits of WAIT_MS at most, plus the 4 continuations: 11 deadlines.
+  // 9 deadlines of WAIT_MS each: the ready file, the first step, the queueing, the
+  // four continuations, the ordinary run's exit, and the child's gate wait.
+  // The timeout of 12 deadlines plus the start delay covers their sum.
   test(name, { timeout: 12 * WAIT_MS + startDelayMs }, async (t) => {
     if (!canInspectSlots(t)) return;
     const f = fixture(t), sequenceId = randomUUID(), order = join(f.root, "order"), ready = join(f.root, "ready"), gate = join(f.root, "gate");
@@ -197,7 +199,11 @@ function releaseSequence(startDelayMs) {
       import { existsSync, writeFileSync } from "node:fs";
       await new Promise((done) => setTimeout(done, ${startDelayMs}));
       writeFileSync(${JSON.stringify(ready)}, "ready");
-      while (!existsSync(${JSON.stringify(gate)})) await new Promise((done) => setTimeout(done, 10));
+      const gateDeadline = Date.now() + ${WAIT_MS};
+      while (!existsSync(${JSON.stringify(gate)})) {
+        if (Date.now() > gateDeadline) { console.error("timed out after ${WAIT_MS} ms waiting for the gate file"); process.exit(1); }
+        await new Promise((done) => setTimeout(done, 10));
+      }
       try { await runSlotCommand(${JSON.stringify(command("O"))}, { class: 'ordinary', project: 'project-' + process.pid, actor: 'codex/test', task: 't1' }, { path: ${JSON.stringify(f.path)} }); }
       catch (error) { console.error(error); process.exitCode = 1; }`);
     await waitUntil(() => existsSync(ready), "the ordinary run to finish starting");
