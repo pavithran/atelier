@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRunner } from "../cli/runner.mjs";
-import { sweepDir, sweepJournal } from "../cli/sweep.mjs";
+import { sweepRun, sweepJournal } from "../cli/sweep.mjs";
 
 // t617: a run's agent can start a process that outlives it (nohup, &, setsid).
 // Each test runs the real runner (runRunner) over a criteria review whose
@@ -168,7 +168,7 @@ test("the log names each process it ended, a repeat sweep finds nothing, and not
   assert.equal(named.length, 1, said.join("\n"));
   assert.match(named[0], /node/);
   const again = [];
-  assert.deepEqual((await sweepDir(s.workspace, { log: (l) => again.push(l) })).ended, []);
+  assert.deepEqual((await sweepRun({ workspace: s.workspace }, { log: (l) => again.push(l) })).ended, []);
   assert.deepEqual(again, []);
 });
 
@@ -178,7 +178,7 @@ test("the log names at most 20 processes", async (t) => {
   for (const k of kids) { k.unref(); s.track(k.pid); }
   await pause(300);
   const lines = [];
-  const { ended } = await sweepDir(s.workspace, { log: (l) => lines.push(l) });
+  const { ended } = await sweepRun({ workspace: s.workspace }, { log: (l) => lines.push(l) });
   assert.equal(ended.length, 22);
   assert.equal(lines.filter((l) => l.includes("ended leftover process")).length, 20);
   assert.ok(lines.some((l) => /and 2 more/.test(l)), lines.join("\n"));

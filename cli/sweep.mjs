@@ -141,9 +141,6 @@ export async function sweepRun(run, { log, kill = process.kill.bind(process) }) 
   return { ended, incomplete };
 }
 
-// A sweep of the processes in a folder alone, for callers with no run record.
-export const sweepDir = (dir, options) => sweepRun({ workspace: dir }, options);
-
 // The runs a runner has begun and not finished sweeping, kept in a file named
 // for the runner so a runner that died before or part-way through its sweep,
 // or whose sweep left a process, leaves the rest to its next start (recover).
