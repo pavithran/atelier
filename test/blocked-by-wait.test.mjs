@@ -46,9 +46,14 @@ const cliEnv = (extra = {}) => {
   for (const k of ["ATELIER_PROJECT", "ATELIER_ACTOR", "ATELIER_JSON"]) if (!(k in extra)) delete env[k];
   return env;
 };
-async function cli(argv, extra = {}) {
-  try { const { stdout, stderr } = await run(process.execPath, ["cli/atelier.mjs", ...argv], { env: cliEnv(extra), timeout: 60_000 }); return { code: 0, stdout, stderr }; }
-  catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
+// `label` says what a call waits for; if the subprocess deadline `ms` expires,
+// the call fails naming that label and the deadline.
+async function cli(argv, extra = {}, { label = `atelier ${argv.join(" ")}`, ms = 60_000, nodeArgs } = {}) {
+  try { const { stdout, stderr } = await run(process.execPath, nodeArgs ?? ["cli/atelier.mjs", ...argv], { env: cliEnv(extra), timeout: ms }); return { code: 0, stdout, stderr }; }
+  catch (error) {
+    if (error.killed && error.signal) throw new Error(`${label} did not return within ${ms / 1000} s`);
+    return { code: error.code, stdout: error.stdout, stderr: error.stderr };
+  }
 }
 // A wait started in the background, so the test makes the transitions it
 // waits for; resolves to its exit code and output, and when it ended.
@@ -246,15 +251,21 @@ test("wait --all returns 0 once every task merges, at once when they already hav
     } finally { w.child.kill(); }
     // Already met: at once.
     const t0 = Date.now();
-    const again = await cli(["wait", "--all", `${a},${b}`, "--project", "demo"], viaSlow);
+    const again = await cli(["wait", "--all", `${a},${b}`, "--project", "demo"], viaSlow, { label: "wait --all on already merged tasks" });
     assert.equal(again.code, 0, again.stderr);
     assert.ok(Date.now() - t0 < 10_000);
     // The timeout falls inside the nap after the first read, so a slow read is never the last thing the CLI saw.
     const c = await task("Never merges");
-    const gaveUp = await cli(["wait", "--any", c, "--for", "merged", "--timeout", "6", "--interval", "10", "--project", "demo"], viaSlow);
+    const gaveUp = await cli(["wait", "--any", c, "--for", "merged", "--timeout", "6", "--interval", "10", "--project", "demo"], viaSlow, { label: "wait --any on a never-merged task to give up at its 6 s timeout" });
     assert.equal(gaveUp.code, 3, gaveUp.stdout + gaveUp.stderr);
     assert.match(gaveUp.stdout, new RegExp(`${c} is open \\(filed\\); gave up waiting`));
   } finally { await slow.close(); }
+});
+
+test("cli() fails naming what it waited for when its subprocess deadline expires", async () => {
+  await assert.rejects(
+    cli([], {}, { label: "a child that sleeps", ms: 1000, nodeArgs: ["-e", "setTimeout(() => {}, 30000)"] }),
+    { message: "a child that sleeps did not return within 1 s" });
 });
 
 test("wait --any returns when one task reaches a stage; a stage target reads the recorded stage", async () => {
