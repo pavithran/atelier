@@ -24,7 +24,7 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (check, ms = 10_000) => { for (const end = Date.now() + ms; Date.now() < end;) { if (check()) return true; await pause(25); } return check(); };
 
-function setup(t, name, mode, { timeoutMs } = {}) {
+function setup(t, name, mode, { timeoutMs, sleeperCwd = "-" } = {}) {
   mkdirSync(SCRATCH, { recursive: true });
   const dir = mkdtempSync(join(SCRATCH, "sweep-"));
   const pids = [];
@@ -35,7 +35,7 @@ function setup(t, name, mode, { timeoutMs } = {}) {
   const cache = join(dir, "cache");
   const configPath = join(dir, "runner.json");
   writeFileSync(configPath, JSON.stringify({ jobs: ["criteria-review"], tokens: { [model]: "agent.m" }, ...(timeoutMs ? { taskTimeoutMs: timeoutMs } : {}),
-    agents: [{ agent: "opencode", models: [model], command: ["node", AGENT, mode, pidfile, "{model}", "{brief_file}", "{verdict_file}"] }] }));
+    agents: [{ agent: "opencode", models: [model], command: ["node", AGENT, mode, pidfile, sleeperCwd, "{model}", "{brief_file}", "{verdict_file}"] }] }));
   const logs = [];
   const claimed = { item: { id: "t21", title: "T", scope: ["src/**"], accept: ["A"] }, rev: 2, criteria: "c".repeat(64), authors: ["owner"], request: 7, reviewer: `opencode/${model}`, owner: "owner", brief: "Judge them." };
   const io = {
@@ -48,10 +48,11 @@ function setup(t, name, mode, { timeoutMs } = {}) {
   };
   const assignment = { project: "atelier", item: { id: "t21", dispatch: { job: "criteria-review" } }, agent: "opencode", model, actor: `opencode/${model}` };
   const sleepers = () => (existsSync(pidfile) ? readFileSync(pidfile, "utf8").split("\n").filter(Boolean).map(Number) : []);
-  const run = (queue) => runRunner({ _: ["runner"], multi: {}, name, config: configPath }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: () => pause(5), now: (() => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); })(), queue,
+  const beats = [];
+  const run = (queue, { once = false } = {}) => runRunner({ _: ["runner"], multi: {}, name, config: configPath, ...(once ? { once: true } : {}) }, {
+    workspacePath: io.workspacePath, taskIO: io, credential: "runner-secret", heartbeatMs: 20, heartbeat: async (offer) => { beats.push(JSON.stringify(offer)); }, wait: () => pause(5), now: (() => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); })(), queue,
   });
-  return { dir, cache, workspace, logs, assignment, run, sleepers, track: (pid) => pids.push(pid) };
+  return { dir, cache, workspace, beats, logs, assignment, run, sleepers, track: (pid) => pids.push(pid) };
 }
 const endWith = (s, polls) => async () => { if (polls.n++ === 0) return [s.assignment]; process.emit("SIGTERM"); return []; };
 
@@ -70,9 +71,16 @@ test("a stop flag ends the agent's sleeper too", async (t) => {
   t.mock.method(console, "log", () => {});
   const s = setup(t, "home:sweep-b", "hang");
   const running = s.run(async () => (s.sleepers().length ? [] : [s.assignment]));
-  // The hung agent keeps its poll busy, so the stop comes from outside, once.
-  const stopper = setInterval(() => { if (s.sleepers().length) { clearInterval(stopper); process.emit("SIGTERM"); } }, 50);
-  await running; clearInterval(stopper);
+  // The stop flag is a file, flags/stop-NAME, which the machine's launcher
+  // turns into SIGTERM for the runner; this stand-in launcher does the same.
+  const flag = join(s.dir, "flags", "stop-sweep-b");
+  mkdirSync(dirname(flag), { recursive: true });
+  const launcher = setInterval(() => { if (existsSync(flag)) { clearInterval(launcher); process.emit("SIGTERM"); } }, 25);
+  t.after(() => clearInterval(launcher));
+  assert.equal(await until(() => s.sleepers().length > 0), true);
+  assert.equal(alive(s.sleepers()[0]), true, "the sleeper is alive while the run goes");
+  writeFileSync(flag, "");
+  await running;
   const [pid] = s.sleepers();
   s.track(pid);
   assert.equal(await until(() => !alive(pid), 5000), true);
@@ -101,19 +109,52 @@ test("a run the runner gives up on (the agent failing) ends the agent's sleeper 
   for (const pid of pids) assert.equal(await until(() => !alive(pid), 5000), true);
 });
 
-test("two runs at once: ending one signals none of the other's processes", async (t) => {
+test("a detached sleeper that changed its working directory out of the workspace is ended too", async (t) => {
   t.mock.method(console, "log", () => {});
-  const a = setup(t, "home:sweep-e", "exit"), b = setup(t, "home:sweep-f", "exit");
-  // B's sleeper is started in B's workspace and stays alive while A's run ends.
-  const other = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: b.workspace, stdio: "ignore", detached: true });
-  other.unref(); b.track(other.pid);
-  await a.run(endWith(a, { n: 0 }));
-  const [pid] = a.sleepers();
-  a.track(pid);
-  assert.equal(await until(() => !alive(pid), 5000), true);
-  assert.equal(alive(other.pid), true, "the other run's process was not signalled");
-  const mine = sweepDir(b.workspace, { log: () => {} });
-  assert.deepEqual((await mine).map((p) => p.pid), [other.pid]);
+  const s = setup(t, "home:sweep-cwd", "exit", { sleeperCwd: "/tmp" });
+  await s.run(endWith(s, { n: 0 }));
+  const [pid] = s.sleepers();
+  s.track(pid);
+  assert.ok(pid);
+  assert.equal(await until(() => !alive(pid), 5000), true, "the sleeper started in /tmp is gone 5 s after the run ended");
+});
+
+test("two runs at once: each ends only its own tree and journal", async (t) => {
+  t.mock.method(console, "log", () => {});
+  const a = setup(t, "home:sweep-e", "exit"), b = setup(t, "home:sweep-f", "hang");
+  const journalOf = (s, name) => join(s.cache, "run-sweeps", `${name}.json`);
+  const bRunning = b.run(async () => (b.sleepers().length ? [] : [b.assignment]));
+  assert.equal(await until(() => b.sleepers().length > 0), true);
+  const [bPid] = b.sleepers();
+  b.track(bPid);
+  await a.run(async () => (a.sleepers().length ? [] : [a.assignment]), { once: true });
+  const [aPid] = a.sleepers();
+  a.track(aPid);
+  assert.equal(await until(() => !alive(aPid), 5000), true, "A's sleeper is gone");
+  assert.equal(alive(bPid), true, "B's sleeper, still running, was not signalled");
+  assert.ok(!existsSync(journalOf(a, "home_sweep-e")), "A's journal is gone");
+  assert.ok(existsSync(journalOf(b, "home_sweep-f")), "B's journal stands while B runs");
+  const marks = [a, b].map((s) => readFileSync(join(s.dir, "pids.mark"), "utf8"));
+  assert.ok(marks.every(Boolean) && marks[0] !== marks[1], "each run has its own marker in the harness environment");
+  process.emit("SIGTERM");
+  await bRunning;
+  assert.equal(await until(() => !alive(bPid), 5000), true, "B's sleeper is gone once B ends");
+  assert.ok(!existsSync(journalOf(b, "home_sweep-f")), "B's journal is gone");
+});
+
+test("cleanup lines and workspace paths stay out of what the runner sends the server", async (t) => {
+  const said = [];
+  t.mock.method(console, "log", (l) => said.push(String(l)));
+  const s = setup(t, "home:sweep-k", "exit");
+  await s.run(endWith(s, { n: 0 }));
+  const [pid] = s.sleepers();
+  s.track(pid);
+  assert.ok(said.some((l) => l.includes("ended leftover process")), "the local log names it");
+  assert.ok(s.beats.length > 0, "a final heartbeat was sent");
+  for (const body of s.beats) {
+    assert.ok(!body.includes("leftover"), body);
+    assert.ok(!body.includes(s.workspace) && !body.includes(s.dir), body);
+  }
 });
 
 test("the log names each process it ended, a repeat sweep finds nothing, and nothing leaves the machine", async (t) => {
@@ -123,11 +164,11 @@ test("the log names each process it ended, a repeat sweep finds nothing, and not
   await s.run(endWith(s, { n: 0 }));
   const [pid] = s.sleepers();
   s.track(pid);
-  const named = s.logs.filter((l) => l.includes(`ended leftover process ${pid} `));
-  assert.equal(named.length, 1, s.logs.join("\n"));
+  const named = said.filter((l) => l.includes(`ended leftover process ${pid} `));
+  assert.equal(named.length, 1, said.join("\n"));
   assert.match(named[0], /node/);
   const again = [];
-  assert.deepEqual(await sweepDir(s.workspace, { log: (l) => again.push(l) }), []);
+  assert.deepEqual((await sweepDir(s.workspace, { log: (l) => again.push(l) })).ended, []);
   assert.deepEqual(again, []);
 });
 
@@ -137,7 +178,7 @@ test("the log names at most 20 processes", async (t) => {
   for (const k of kids) { k.unref(); s.track(k.pid); }
   await pause(300);
   const lines = [];
-  const ended = await sweepDir(s.workspace, { log: (l) => lines.push(l) });
+  const { ended } = await sweepDir(s.workspace, { log: (l) => lines.push(l) });
   assert.equal(ended.length, 22);
   assert.equal(lines.filter((l) => l.includes("ended leftover process")).length, 20);
   assert.ok(lines.some((l) => /and 2 more/.test(l)), lines.join("\n"));
@@ -165,8 +206,8 @@ await run.end();
   let claimedBefore = null;
   await s.run(async () => { claimedBefore ??= kids.filter((k) => k.exitCode === null && k.signalCode === null).length; process.emit("SIGTERM"); return []; });
   assert.equal(claimedBefore, 0, "nothing left at the first poll");
-  const named = s.logs.filter((l) => l.includes("ended leftover process"));
-  assert.equal(named.length, 2, s.logs.join("\n"));
+  const named = said.filter((l) => l.includes("ended leftover process"));
+  assert.equal(named.length, 2, said.join("\n"));
   assert.ok(!existsSync(join(s.cache, "run-sweeps", "home_sweep-i.json")));
 });
 
@@ -183,4 +224,45 @@ test("a journal whose runner is still alive, or whose pid is dead, is handled wi
   await sweepJournal({ name: "home:sweep-j", dir, log: (l) => lines.push(l) }).recover();
   assert.equal(alive(kid.pid), true);
   assert.deepEqual(lines, []);
+});
+
+const orphan = (workspace) => spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: workspace, stdio: "ignore", detached: true });
+// A pid that is certainly dead: a child that has exited.
+const deadPid = async () => { const c = spawn(process.execPath, ["-e", ""], { stdio: "ignore" }); await new Promise((r) => c.on("exit", r)); return c.pid; };
+
+test("a process that survives the rounds keeps the journal; the next start ends it", async (t) => {
+  const s = setup(t, "home:sweep-l", "exit");
+  const kid = orphan(s.workspace); kid.unref(); s.track(kid.pid);
+  await pause(300);
+  const dir = join(s.cache, "run-sweeps"), file = join(dir, "home_sweep-l.json");
+  const lines = [];
+  const journal = sweepJournal({ name: "home:sweep-l", dir, log: (l) => lines.push(l), kill() { /* signals nothing */ } });
+  const result = await journal.begin(s.workspace).end();
+  assert.equal(result.incomplete, true);
+  assert.equal(alive(kid.pid), true);
+  assert.ok(existsSync(file), "the journal is kept");
+  assert.ok(lines.some((l) => /could not be ended; the next start tries again/.test(l)), lines.join("\n"));
+  // The next start: the earlier runner is dead; a real kill ends the process and the journal.
+  writeFileSync(file, JSON.stringify({ owner: await deadPid(), runs: JSON.parse(readFileSync(file, "utf8")).runs }));
+  const next = await sweepJournal({ name: "home:sweep-l", dir, log: () => {} }).recover();
+  assert.equal(next.incomplete, false);
+  assert.equal(await until(() => !alive(kid.pid), 5000), true);
+  assert.ok(!existsSync(file), "the journal is gone once the sweep is complete");
+});
+
+test("a signal that fails other than with ESRCH keeps the journal and reports incomplete; ESRCH does not", async (t) => {
+  const s = setup(t, "home:sweep-m", "exit");
+  const kid = orphan(s.workspace); kid.unref(); s.track(kid.pid);
+  await pause(300);
+  const dir = join(s.cache, "run-sweeps"), file = join(dir, "home_sweep-m.json");
+  const refuse = (code) => () => { throw Object.assign(new Error("no"), { code }); };
+  const denied = await sweepJournal({ name: "home:sweep-m", dir, log: () => {}, kill: refuse("EPERM") }).begin(s.workspace).end();
+  assert.equal(denied.incomplete, true);
+  assert.ok(existsSync(file), "kept after EPERM");
+  assert.equal(alive(kid.pid), true);
+  // A process already gone (ESRCH) is no failure: nothing is left, the journal goes.
+  kid.kill("SIGKILL");
+  await until(() => !alive(kid.pid));
+  const gone = await sweepJournal({ name: "home:sweep-m2", dir, log: () => {}, kill: refuse("ESRCH") }).begin(s.workspace).end();
+  assert.equal(gone.incomplete, false);
 });
