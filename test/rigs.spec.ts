@@ -5,6 +5,7 @@ import { afterAll, beforeAll, expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { csp } from "../src/live.ts";
 import { signIn } from "./signin.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
 import { UNAVAILABLE_PROJECT, withUnavailable } from "./fixtures/design/seed.ts";
 
 // Rigs at /rigs (t608), entered at worker.fetch. Trust checks, per endpoint:
@@ -77,6 +78,8 @@ async function waiting(project: string, title: string, model: string, agent: str
 }
 
 beforeAll(async () => {
+  // The fixture's three runners are the only ones offered; the default review runners would add yards.
+  withoutDefaultRunner();
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(T - min(300)));
   for (const name of ["atelier", "miqra", "bible", PRIVATE, UNAVAILABLE_PROJECT]) {
