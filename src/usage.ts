@@ -373,6 +373,9 @@ The flow
    new task's id from the command's output, never guess the next number.
    Split anything over about five criteria or 15 files. Include past findings
    on the scoped files and edge cases the criteria imply.
+   Criteria and briefs never ask for load on the machine (busy loops, stress
+   tools). A load-sensitive test is reproduced with concurrent copies of the
+   test under a timeout; nothing may outlive the command.
 2. Criteria review only for large or risky tasks:
    \`atelier criteria-review ID --reviewer H/M\`. Choose an independent model.
    Respect any stricter policy the project already enforces.
