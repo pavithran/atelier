@@ -993,6 +993,40 @@ test("an idle runner says why with no queue reasons to read, from what it knows 
 });
 
 
+test("an idle runner says the waiting list again only when more than the held-for age changes", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-runner-idle-test-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, jobs: ["build"] }));
+  const logs = [];
+  t.mock.method(console, "log", (s) => logs.push(s));
+  const hold = (id, blocker, age) => ({ project: "atelier", item: { id, why: [{ kind: "hold", line: `waits on ${blocker} (building): both scopes reach core file a.ts; held for ${age}` }] } });
+  const polls = [
+    [hold("t5", "t1", "1m 0s")],
+    [hold("t5", "t1", "1m 30s")],
+    [hold("t5", "t1", "2m 5s")],
+    [hold("t5", "t2", "2m 35s")],
+    [hold("t5", "t2", "3m 5s"), hold("t6", "t2", "0m 5s")],
+    [hold("t6", "t2", "0m 35s")],
+  ];
+  let n = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: () => { throw new Error("no task should be claimed"); },
+    wait: async () => {},
+    async queue() { if (++n > polls.length) process.emit("SIGTERM"); return []; },
+    async idleWhy() { return polls[Math.min(n, polls.length) - 1]; },
+  });
+  const heads = logs.filter((s) => s.includes("found nothing to claim"));
+  // t1 blocker (once for three polls), then t2, then two tasks, then one task.
+  assert.equal(heads.length, 4, logs.join("\n"));
+  // The printed lines keep the age of the poll that printed them.
+  assert.ok(logs.some((s) => s.includes("held for 1m 0s")));
+  assert.ok(!logs.some((s) => s.includes("held for 1m 30s") || s.includes("held for 2m 5s")));
+  assert.ok(logs.some((s) => s.includes("t2 (building): both scopes reach core file a.ts; held for 2m 35s")));
+  assert.ok(logs.some((s) => s.includes("held for 0m 35s")));
+});
+
+
 // t353: a skip report is dropped only on a 4xx no retry would change. A 408
 // (the server timed the request out) and a 429 (it was busy) are as temporary
 // as a 5xx, and the report is kept; the retry waits the queue backoff, in

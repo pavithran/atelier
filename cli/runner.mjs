@@ -5320,7 +5320,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       const reasons = [...passed, ...waiting.filter((q) => q?.item?.why?.length && !own.has(`${q.project}/${q.item.id}`))
         .flatMap((q) => q.item.why.map((r) => ({ task: `${q.project}/${q.item.id}`, line: r.line })))];
       if (!reasons.length && !unread) { lastWhy = null; return; }
-      const signature = [...reasons.map((r) => `${r.task}  ${r.line}`), unread ?? ""].join("\n");
+      // The hold lines end in a ticking "; held for Xm Ys" (holdText); the
+      // signature leaves the age out so only a real change says the list again.
+      const signature = [...reasons.map((r) => `${r.task}  ${r.line.replace(/; held for \d+m \d+s/g, "")}`), unread ?? ""].join("\n");
       if (signature === lastWhy) return;
       lastWhy = signature;
       const n = new Set(reasons.map((r) => r.task)).size;
