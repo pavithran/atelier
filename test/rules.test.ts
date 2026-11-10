@@ -1806,6 +1806,25 @@ test("itemFields answers 410 areas_removed to an older CLI's area field, whateve
   assert.deepEqual(itemFields({}), {});
 });
 
+test("PRIORITY_DEFAULT is 2", () => {
+  assert.equal(PRIORITY_DEFAULT, 2);
+});
+
+for (const priority of [1, 2, 3]) {
+  test(`itemFields takes priority ${priority}`, () => {
+    assert.deepEqual(itemFields({ priority }), { priority });
+  });
+}
+
+for (const [label, priority] of [["0", 0], ["4", 4], ["1.5", 1.5], ["null", null], ['the text "2"', "2"]] as const) {
+  test(`itemFields refuses priority ${label} with bad_field`, () => {
+    assert.throws(() => itemFields({ priority }), (error: unknown) => {
+      const e = error as RuleError;
+      return e.code === "bad_field" && e.status === 400;
+    }, label);
+  });
+}
+
 // t58: a block's expiry (atelier block --until). The finding it would have
 // caught: six tasks blocked for reasons that expired on 2026-10-14 stayed in
 // the developer's list as rows beside the real waits.
