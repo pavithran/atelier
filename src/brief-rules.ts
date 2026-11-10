@@ -24,6 +24,8 @@ export const BUILD_RULES = [
   // chain its harness refused.
   "- Commit first when the work is done, before anything else, with plain single git commands, one per call: git add FILES, then git commit. No heredoc, no -F -, no && chain and no redirection: a harness refuses them, and the run ends without a commit.",
   "- A run that ends without a commit counts as stalled, whatever it did.",
+  // t619: builders of t604, t612 and t101 started busy loops on the shared build machine.
+  "- Start no process that loads the machine or outlives your command; simulate load inside the test only.",
   "- If a test outside the task's scope fails on main, do not change it; report the failing test and its output in the summary and stop.",
   "- A fix comes with a test that fails without it.",
   BUILD_EVIDENCE,
