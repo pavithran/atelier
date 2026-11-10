@@ -7,6 +7,19 @@ import { join } from "node:path";
 import { landFixture } from "./land-fixture.mjs";
 import { criteriaOf } from "../src/criteria.ts";
 
+// Runs the CLI on the machine with no checkout. The fixture marks t1 merged
+// only when the CLI posts the land job, so the follow loop sees the merge.
+// T666_CLI_START_DELAY_MS delays the CLI start, to show no timing decides it.
+// The run fails naming what it waited for if the CLI does not end by the deadline.
+async function followedRun(f, args, deadlineMs = 60000) {
+  let posted = false;
+  f.box.onLandJob = (item) => { if (item === "t1") { posted = true; f.box.states.t1 = "merged"; } };
+  await new Promise((ok) => setTimeout(ok, Number(process.env.T666_CLI_START_DELAY_MS ?? 0)));
+  let deadline;
+  const expired = new Promise((_, no) => { deadline = setTimeout(() => no(new Error(`the CLI did not end within ${deadlineMs} ms of starting; the land job was ${posted ? "posted" : "never posted"}, so it waited for ${posted ? "the follow loop to see t1 merged" : "the land-job POST"}`)), deadlineMs); });
+  try { return await Promise.race([f.run(f.p, ...args), expired]); } finally { clearTimeout(deadline); }
+}
+
 test("a landing whose review is not in asks, records the land request with its quote, and stops without the lease", async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
@@ -48,8 +61,7 @@ test("a machine with no registered checkout records the request and follows the 
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   writeFileSync(join(f.p, "config", "config.json"), JSON.stringify({ server: f.url, owner: "owner", projects: {} }));
-  setTimeout(() => { f.box.states.t1 = "merged"; }, 400);
-  const r = await f.run(f.p, "land", "t1");
+  const r = await followedRun(f, ["land", "t1"]);
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Review requested for codex\/gpt-6-astra/);
   assert.match(r.output, /holds no registered checkout of proj; following the land job/);
@@ -89,8 +101,7 @@ test("following with --reviewer posts no review request where that reviewer's ap
   const head = f.forkHead("t1");
   f.box.evidence.t1.push({ itemId: "t1", claim: "changed paths", grade: "observed", head, passed: true, by: "codex/test", at: "2026-10-13T09:00:00.000Z", where: "runner", changedPaths: ["work.txt"] });
   f.box.reviews.t1.push({ approve: true, head, criteria: criteriaOf({}), recordedBy: "owner", proved: false, claimed: true, note: "Recorded earlier.", at: "2026-10-13T10:00:00.000Z", by: "antigravity/gemini-3.1-pro", request: 1 });
-  setTimeout(() => { f.box.states.t1 = "merged"; }, 400);
-  const r = await f.run(f.p, "land", "t1", "--reviewer", "antigravity/gemini-3.1-pro");
+  const r = await followedRun(f, ["land", "t1", "--reviewer", "antigravity/gemini-3.1-pro"]);
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /antigravity\/gemini-3\.1-pro already approved t1 at \w{8}, and the gate counts it/);
   assert.equal(f.posts("/review-request").length, 0);

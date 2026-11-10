@@ -338,7 +338,8 @@ export function endedRun(o: Pick<Item, "id" | "state" | "runner" | "owner" | "he
 // A task that was claimed holds its core files until it merges or is
 // abandoned (holdsCore in src/dispatch/core-hold.ts), and the holder of a live
 // landing lease serializes them too. Plan jobs, same-plan work and the
-// owner's overlap override keep their existing exemptions. A claim its
+// owner's overlap override keep their existing exemptions, and so does a
+// merge-main job, which runs on a task that already holds. A claim its
 // runner orphaned holds nothing (coreOrphans names it instead), nor does one
 // whose last run ended without a result (endedRun), though the holder of a
 // live landing lease holds whatever its runner does.
@@ -346,7 +347,9 @@ type Overlap = CoreBlocker & { item: Item; landing: boolean };
 function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly string[] | undefined, lease: LandingLease | null, now: number): Overlap[] {
   const d = item.dispatch;
   if (!d || d.overlapOk || item.kind === "plan") return [];
-  if (d.job !== undefined && d.job !== "merge-main") return [];
+  // A merge-main job runs on a task already claimed, which holds its core
+  // files itself; the landing lease serializes its landing (t634).
+  if (d.job !== undefined) return [];
   return items.flatMap((o) => {
     if (o.id === item.id || samePlan(item, o)) return [];
     const landing = lease?.item === o.id && !landingLeaseLapsed(lease, now) && o.state !== "merged" && o.state !== "abandoned";

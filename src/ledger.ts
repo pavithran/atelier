@@ -63,6 +63,7 @@ import {
   PREREVIEW_DEPTH, PREREVIEW_JOB,
   type OutcomeNote, type PrereviewBinding, type PrereviewClaim, type PrereviewFence, type PrereviewOutcome, type PrereviewState, type PrereviewView,
 } from "./dispatch/prereview.ts";
+import { keepsStored } from "./models/usage-readings.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { addDays, sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
@@ -2100,13 +2101,22 @@ export class Ledger extends DurableObject<Env> {
     return this.sql.exec(`SELECT key, since FROM usage_alerts ORDER BY since, key`).toArray().map((r) => ({ key: r.key as string, since: r.since as string }));
   }
 
-  // Stores the report, then alerts once per crossing: a figure past its
+  // Stores the report unless the one held for that tool and runner is newer
+  // or the same reading (keepsStored); then that report comes back and
+  // nothing is alerted or recorded. Then alerts once per crossing: a figure past its
   // threshold is recorded under its key the first time a report shows it,
   // and that key is dropped when a later report from the same runner shows
   // it back under, so the next crossing alerts again. The alert is one
   // usage.alert event (t533), which atelier status lists; nothing is sent.
   // The titles alerted now come back to the caller.
   putUsage(report: UsageReport, thresholds: Thresholds): { report: UsageReport; alerts: string[] } {
+    // Compared and written in this one synchronous call, so a crash leaves
+    // the old row or the new, and two reports sent at once keep the newer.
+    const row = this.sql.exec(`SELECT json FROM usage WHERE tool = ? AND runner = ?`, report.tool, report.runner).toArray()[0];
+    if (row) {
+      const held = JSON.parse(row.json as string) as UsageReport;
+      if (keepsStored(held, report)) return { report: held, alerts: [] };
+    }
     this.sql.exec(`INSERT OR REPLACE INTO usage (tool, runner, json) VALUES (?, ?, ?)`, report.tool, report.runner, JSON.stringify(report));
     const active = crossings(report, thresholds, Date.parse(report.at));
     const held = new Set(this.sql.exec(`SELECT key FROM usage_alerts WHERE tool = ? AND runner = ?`, report.tool, report.runner).toArray().map((r) => r.key as string));
