@@ -6,13 +6,16 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
 import { landFixture, CEILING_MS, until, waitingLanding, holdingLanding, underLease, spawnLanding } from "./land-fixture.mjs";
-import { cancelHeld, stillRunning } from "./land-lease-workflow-shared.mjs";
+import { cancelHeld } from "./land-lease-workflow-shared.mjs";
 
 // Every wait below has a deadline for a loaded machine (t612): it polls for
 // the event it awaits and fails naming it. Each test's timeout is the sum of
 // its deadlines, over its rounds, plus room for the fixtures.
 const WAIT_MS = 90_000;
 const FIXTURE_MS = 60_000;
+// The landing has not ended yet: its end has not been seen by now. Called only
+// after the line that the signal was handled, so no sleep stands in for it.
+const notEnded = (landing) => { let ended = false; landing.done.then(() => { ended = true; }); return new Promise((ok) => setImmediate(() => ok(!ended))); };
 const endOf = (landing, what, ms = WAIT_MS) => {
   let timer;
   const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`${what} did not come within ${ms}ms\n${landing.output()}`)), ms); });
@@ -30,7 +33,8 @@ test("a second, different signal during a signal's release waits for it, and the
     landing.child.kill(first);
     await until(() => cancelHeld(f), CEILING_MS, `the release ${first} started`);
     landing.child.kill(second);
-    assert.ok(await stillRunning(landing), `the landing ended before its release was answered:\n${landing.output()}`);
+    await until(() => new RegExp(`${second} received again; still releasing the landing lease of proj`).test(landing.output()), WAIT_MS, `the line that ${second} met the release in progress`);
+    assert.ok(await notEnded(landing), `the landing ended before its release was answered:\n${landing.output()}`);
     letGo = true;
     const ended = await endOf(landing, `the landing's end after ${first} then ${second}`);
     assert.equal(ended.status, status, landing.output());
@@ -62,7 +66,7 @@ test("the same signal again during the release says so and keeps waiting; a thir
     await until(() => cancelHeld(f), CEILING_MS, "the release SIGTERM started");
     landing.child.kill("SIGTERM");
     await until(() => STILL.test(landing.output()), WAIT_MS, "the line that the release is still going");
-    assert.ok(await stillRunning(landing), `the landing ended before its release was answered:\n${landing.output()}`);
+    assert.ok(await notEnded(landing), `the landing ended before its release was answered:\n${landing.output()}`);
     if (force) {
       landing.child.kill("SIGTERM");
       const began = Date.now();
