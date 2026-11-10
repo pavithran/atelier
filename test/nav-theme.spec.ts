@@ -33,20 +33,20 @@ const rowOne = (body: string) => barOf(body).split('aria-label="Atelier">')[1]?.
 const items = (body: string) => [...rowOne(body).matchAll(/<a href="([^"]+)"([^>]*)>([A-Za-z]+)/g)].map((m) => ({ href: m[1], label: m[3], current: m[2].includes('aria-current="page"') }));
 
 const ledger = () => "ledger-core";
-const outside = ["/", "/projects", "/studio", "/flow", "/history", "/models", "/usage"];
+const outside = ["/", "/projects", "/studio", "/flow", "/history", "/models", "/rigs", "/usage"];
 const inside = () => ["/p/ledger-core", "/p/ledger-core/tasks", "/p/ledger-core/plans", "/p/ledger-core/flow", "/p/ledger-core/process", "/p/ledger-core/settings", "/p/ledger-core/ship", "/p/ledger-core/code", "/p/ledger-core/log", `/p/ledger-core/${seeded.byShape[ledger()].ready![1]}`, "/p/ledger-core/t9999"];
 
-it("criterion 1: the bar lists Today, Projects, History, Process, Models in that order on every owner page", async () => {
+it("criterion 1: the bar lists Today, Projects, History, Process, Models, Rigs in that order on every owner page", async () => {
   for (const path of [...outside, ...inside()]) {
     const { body } = await get(path);
-    expect(items(body).map((i) => i.label), path).toEqual(["Today", "Projects", "History", "Process", "Models"]);
-    expect(items(body).map((i) => i.href.replace(/^\/p\/[^/]+\/process$/, "PROCESS")), path).toEqual(["/", "/projects", "/studio", "PROCESS", "/models"]);
+    expect(items(body).map((i) => i.label), path).toEqual(["Today", "Projects", "History", "Process", "Models", "Rigs"]);
+    expect(items(body).map((i) => i.href.replace(/^\/p\/[^/]+\/process$/, "PROCESS")), path).toEqual(["/", "/projects", "/studio", "PROCESS", "/models", "/rigs"]);
   }
 });
 
 it("criterion 2: exactly one item is current, by page", async () => {
   const want: Record<string, string | null> = {
-    "/": "Today", "/projects": "Projects", "/studio": "History", "/flow": "History", "/history": "History", "/models": "Models", "/usage": null,
+    "/": "Today", "/projects": "Projects", "/studio": "History", "/flow": "History", "/history": "History", "/models": "Models", "/rigs": "Rigs", "/usage": null,
     "/p/ledger-core/process": "Process",
   };
   for (const p of inside()) want[p] ??= "Projects";

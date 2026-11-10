@@ -1,0 +1,104 @@
+/* Rigs (t608), drawn from the chosen mockup (docs/design/rigs/mockup/a-yard.html, option A).
+   Colours, faces and radii are the theme's tokens, so the page follows the device's light or dark
+   scheme; the family colours are layout.css's --m-*. Nothing here is a gradient. Trains and lamps
+   move only under prefers-reduced-motion: no-preference. */
+.rigs { --ok: var(--observed); --warn: var(--caution); --bad: var(--fault); --ease: cubic-bezier(.2,.7,.2,1); max-width: 1040px; margin: 0 auto; }
+.rigs a { color: inherit; text-decoration: none; }
+.rigs a:hover, .rigs a:focus-visible { text-decoration: underline; }
+.rigs h1, .rigs h2 { font-family: var(--font-display); margin: 0; letter-spacing: -.01em; }
+.rigs h1 { font-size: 44px; font-weight: 800; line-height: 1.05; }
+.rigs h1 em { font-style: normal; color: var(--signal); }
+.rigs .mono { font-family: var(--font-mono); font-size: .86em; }
+.rigs .dim { color: var(--text-dim); }
+.rigs .date { color: var(--text-muted); font-size: 14px; margin-bottom: 6px; }
+.rigs .lede { color: var(--text-muted); max-width: 640px; margin: 10px 0 30px; }
+.rigs .tt { color: var(--text); }
+.rigs .proj { font: 500 11px/1 var(--font-mono); color: var(--text-muted); border: 1px solid var(--line-bright); border-radius: var(--radius-pill); padding: 3px 7px; margin-left: 8px; white-space: nowrap; }
+.rigs .proj.priv { border-style: dashed; }
+.rigs .liv { display: inline-flex; align-items: center; gap: 5px; font: 500 11px/1 var(--font-mono); color: var(--text-dim); padding: 4px 7px; border-radius: var(--radius-pill); border: 1px solid var(--line); white-space: nowrap; }
+.rigs .liv i { width: 7px; height: 7px; border-radius: 50%; background: var(--fam); opacity: .55; }
+.rigs .liv.on { color: var(--text); border-color: var(--fam); outline: 1px solid var(--fam); outline-offset: 1px; }
+.rigs .liv.on i { opacity: 1; }
+
+.rigs .yard { background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius-medium); padding: 20px 22px 10px; margin-bottom: 18px; }
+.rigs .yhead { display: grid; grid-template-columns: 1fr auto auto; gap: 22px; align-items: center; padding-bottom: 14px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.rigs .yhead h2 { font-size: 22px; }
+.rigs .gauge path { fill: none; stroke-width: 8; stroke-linecap: round; }
+.rigs .gauge .g-bg { stroke: rgba(var(--text-rgb), .1); }
+.rigs .gauge .g-on { stroke: var(--ok); }
+.rigs .gauge.warm .g-on { stroke: var(--warn); }
+.rigs .gauge.hot .g-on { stroke: var(--bad); }
+.rigs .gauge .needle { stroke: var(--text); stroke-width: 2; stroke-linecap: round; }
+.rigs .gauge .hub { fill: var(--text); }
+.rigs .meters { display: flex; gap: 22px; }
+.rigs .m { min-width: 120px; }
+.rigs .mv { font: 700 22px/1 var(--font-display); }
+.rigs .mv span { font: 500 13px var(--font-mono); color: var(--text-muted); margin-left: 4px; }
+.rigs .ml { font-size: 12px; color: var(--text-muted); margin-top: 6px; max-width: 260px; }
+.rigs .bar2 { height: 8px; border-radius: 4px; background: rgba(var(--text-rgb), .1); margin-top: 8px; overflow: hidden; }
+.rigs .bar2 i { display: block; height: 100%; background: var(--text-muted); border-radius: 4px; }
+.rigs .plats { display: flex; gap: 4px; height: 16px; margin-top: 4px; }
+.rigs .plats i { width: 22px; height: 12px; border-radius: 3px; border: 1px solid var(--line-bright); }
+.rigs .plats i.on { background: var(--signal); border-color: var(--signal); }
+
+.rigs .ytrack { display: grid; grid-template-columns: 260px 1fr 290px; grid-template-areas: "name rail livs" ". under under"; gap: 4px 18px; align-items: center; padding: 12px 0; border-bottom: 1px dashed var(--line); }
+.rigs .ytrack.free { padding: 8px 0; }
+.rigs .ytrack:last-child { border-bottom: 0; }
+.rigs .yname { grid-area: name; display: flex; align-items: center; gap: 10px; font-size: 13px; min-width: 0; flex-wrap: wrap; }
+.rigs .yname .proj { margin-left: 0; }
+.rigs .lamp { width: 10px; height: 10px; border-radius: 50%; flex: none; box-shadow: 0 0 0 3px rgba(var(--text-rgb), .06); }
+.rigs .lamp.clear { background: var(--ok); }
+.rigs .lamp.busy { background: var(--signal); }
+.rigs .rails { grid-area: rail; min-width: 0; }
+.rigs .rail { position: relative; height: 34px; }
+.rigs .rail::before, .rigs .rail::after { content: ""; position: absolute; left: 0; right: 0; height: 2px; background: var(--line-bright); }
+.rigs .rail::before { top: 13px; }
+.rigs .rail::after { top: 21px; }
+.rigs .st { position: absolute; left: calc(var(--i) * 20% + 10%); top: 0; bottom: 0; width: 0; }
+.rigs .st::before { content: ""; position: absolute; left: -1px; top: 6px; width: 2px; height: 22px; background: var(--line-bright); }
+.rigs .st em { position: absolute; top: 30px; left: 0; transform: translateX(-50%); font: 500 10px/1 var(--font-mono); color: var(--text-dim); font-style: normal; letter-spacing: .04em; text-transform: uppercase; opacity: 0; }
+.rigs .ytrack.has .st em { opacity: 1; }
+.rigs .st.pass em { color: var(--text-muted); }
+.rigs .st.here em { color: var(--text); font-weight: 600; }
+.rigs .ytrack.has .rail { height: 44px; }
+.rigs .train { position: absolute; z-index: 2; top: 5px; left: max(calc(var(--at) * 100%), 140px); transform: translateX(-100%); height: 24px; display: flex; }
+.rigs .train .car { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 12px 0 10px; border-radius: 6px 12px 12px 6px; background: var(--fam); color: var(--on-accent); font: 500 12px/1 var(--font-mono); white-space: nowrap; box-shadow: 0 2px 0 rgba(var(--shadow-rgb), .25); }
+.rigs .train .car b { font-weight: 700; }
+.rigs .train.private .car { background: var(--inset); color: var(--text-muted); border: 1px dashed var(--line-bright); }
+.rigs .ylivs { grid-area: livs; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 300px; }
+.rigs .unders { grid-area: under; display: grid; gap: 6px; min-width: 0; }
+.rigs .under { display: flex; gap: 14px; flex-wrap: wrap; font-size: 14px; }
+.rigs .under .mono { font-size: 12px; }
+.rigs .under .proj { margin: 0 4px 0 0; }
+.rigs .sidings summary { cursor: pointer; padding: 14px 0 6px; font: 600 13px var(--font-sans); color: var(--text-muted); }
+.rigs .empty { padding: 16px 0 10px; color: var(--text-muted); font-size: 14px; }
+.rigs .signal-wait { display: flex; gap: 16px; align-items: center; padding: 16px 20px; margin-bottom: 10px; border: 1px solid var(--line); border-left: 3px solid var(--bad); border-radius: var(--radius-medium); background: var(--surface-raised); }
+.rigs .sig { display: flex; flex-direction: column; gap: 4px; padding: 5px; background: var(--inset); border-radius: 8px; }
+.rigs .sig i { width: 10px; height: 10px; border-radius: 50%; background: rgba(var(--text-rgb), .12); }
+.rigs .sig i.red { background: var(--bad); }
+.rigs .signal-wait .dim, .rigs .signal-wait .why { font-size: 13px; margin-top: 3px; }
+.rigs .signal-wait .why { color: var(--text-muted); overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes rigs-breathe { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+  .rigs .lamp.busy { animation: rigs-breathe 2.4s var(--ease) infinite; }
+  .rigs .train { transition: left 1.2s var(--ease); }
+}
+
+@media (max-width: 760px) {
+  .rigs h1 { font-size: 32px; }
+  .rigs .yard { padding: 16px 14px 6px; }
+  .rigs .yhead { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+  .rigs .meters { grid-column: 1 / -1; gap: 14px; flex-wrap: wrap; }
+  .rigs .m { min-width: 0; flex: 1 1 120px; }
+  .rigs .gauge { width: 72px; }
+  .rigs .ytrack { grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "rail" "under" "livs"; gap: 6px; min-width: 0; }
+  .rigs .ytrack.free { grid-template-areas: "name" "livs"; }
+  .rigs .ytrack.free .rails { display: none; }
+  .rigs .ylivs { justify-content: flex-start; max-width: none; }
+  .rigs .ytrack.has .st em { font-size: 9px; }
+  .rigs .st:not(.here) em { opacity: 0 !important; }
+  .rigs .ytrack.free .liv { font-size: 10px; padding: 3px 6px; }
+  .rigs .train { left: max(calc(var(--at) * 100%), 128px); }
+  .rigs .signal-wait { padding: 14px; gap: 12px; }
+}

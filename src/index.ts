@@ -61,6 +61,7 @@ import { assign, isRunSkipKind, offersFor, parseRunner, RUN_SKIP_KINDS, unclaime
 import { parseResolvers } from "./refresh/resolver.ts";
 import { isPrereviewRequest, PREREVIEW_JOB } from "./dispatch/prereview.ts";
 import { attentionFor, type Attention } from "./attention.ts";
+import { buildRigs, renderRigs, RIGS_REFRESH } from "./rigs.ts";
 import { buildToday, renderToday, todayInputsOf, type TodayLedger } from "./today.ts";
 import { readAccepted } from "./accepted-main.ts";
 import { readStanding, type StandingSource } from "./standing-read.ts";
@@ -4450,10 +4451,13 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     return new Response(null, { status: 301, headers: { location: `/p/${encodeURIComponent(name)}/flow` } });
   }
   // Today (t562) is the front page; Home, Now and Decisions lead to it, a task's decision to its page.
-  if (parts.length === 0) {
+  if (parts.length === 0 || parts[0] === "rigs" && parts.length === 1) {
     const now = new Date();
     const projects = await index(env).projects();
-    const inputs = await todayInputsOf({ projects: projects.map((p) => ({ name: p.name, title: titleOf(p), ledger: ledgerOf(env, p) as unknown as TodayLedger })), pool: await poolOf(env), offers: await offersOf(env), owner: ownerActor(env) }, now);
+    const offers = await offersOf(env);
+    const inputs = await todayInputsOf({ projects: projects.map((p) => ({ name: p.name, title: titleOf(p), ledger: ledgerOf(env, p) as unknown as TodayLedger })), pool: await poolOf(env), offers, owner: ownerActor(env) }, now);
+    // Rigs (t608) reads what Today reads, so it draws no task Today does not, and asks the visitor the same.
+    if (parts.length) return html(renderRigs(buildRigs(inputs, offers, now), ownerName(env), { nonce, refresh: RIGS_REFRESH }), 200, nonce);
     return html(renderToday(buildToday(inputs, now), ownerName(env), live, pageActsFor(c) ? { newId: () => crypto.randomUUID(), nonce: live.nonce } : undefined), 200, live.nonce);
   }
   if ((parts[0] === "home" || parts[0] === "now") && parts.length === 1) return sentTo("/");
@@ -5124,7 +5128,7 @@ export default {
         // either way, so a guessed name learns nothing — a 404 for the rest
         // would say which names, anonymised or private, are real.
         const projectArea = parts[0] === "p" && parts.length >= 2;
-        const knownUI = parts.length === 0 || projectArea || ["home", "models", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui", "now"].includes(parts[0]);
+        const knownUI = parts.length === 0 || projectArea || ["home", "models", "rigs", "usage", "projects", "flow", "history", "studio", "decisions", "how", "ui", "now"].includes(parts[0]);
         if (!knownUI) return html("Not found.", 404);
         // Behind Access, a page the owner opens without a session starts one
         // and is served as signed in (t534). A form post is not a sign-in:

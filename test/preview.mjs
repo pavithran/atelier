@@ -12,7 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "node:http";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const ENTRIES = ["ui", "process", "pulse", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view", "now"];
+const ENTRIES = ["ui", "process", "pulse", "floor", "how", "attention", "graph", "actions-page", "models/record", "usage/page", "usage/report", "browse/view", "now", "rigs"];
 // The bundles are loaded once, then their folder is removed (t658: it was
 // left in the temp folder on every run).
 const dir = mkdtempSync(join(tmpdir(), "atelier-preview-"));
@@ -35,6 +35,7 @@ const { buildRecord } = load("models/record");
 const { renderUsage } = load("usage/page");
 const { DEFAULT_THRESHOLDS } = load("usage/report");
 const browse = load("browse/view");
+const { buildRigs, renderRigs } = load("rigs");
 
 // Fixed revisions that look like real ones, so screenshots never show placeholders.
 const HEAD = "9621fac2436196a267f96ec81225c2cc3181512d";
@@ -272,6 +273,8 @@ export function route(url) {
     "/flow": () => ui.renderFlow(empty ? [] : [story], empty ? emptyTally() : addTally(emptyTally(), story.tally), OWNER, "PAVI"),
     "/history": () => ui.renderHistory([{ project, items: [merged] }], "PAVI"),
     "/models": () => ui.renderModels(models, buildRecord(events), "PAVI"),
+    // Rigs (t608): two runners on one machine, polled a moment ago, with a reading and no work.
+    "/rigs": () => renderRigs(buildRigs({ projects: [], unread: [], owner: OWNER }, ["atelier-build", "atelier-review"].map((n) => ({ runner: `home:studio-${n}`, kind: "home", at: new Date(now.getTime() - 20_000).toISOString(), agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }], machine: { host: "ai-studio-256", cpus: 36, loadavg: [8, 7, 6], memFreePercent: 40, testSlots: { capacity: 3, inUse: 1 } } })), now), "PAVI", { nonce: "preview", refresh: 0 }),
     "/usage": () => renderUsage(empty ? [] : usage, DEFAULT_THRESHOLDS, [], now, "PAVI"),
     "/error": () => ui.renderError("This task changed since you opened it. Refresh and review the new revision."),
     "/p/atelier": () => ui.renderProject(project, items, events.slice(-8).reverse(), "PAVI"),

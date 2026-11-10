@@ -1324,10 +1324,10 @@ const bar=(html:string)=>html.slice(html.indexOf('<header class="owner-bar">'),h
 const row1=(html:string)=>bar(html).split('<nav class="bar-nav" aria-label="Atelier">')[1]?.split('</nav>')[0]??'';
 const row2=(html:string)=>bar(html).split('<nav aria-label="Project">')[1]?.split('</nav>')[0]??'';
 const currents=(nav:string)=>[...nav.matchAll(/<a href="([^"]+)" aria-current="page">([^<]+)/g)].map((m)=>`${m[1]} ${m[2]}`);
-it('every owner page draws one bar: Today, Projects, History, Process and Models, the project switcher and the owner\'s menu, with its own item current',()=>{
+it('every owner page draws one bar: Today, Projects, History, Process, Models and Rigs, the project switcher and the owner\'s menu, with its own item current',()=>{
  const home=renderHome([],'PAVI');
  const nav=row1(home);
- expect([...nav.matchAll(/<a href="([^"]+)"[^>]*>([A-Za-z]+)/g)].map((m)=>`${m[2]} ${m[1]}`)).toEqual(['Today /','Projects /projects','History /studio','Process /p/atelier/process','Models /models']);
+ expect([...nav.matchAll(/<a href="([^"]+)"[^>]*>([A-Za-z]+)/g)].map((m)=>`${m[2]} ${m[1]}`)).toEqual(['Today /','Projects /projects','History /studio','Process /p/atelier/process','Models /models','Rigs /rigs']);
  expect(bar(home)).toContain('<a class="brand" href="/">Atelier</a>');
  expect(currents(nav)).toEqual(['/projects Projects']);
  expect(bar(home)).not.toContain('<nav aria-label="Project">');

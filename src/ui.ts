@@ -102,7 +102,7 @@ const icon = (name: string) =>
 
 // One bar in two rows for every owner page (docs/design/plan.md §2, P1; the
 // canvas in docs/design/reimagined/; docs/design/today/design-note.md M2).
-// Row 1 says where in Atelier: Today, Projects, History, Process, Models, the
+// Row 1 says where in Atelier: Today, Projects, History, Process, Models, Rigs, the
 // project switcher and the owner's menu. Row 2, under /p/NAME only, says where
 // in the project: Project › page, and the tabs. The brand leads to Today.
 // Process leads to the current project's process inside /p/NAME and to
@@ -114,12 +114,13 @@ const NAV: [label: string, url: string][] = [
   ["History", "/studio"],
   ["Process", PROCESS_HOME],
   ["Models", "/models"],
+  ["Rigs", "/rigs"],
 ];
 // Which row-1 item each page's `active` makes current: Today and the Decisions
 // and Now it replaced are Today; Home and every page in a project's area are
 // Projects; the Studio, Flow and History pages are History. Usage and the
 // error page name no item.
-const NAV_OF: Record<string, string> = { Today: "Today", Decisions: "Today", Now: "Today", Home: "Projects", Projects: "Projects", Studio: "History", Flow: "History", History: "History", Activity: "History", Process: "Process", Models: "Models" };
+const NAV_OF: Record<string, string> = { Today: "Today", Decisions: "Today", Now: "Today", Home: "Projects", Projects: "Projects", Studio: "History", Flow: "History", History: "History", Activity: "History", Process: "Process", Models: "Models", Rigs: "Rigs" };
 
 const ACCOUNT: [string, string][] = [
   ["Usage", "/usage"],
