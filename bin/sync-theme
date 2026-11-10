@@ -10,6 +10,10 @@
 set -eu
 here="$(cd "$(dirname "$0")/.." && pwd)"
 src="${1:-$here/../ai-projects-design/rendered/themes.css}"
+if ! [ -f "$src" ] || ! [ -r "$src" ]; then
+  echo "bin/sync-theme: cannot read $src: this machine has no ai-projects-design checkout. src/theme.css must be synced where one exists." >&2
+  exit 1
+fi
 night=':not([data-scheme="night"])'
 {
   printf '/* Copied from ai-projects-design/rendered/themes.css by bin/sync-theme. Do not edit. */\n'
