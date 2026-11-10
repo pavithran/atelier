@@ -2150,6 +2150,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       ...(has("silenceLimitMinutes") ? { silenceLimitMinutes: limitArg(body.silenceLimitMinutes, "--silence-limit") } : {}),
       ...(has("startupLimitMinutes") ? { startupLimitMinutes: limitArg(body.startupLimitMinutes, "--startup-limit") } : {}),
       ...(has("slotWaitLimitMinutes") ? { slotWaitLimitMinutes: limitArg(body.slotWaitLimitMinutes, "--slot-wait-limit") } : {}),
+      ...(has("buildLimitMinutes") ? { buildLimitMinutes: limitArg(body.buildLimitMinutes, "--build-limit") } : {}),
       ...(has("checkSilence") ? { checkSilence: checkSilenceArg(body.checkSilence) } : {}),
       // The model that triages a landing before its review (t475):
       // harness/model, or null or "" to clear it.

@@ -1871,8 +1871,22 @@ export async function runTask(assignment, config, name, io) {
     if (!io.jobBrief) return null;
     const context = await io.jobBrief(project, item.id, actor);
     if (!context || typeof context.text !== "string") throw new Error("the server's job brief has no text");
+    // The build limit (t588) is the policy as it stands at this claim: read
+    // anew at every call, never kept from an earlier run.
+    policyBuildMs = Number.isFinite(context.buildLimitMinutes) && context.buildLimitMinutes > 0 ? Math.round(context.buildLimitMinutes * 60_000) : null;
     return context;
   };
+  // The ceiling every build harness of this run goes by, and the sentence that
+  // tells the builder, in the same minutes.
+  let policyBuildMs = null;
+  const harnessCeilingMs = () => policyBuildMs ?? config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS;
+  // The ceiling in words, exact to the millisecond the harness applies: "N
+  // minutes", or "M minutes S seconds" with S at most three decimals.
+  const ceilingWords = (ms) => {
+    const minutes = Math.floor(ms / 60_000), rest = ms - minutes * 60_000;
+    return rest === 0 ? `${minutes} minutes` : `${minutes} minutes ${Number((rest / 1000).toFixed(3))} seconds`;
+  };
+  const harnessLimitLine = () => `Your harness is stopped ${ceilingWords(harnessCeilingMs())} after it starts. A run that reaches that limit fails as "harness timed out" and ends with no submit, so plan the work and run any long check once, early enough to finish and commit inside it.`;
   // The leftovers of a build's harness (leftoverFiles); `leftovers` is what
   // remains after the one follow-up turn, for the failure and the run report.
   let leftovers = [], rejectedHead = null;
@@ -1900,7 +1914,7 @@ export async function runTask(assignment, config, name, io) {
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-        const again = await io.harness(commandFor(entry, { model, briefFile: turn.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        const again = await io.harness(commandFor(entry, { model, briefFile: turn.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true, timeoutMs: harnessCeilingMs() });
         if (again.timedOut || again.code !== 0) io.log(`the follow-up turn ${again.timedOut ? "timed out" : `exited ${again.code}`}`);
       } finally {
         if (dataHome) await io.removeDataHome(dataHome).catch(() => {});
@@ -1920,12 +1934,12 @@ export async function runTask(assignment, config, name, io) {
     const merged = io.prepareSubmission ? await io.prepareSubmission(assignment, workspace, async (merge) => {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
       const context = await briefContext();
-      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project, context?.checkLimits ?? null)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`, context?.proseStandard ?? null);
+      const resolution = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${harnessLimitLine()}\n\n${briefFor({ ...item, owner: actor }, project, context?.checkLimits ?? null)}\n${context?.text ?? ""}\n${mergeMainSection(merge)}\n\n${conflictsSection(merge)}\n`, context?.proseStandard ?? null);
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        const result = await io.harness(commandFor(entry, { model, briefFile: resolution.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true, timeoutMs: harnessCeilingMs() });
         const limit = !io.stopped() ? providerLimitOf(result, (io.now ?? Date.now)()) : null;
         // A resolver that fails, whether or not it committed, leaves the
         // obligation (t363): recorded first, then the head as information.
@@ -1965,12 +1979,12 @@ export async function runTask(assignment, config, name, io) {
       const entry = config.agents.find((a) => a.agent === agent && a.models.includes(model));
       const context = await briefContext();
       const checkedHead = await io.head(workspace);
-      const repair = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${briefFor({ ...item, owner: actor }, project, context?.checkLimits ?? null)}\n${context?.text ?? ""}\n\nRequired checks failed in the clean clone. Fix the failing check below, run targeted tests and the typecheck, and commit. This is the only repair turn before the task is blocked for the developer.\n\n${String(error.output || error.message).slice(-12000)}\n`, context?.proseStandard ?? null);
+      const repair = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${harnessLimitLine()}\n\n${briefFor({ ...item, owner: actor }, project, context?.checkLimits ?? null)}\n${context?.text ?? ""}\n\nRequired checks failed in the clean clone. Fix the failing check below, run targeted tests and the typecheck, and commit. This is the only repair turn before the task is blocked for the developer.\n\n${String(error.output || error.message).slice(-12000)}\n`, context?.proseStandard ?? null);
       let dataHome;
       try {
         const { env } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         dataHome = OWN_DATA_HOME.has(agent) ? await io.dataHome(workspace) : null;
-        const result = await io.harness(commandFor(entry, { model, briefFile: repair.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true });
+        const result = await io.harness(commandFor(entry, { model, briefFile: repair.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true, timeoutMs: harnessCeilingMs() });
         if (result.timedOut || result.code !== 0) {
           harnessExit = failedExitOf(result);
           harnessTail = harnessTailOf(result);
@@ -2211,7 +2225,7 @@ export async function runTask(assignment, config, name, io) {
             ? `${local}\n${reworked?.text ? `${reworked.text}\n\n` : ""}${mergeMainSection(merges[0])}\n\n${conflictsSection(...merges)}\n`
             : reworked?.text ? `${local}\n${reworked.text}\n` : local;
         const progress = continuing ? `\n${workInProgressSection(before, actor)}\n` : "";
-        brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${body}${progress}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
+        brief = await io.brief(workspace, `${roleText("build", workspace)}\n\n${testSlotNote}\n\n${harnessLimitLine()}\n\n${body}${progress}${preparation?.deferred ? `\n${preparation.deferred}` : ""}`, context?.proseStandard ?? null);
         const { env, withheld } = harnessEnv(io.env, entry.env, entry.env?.length ? io.ownerTokens() : []);
         for (const name of withheld) io.log(`${name} holds the developer's Atelier token, so ${agent} does not get it; take it out of env in the runner config`);
         // See OWN_DATA_HOME. The folder lasts exactly as long as the harness: it
@@ -2235,7 +2249,7 @@ export async function runTask(assignment, config, name, io) {
             rmSync(progressLog, { force: true });
             io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog, harness: agent });
           }
-          try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
+          try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, timeoutMs: harnessCeilingMs(), ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
           finally { io.progress?.end(); commandTrail = io.progress?.trail() ?? null; }
         } finally {
           if (dataHome) {
@@ -4932,7 +4946,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     harness: async (argv, cwd, env, options = {}) => {
       const run = sweeps.begin(cwd);
       const onSpawn = (pid) => { run.spawned(pid); options.onSpawn?.(pid); };
-      try { return await startHarness(argv, cwd, { ...env, [MARK_VARIABLE]: run.marker }, { ...options, onSpawn, signal: controller.signal, timeoutMs: config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, originalExecuteChild); }
+      try { return await startHarness(argv, cwd, { ...env, [MARK_VARIABLE]: run.marker }, { ...options, onSpawn, signal: controller.signal, timeoutMs: options.timeoutMs ?? config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, originalExecuteChild); }
       finally { await run.end(); }
     },
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),

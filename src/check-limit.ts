@@ -53,7 +53,7 @@ export interface CheckLimits {
   silenceFrom: "check" | "project" | "default";
 }
 
-type LimitPolicy = Pick<ProjectPolicy, "checkLimitMinutes" | "silenceLimitMinutes" | "startupLimitMinutes" | "slotWaitLimitMinutes" | "checkSilence"> | null | undefined;
+type LimitPolicy = Pick<ProjectPolicy, "checkLimitMinutes" | "silenceLimitMinutes" | "startupLimitMinutes" | "slotWaitLimitMinutes" | "buildLimitMinutes" | "checkSilence"> | null | undefined;
 
 const positive = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
 
@@ -99,6 +99,7 @@ export function limitText(policy: LimitPolicy): string {
     `and at a hard ceiling of ${minutesText(l.limitMinutes)}${l.limitFrom === "default" ? ", the default" : ""}`,
     "all counted from when it holds its test slot",
     `a run that waits ${minutesText(l.slotWaitMinutes)} for its slot is stopped${positive(policy?.slotWaitLimitMinutes) ? "" : ", the default"}`,
+    ...(positive(policy?.buildLimitMinutes) ? [`a builder's harness is stopped at ${minutesText(policy!.buildLimitMinutes!)}`] : []),
     ...(own.length ? [`checks declaring their own silence: ${own.map((c) => `\`${c.command}\` ${minutesText(c.minutes)}`).join(", ")}`] : []),
   ].join("; ");
 }

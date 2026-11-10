@@ -266,7 +266,9 @@ test('a committed conflict resolution with blocked validation is not submitted o
     saved = block;
   };
   f.io.harness = async (argv, cwd, env, options) => {
-    assert.deepEqual(options, { capture: true, stream: true });
+    const { timeoutMs, ...rest } = options;
+    assert.deepEqual(rest, { capture: true, stream: true });
+    assert.ok(timeoutMs > 0, 'the harness is given its ceiling');
     const result = await harness(argv, cwd, env, options);
     return f.harnessCalls === 2
       ? { ...result, output: 'validation_blocked: tests could not run because listen EPERM' }

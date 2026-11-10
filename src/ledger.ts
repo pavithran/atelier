@@ -380,6 +380,7 @@ export interface ProjectInit {
   silenceLimitMinutes?: number | null;
   startupLimitMinutes?: number | null;
   slotWaitLimitMinutes?: number | null;
+  buildLimitMinutes?: number | null;
   checkSilence?: CheckSilence[];
   // The model that triages a landing before its review; null clears it
   // (see ProjectPolicy.triage).
@@ -807,6 +808,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
   const silenceLimitMinutes = i.silenceLimitMinutes === undefined ? p?.silenceLimitMinutes : i.silenceLimitMinutes ?? undefined;
   const startupLimitMinutes = i.startupLimitMinutes === undefined ? p?.startupLimitMinutes : i.startupLimitMinutes ?? undefined;
   const slotWaitLimitMinutes = i.slotWaitLimitMinutes === undefined ? p?.slotWaitLimitMinutes : i.slotWaitLimitMinutes ?? undefined;
+  const buildLimitMinutes = i.buildLimitMinutes === undefined ? p?.buildLimitMinutes : i.buildLimitMinutes ?? undefined;
   // A check's own silence limit stands while the command is a check or the
   // preparation; one for a command the policy no longer runs is dropped.
   const runs = new Set([...checks, ...(prepare ? [prepare.command] : [])]);
@@ -845,6 +847,7 @@ export function mergeProject(current: ProjectRecord | null, i: ProjectInit, at: 
       ...(silenceLimitMinutes ? { silenceLimitMinutes } : {}),
       ...(startupLimitMinutes ? { startupLimitMinutes } : {}),
       ...(slotWaitLimitMinutes ? { slotWaitLimitMinutes } : {}),
+      ...(buildLimitMinutes ? { buildLimitMinutes } : {}),
       ...(checkSilence.length ? { checkSilence } : {}),
       ...(triage ? { triage } : {}),
       ...(resolvers.length ? { resolvers: [...resolvers] } : {}),
@@ -8398,7 +8401,7 @@ export class Ledger extends DurableObject<Env> {
   // so a runner fetches the brief the server wrote instead of assuming one.
   // Only the holder may read it: the brief is the work this dispatch asked
   // for, and it names the interfaces other parts rely on.
-  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; latestVerdict?: "approve" | "reject" | null; history?: HistoryRead; checkLimits?: CheckLimits }> {
+  async jobBrief(id: string, actor: string): Promise<{ job: "plan" | "build" | "rework"; text: string; hash: string; proseStandard: string | null; latestVerdict?: "approve" | "reject" | null; history?: HistoryRead; checkLimits?: CheckLimits; buildLimitMinutes?: number | null }> {
     const item = this.item(id);
     if (item.kind !== "plan" && item.kind !== "part") {
       // An ordinary task's runner writes its own brief; the server adds only
@@ -8434,7 +8437,7 @@ export class Ledger extends DurableObject<Env> {
       // The latest review's verdict at this head, which job does not say: a
       // rejection a later approval superseded still makes job "rework" (t548).
       const latest = this.reviewsFor(id).filter((r) => r.head === item.head).at(-1) ?? null;
-      return { job: sections.length ? "rework" : "build", latestVerdict: latest ? (latest.approve ? "approve" : "reject") : null, text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy) };
+      return { job: sections.length ? "rework" : "build", latestVerdict: latest ? (latest.approve ? "approve" : "reject") : null, text, hash: await sha256(text), proseStandard: this.project().policy.proseStandard ?? null, history: this.pastFindings(item), checkLimits: checkLimits(this.project().policy), buildLimitMinutes: this.project().policy.buildLimitMinutes ?? null };
     }
     assertOwner(item, actor);
     const project = this.project();
@@ -8499,6 +8502,7 @@ export class Ledger extends DurableObject<Env> {
         proseStandard: project.policy.proseStandard ?? null,
       }),
       proseStandard: project.policy.proseStandard ?? null,
+      buildLimitMinutes: project.policy.buildLimitMinutes ?? null,
     };
   }
 
