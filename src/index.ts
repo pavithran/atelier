@@ -2935,8 +2935,13 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A block that is a fact (G7: a run stopped at its limit) is lifted by
       // the model as a fact: no developer's words are asked for, though words
       // given are still checked and recorded.
+      // A round cap with no words is judged by the Ledger (t623), as the
+      // developer's call whichever actor the session names on the developer
+      // token: it lifts on an approved revision of the criteria, else it
+      // refuses naming both paths.
       const blocked = (c.body as Record<string, unknown>).quote === undefined ? (await L.item(id)).blocked : null;
-      return json(await L.unblock(id, actor, !!c.token, blocked?.fact ? null : itemDirection(c, "unblock", id, ref.name, env)));
+      const capped = !!blocked && !c.token && await L.heldAtRoundCap(id);
+      return json(await L.unblock(id, capped ? ownerActor(env) : actor, !!c.token, blocked?.fact || capped ? null : itemDirection(c, "unblock", id, ref.name, env)));
     }
     case "clear-secret":
       requireOwner(env, actor);
