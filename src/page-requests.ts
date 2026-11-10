@@ -51,6 +51,10 @@ export function keepRequest(sql: Sql, id: string, item: string, verb: string, an
 // one-use id of that click.
 export interface ShownLand { head: string; criteria: string; requestId: string }
 
+// What a page's Answer showed: the criteria it was drawn from and its click's
+// one-use id (the head is checked by the route before the call).
+export interface ShownAnswer { criteria: string; requestId: string }
+
 // The first answer of a used id, marked as a replay, or null for a new one. It
 // is looked up before anything else is read, so a replay answers as the first
 // press did even after the task's head or criteria moved on.

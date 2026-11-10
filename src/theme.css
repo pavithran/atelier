@@ -29,6 +29,9 @@
   --signal-hot-rgb: 255,223,143;
   --signal-bright: #fff0c7;
   --signal-deep-rgb: 38,31,12;
+  --signal-fill: #ffd166;
+  --signal-fill-rgb: 255,209,102;
+  --on-signal-fill: #07090c;
   --wire: #6b5a2c;
   --wire-frozen: #5a5034;
   --wire-captured: #6b5a2c;
@@ -92,6 +95,9 @@
     --signal-hot-rgb: 107,75,0;
     --signal-bright: #3d2b00;
     --signal-deep-rgb: 250,238,205;
+    --signal-fill: #ffd166;
+    --signal-fill-rgb: 255,209,102;
+    --on-signal-fill: #07090c;
     --wire: #c9ad6a;
     --wire-frozen: #c2b28a;
     --wire-captured: #c9ad6a;
@@ -155,6 +161,9 @@
   --signal-hot-rgb: 224,154,98;
   --signal-bright: #ffd9ae;
   --signal-deep-rgb: 40,31,24;
+  --signal-fill: #c47a45;
+  --signal-fill-rgb: 196,122,69;
+  --on-signal-fill: #07090c;
   --wire: #784c30;
   --wire-frozen: #71543e;
   --wire-captured: #795137;
@@ -192,36 +201,39 @@
     color-scheme: light;
 
     /* Structure */
-    --shell: #dedacd;
-    --shell-rgb: 222,218,205;
-    --surface: #f2eee4;
-    --surface-rgb: 242,238,228;
-    --surface-raised: #e9e5d9;
-    --surface-raised-rgb: 233,229,217;
-    --inset: #e0dbcc;
-    --line: #c3bcaa;
-    --line-bright: #9d9584;
-    --lift-rgb: 26,24,18;
-    --shadow-rgb: 84,78,64;
+    --shell: #e2e3e1;
+    --shell-rgb: 226,227,225;
+    --surface: #f7f7f5;
+    --surface-rgb: 247,247,245;
+    --surface-raised: #eeeeea;
+    --surface-raised-rgb: 238,238,234;
+    --inset: #e4e4e2;
+    --line: #c4c5c4;
+    --line-bright: #9d9e9e;
+    --lift-rgb: 20,21,23;
+    --shadow-rgb: 60,62,66;
 
     /* Text */
-    --text: #22241f;
-    --text-rgb: 34,36,31;
-    --text-bright: #0f110d;
-    --text-muted: #56594e;
-    --text-dim: #5c5f54;
+    --text: #141517;
+    --text-rgb: 20,21,23;
+    --text-bright: #08090a;
+    --text-muted: #55575b;
+    --text-dim: #5b5d61;
 
     /* Signal */
-    --signal: #9a561f;
-    --signal-rgb: 154,86,31;
-    --signal-hot: #7d4211;
-    --signal-hot-rgb: 125,66,17;
-    --signal-bright: #5c300a;
-    --signal-deep-rgb: 214,190,163;
-    --wire: #b07a44;
-    --wire-frozen: #a98d68;
-    --wire-captured: #a97f4e;
-    --wire-offline: #b3ab98;
+    --signal: #26282c;
+    --signal-rgb: 255,209,102;
+    --signal-hot: #141517;
+    --signal-hot-rgb: 242,185,41;
+    --signal-bright: #08090a;
+    --signal-deep-rgb: 255,232,178;
+    --signal-fill: #c47a45;
+    --signal-fill-rgb: 196,122,69;
+    --on-signal-fill: #07090c;
+    --wire: #e5b742;
+    --wire-frozen: #ecd496;
+    --wire-captured: #e5b742;
+    --wire-offline: #c4c5c4;
 
     /* Observed */
     --observed: #376327;
@@ -242,10 +254,10 @@
     --fault-rgb: 163,48,42;
 
     /* Accent */
-    --music-accent: #7d4211;
-    --music-accent-rgb: 125,66,17;
-    --music-accent-line: #b48a6a;
-    --on-accent: #fdf6ee;
+    --music-accent: #141517;
+    --music-accent-rgb: 20,21,23;
+    --music-accent-line: #e5b742;
+    --on-accent: #141517;
 
     /* Material */
     --texture-blend: soft-light;
@@ -281,6 +293,9 @@
   --signal-hot-rgb: 147,192,234;
   --signal-bright: #cfe4f8;
   --signal-deep-rgb: 22,35,50;
+  --signal-fill: #6f9fd0;
+  --signal-fill-rgb: 111,159,208;
+  --on-signal-fill: #07090c;
   --wire: #37587a;
   --wire-frozen: #3f5b76;
   --wire-captured: #45688c;
@@ -344,6 +359,9 @@
     --signal-hot-rgb: 39,87,134;
     --signal-bright: #1d4772;
     --signal-deep-rgb: 200,208,212;
+    --signal-fill: #6f9fd0;
+    --signal-fill-rgb: 111,159,208;
+    --on-signal-fill: #07090c;
     --wire: #537fac;
     --wire-frozen: #788fa5;
     --wire-captured: #54789c;
@@ -381,36 +399,39 @@
   color-scheme: light;
 
   /* Structure */
-  --shell: #dedacd;
-  --shell-rgb: 222,218,205;
-  --surface: #f2eee4;
-  --surface-rgb: 242,238,228;
-  --surface-raised: #e9e5d9;
-  --surface-raised-rgb: 233,229,217;
-  --inset: #e0dbcc;
-  --line: #c3bcaa;
-  --line-bright: #9d9584;
-  --lift-rgb: 26,24,18;
-  --shadow-rgb: 84,78,64;
+  --shell: #e2e3e1;
+  --shell-rgb: 226,227,225;
+  --surface: #f7f7f5;
+  --surface-rgb: 247,247,245;
+  --surface-raised: #eeeeea;
+  --surface-raised-rgb: 238,238,234;
+  --inset: #e4e4e2;
+  --line: #c4c5c4;
+  --line-bright: #9d9e9e;
+  --lift-rgb: 20,21,23;
+  --shadow-rgb: 60,62,66;
 
   /* Text */
-  --text: #22241f;
-  --text-rgb: 34,36,31;
-  --text-bright: #0f110d;
-  --text-muted: #56594e;
-  --text-dim: #5c5f54;
+  --text: #141517;
+  --text-rgb: 20,21,23;
+  --text-bright: #08090a;
+  --text-muted: #55575b;
+  --text-dim: #5b5d61;
 
   /* Signal */
-  --signal: #9a561f;
-  --signal-rgb: 154,86,31;
-  --signal-hot: #7d4211;
-  --signal-hot-rgb: 125,66,17;
-  --signal-bright: #5c300a;
-  --signal-deep-rgb: 214,190,163;
-  --wire: #b07a44;
-  --wire-frozen: #a98d68;
-  --wire-captured: #a97f4e;
-  --wire-offline: #b3ab98;
+  --signal: #26282c;
+  --signal-rgb: 255,209,102;
+  --signal-hot: #141517;
+  --signal-hot-rgb: 242,185,41;
+  --signal-bright: #08090a;
+  --signal-deep-rgb: 255,232,178;
+  --signal-fill: #c47a45;
+  --signal-fill-rgb: 196,122,69;
+  --on-signal-fill: #07090c;
+  --wire: #e5b742;
+  --wire-frozen: #ecd496;
+  --wire-captured: #e5b742;
+  --wire-offline: #c4c5c4;
 
   /* Observed */
   --observed: #376327;
@@ -431,10 +452,10 @@
   --fault-rgb: 163,48,42;
 
   /* Accent */
-  --music-accent: #7d4211;
-  --music-accent-rgb: 125,66,17;
-  --music-accent-line: #b48a6a;
-  --on-accent: #fdf6ee;
+  --music-accent: #141517;
+  --music-accent-rgb: 20,21,23;
+  --music-accent-line: #e5b742;
+  --on-accent: #141517;
 
   /* Material */
   --texture-blend: soft-light;
@@ -470,6 +491,9 @@
     --signal-hot-rgb: 224,154,98;
     --signal-bright: #ffd9ae;
     --signal-deep-rgb: 40,31,24;
+    --signal-fill: #c47a45;
+    --signal-fill-rgb: 196,122,69;
+    --on-signal-fill: #07090c;
     --wire: #784c30;
     --wire-frozen: #71543e;
     --wire-captured: #795137;

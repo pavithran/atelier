@@ -35,7 +35,7 @@ import {
   type Evidence, type FamilyMode, type Finding, type InboxEntry, type Item, type ItemState, type ProjectPolicy, type Review, type ReviewOverride,
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
-  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type FastModeConfirmation, postMergeIndependence, postMergeOwed, postMergeNotes, fixTaskFromNote, reviewNotes, openNotes, noteKey, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
+  projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type PageDirection,type FastModeConfirmation, postMergeIndependence, postMergeOwed, postMergeNotes, fixTaskFromNote, reviewNotes, openNotes, noteKey, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
   standingFastReady, stageOf, crossCompanyApproval, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
   riskNeed,
@@ -118,7 +118,7 @@ import { parseReport } from "./refresh/mechanical.ts";
 import { pickResolver, resolverRefusal } from "./refresh/resolver.ts";
 import { refreshReview } from "./refresh/review.ts";
 import { SIZE_REFUSED } from "./large-diff.ts";
-import { assertShown, ensureRequestTable, keepRequest, planLand, replayOf, type ShownLand } from "./page-requests.ts";
+import { assertShown, ensureRequestTable, keepRequest, planLand, replayOf, type ShownAnswer, type ShownLand } from "./page-requests.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -5214,11 +5214,29 @@ export class Ledger extends DurableObject<Env> {
   // Unblocking is also the explicit retry after a blocking pre-review
   // (t524): it lifts the fence on the task's landing, so atelier land may
   // queue it again; the builder or the owner says the findings are dealt with.
-  unblock(id: string, actor: string, proved = false, direction: OwnerDirection | null = null): Item {
+  //
+  // The page's Answer (t596) passes `direction`, the developer's words with
+  // the Access factor (pageDirection), and `shown`, the criteria the page
+  // drew and its click's one-use id. The call is one transaction: the
+  // criteria are checked, the task unblocked, the event written and the id
+  // kept, all or none; a used id answers as the first click did.
+  unblock(id: string, actor: string, proved = false, direction: OwnerDirection | PageDirection | null = null, shown?: ShownAnswer): Item {
+    if (!shown) return this.unblockIn(id, actor, proved, direction);
+    return this.ctx.storage.transactionSync(() => {
+      const at = new Date().toISOString();
+      if (replayOf(this.sql, shown.requestId, id, "answer", at)) return this.item(id);
+      assertShownCriteria(this.item(id), shown.criteria);
+      const item = this.unblockIn(id, actor, proved, direction);
+      keepRequest(this.sql, shown.requestId, id, "answer", JSON.stringify({ item: id }), at);
+      return item;
+    });
+  }
+
+  private unblockIn(id: string, actor: string, proved: boolean, direction: OwnerDirection | PageDirection | null): Item {
     const item = this.item(id);
     const fence = this.prereviewFence(id);
     const roundCap = item.blocked?.by === ORCHESTRATOR && /^\d+ review rounds were rejected and no further round starts on its own/.test(item.blocked.reason);
-    if (roundCap && (actor !== this.owner || !direction?.quote.trim() || !direction.acting)) {
+    if (roundCap && (actor !== this.owner || !direction?.quote.trim() || !("factor" in direction || direction.acting))) {
       throw new RuleError("direction_needed", "A review round cap needs the developer's words: unblock with --quote \"what the developer said\" --as H/M", 403, `atelier unblock ${id} --quote \"what the developer said\" --as H/M`);
     }
     if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`, 409, "run atelier show ID");
@@ -5227,7 +5245,9 @@ export class Ledger extends DurableObject<Env> {
     const fact = !fence && item.blocked?.fact ? item.blocked.fact : null;
     if (actor !== this.owner && !fact) assertOwner(item, actor);
     const at = new Date().toISOString();
-    const said = direction ? { confirmed: "direction", quote: direction.quote, acting: direction.acting } : {};
+    const said = !direction ? {}
+      : "factor" in direction ? { confirmed: "page", quote: direction.quote, factor: direction.factor, emailHash: direction.emailHash }
+      : { confirmed: "direction", quote: direction.quote, acting: direction.acting };
     if (fence) {
       this.sql.exec(`DELETE FROM meta WHERE key = ?`, `prereview-fence:${id}`);
       this.log(id, actor, "prereview.retried", { request: fence.request, head: fence.head, current: item.head, ...said }, at, proved);
@@ -5236,6 +5256,21 @@ export class Ledger extends DurableObject<Env> {
     this.update(id, { state: item.blocked.from, blocked: null }, at);
     this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from, ...(fact ? { fact } : {}), ...said }, at, proved);
     return this.item(id);
+  }
+
+  // The developer's newest words that lifted a block (an Answer on the page,
+  // or atelier unblock --quote), for the builder's brief, until the task is
+  // next submitted (t596).
+  private developerWordsSection(id: string): string {
+    const rows = this.sql.exec(`SELECT kind, at, data FROM events WHERE item_id = ? AND kind IN ('item.unblocked', 'item.submitted') ORDER BY seq DESC LIMIT 20`, id).toArray();
+    for (const row of rows) {
+      if (row.kind === "item.submitted") return "";
+      const data = JSON.parse(row.data as string) as { quote?: unknown };
+      if (typeof data.quote === "string" && data.quote) {
+        return `## The developer's words\n\nThe developer answered at ${(row.at as string).slice(0, 16).replace("T", " ")} UTC:\n\n${data.quote.split("\n").map((l) => `> ${l}`).join("\n")}`;
+      }
+    }
+    return "";
   }
 
   // The secret flag a push scan records or clears (t332). `hits` names the
@@ -5519,7 +5554,37 @@ export class Ledger extends DurableObject<Env> {
   // while the route was away (checking the revision, looking for a
   // reviewer) refuse the acceptance rather than accept under criteria the
   // owner never read (t457).
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null, quote?: unknown): Item {
+  //
+  // `requestId` is the page's Override (t596): its click's one-use id. The
+  // call is then one transaction, the id kept after the override and the
+  // acceptance and with them or not at all; a used id answers as the first
+  // click did, and a task no longer submitted refuses, so two clicks with two
+  // ids record one override.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null, quote?: unknown, requestId?: string): Item {
+    if (requestId === undefined) return this.acceptIn(id, actor, expected, overrideReason, note, confirmedBy, availability, criteria, acting, quote);
+    return this.ctx.storage.transactionSync(() => {
+      const at = new Date().toISOString();
+      if (replayOf(this.sql, requestId, id, "override", at)) return this.item(id);
+      const before = this.item(id);
+      if (before.state !== "submitted") {
+        throw new RuleError("not_submitted", before.state === "accepted"
+          ? `${id} was already accepted at ${(before.acceptedHead ?? before.head ?? "").slice(0, 8)} since this page was drawn, so this override would record a second override and acceptance`
+          : `${id} is ${before.state}; an override is made only on a submitted revision`, 409, `run atelier show ${id}`);
+      }
+      const accepted = this.acceptIn(id, actor, expected, overrideReason, note, confirmedBy, availability, criteria, acting, quote);
+      keepRequest(this.sql, requestId, id, "override", JSON.stringify({ item: id }), at);
+      return accepted;
+    });
+  }
+
+  // Whether a page form's request id was used for this task and verb already
+  // (t596), asked by the route first so a replay is answered as the first
+  // click was, whatever the task has become since. A malformed id is refused.
+  pageRequestUsed(id: string, requestId: unknown, verb: "answer" | "override"): boolean {
+    return replayOf(this.sql, requestId, id, verb, new Date().toISOString()) !== null;
+  }
+
+  private acceptIn(id: string, actor: string, expected: string | undefined, overrideReason: string | undefined, note: string | undefined, confirmedBy: OwnerFactor | undefined, availability: ReviewerAvailability | undefined, criteria: string | undefined, acting: string | null, quote: unknown): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer accepts", 403, `only the developer can: atelier accept ${id}`);
     // The developer's words go with an override (t629); alone they direct nothing.
     if (quote !== undefined && overrideReason === undefined) throw new RuleError("bad_quote", "the developer's words (--quote) go with an override of the independent review: --override-review REASON --quote \"what the developer said\"", 400);
@@ -8266,7 +8331,7 @@ export class Ledger extends DurableObject<Env> {
       // workspace (t270); the brief says so and names the edit that adds it.
       const gap = reviewScopeGap(item, this.reviewsFor(id));
       const scopeNote = gap ? `## The scope lacks a file a finding names\n\n${scopeGapText(item, gap)}` : "";
-      const text = [...sections.map((f) => findingsSection(f)), scopeNote, criteria, prose].filter(Boolean).join("\n\n");
+      const text = [this.developerWordsSection(id), ...sections.map((f) => findingsSection(f)), scopeNote, criteria, prose].filter(Boolean).join("\n\n");
       // Past findings on the files in scope (t14), beside the text: the
       // runner alone can tell which of those files exist at the commit its
       // build starts from, so it filters and renders them. A field an older
