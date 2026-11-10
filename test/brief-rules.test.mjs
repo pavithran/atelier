@@ -274,3 +274,15 @@ test("every build brief tells the builder to test through the production caller 
   assert.ok(text.includes("Test through the production caller: a function only tests call fails the static check"));
   assert.ok(briefFor({ id: "t21", title: "x", scope: [], owner: "a/b" }, "atelier").includes("Test through the production caller"));
 });
+
+test("the orchestrate guide and docs forbid machine-wide load, and every build brief says so (t619)", async () => {
+  const docs = readFileSync(new URL("../docs/orchestrating.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+  for (const text of [ROLE_PROMPTS.orchestrate.replace(/\s+/g, " "), docs]) {
+    assert.match(text, /Criteria and briefs never ask for load on the machine \(busy loops, stress tools\)/);
+    assert.match(text, /concurrent copies of the test under a timeout/);
+    assert.match(text, /nothing may outlive the command/);
+  }
+  const line = "- Start no process that loads the machine or outlives your command; simulate load inside the test only.";
+  assert.ok(BUILD_RULES.split("\n").includes(line));
+  assert.ok((await jobBrief(job())).text.includes(line));
+});
