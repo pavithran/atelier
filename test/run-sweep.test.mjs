@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runRunner } from "../cli/runner.mjs";
-import { sweepRun, sweepJournal } from "../cli/sweep.mjs";
+import { sweepRun, sweepJournal, watch, processesOf, listProcesses } from "../cli/sweep.mjs";
 
 // t617: a run's agent can start a process that outlives it (nohup, &, setsid).
 // Each test runs the real runner (runRunner) over a criteria review whose
@@ -52,7 +52,7 @@ function setup(t, name, mode, { timeoutMs, sleeperCwd = "-" } = {}) {
   const run = (queue, { once = false } = {}) => runRunner({ _: ["runner"], multi: {}, name, config: configPath, ...(once ? { once: true } : {}) }, {
     workspacePath: io.workspacePath, taskIO: io, credential: "runner-secret", heartbeatMs: 20, heartbeat: async (offer) => { beats.push(JSON.stringify(offer)); }, wait: () => pause(5), now: (() => { let ms = Date.parse("2026-01-01T00:00:00Z"); return () => (ms += 3_600_000); })(), queue,
   });
-  return { dir, cache, workspace, beats, logs, assignment, run, sleepers, track: (pid) => pids.push(pid) };
+  return { dir, cache, workspace, configPath, claimed, beats, logs, assignment, run, sleepers, track: (pid) => pids.push(pid) };
 }
 const endWith = (s, polls) => async () => { if (polls.n++ === 0) return [s.assignment]; process.emit("SIGTERM"); return []; };
 
@@ -67,23 +67,24 @@ test("a run that finishes leaves no process its agent started", async (t) => {
   assert.equal(await until(() => !alive(pid), 5000), true, "the sleeper is gone 5 s after the run ended");
 });
 
-test("a stop flag ends the agent's sleeper too", async (t) => {
+test("a SIGTERM to the runner, as the launcher sends on a stop flag, ends the agent's sleeper too", async (t) => {
   t.mock.method(console, "log", () => {});
   const s = setup(t, "home:sweep-b", "hang");
-  const running = s.run(async () => (s.sleepers().length ? [] : [s.assignment]));
-  // The stop flag is a file, flags/stop-NAME, which the machine's launcher
-  // turns into SIGTERM for the runner; this stand-in launcher does the same.
-  const flag = join(s.dir, "flags", "stop-sweep-b");
-  mkdirSync(dirname(flag), { recursive: true });
-  const launcher = setInterval(() => { if (existsSync(flag)) { clearInterval(launcher); process.emit("SIGTERM"); } }, 25);
-  t.after(() => clearInterval(launcher));
+  // The stop flag, flags/stop-NAME, is read by the machine's launcher outside
+  // this repository, which sends the runner SIGTERM: the runner is its own
+  // process here and gets a real signal.
+  const params = join(s.dir, "params.json");
+  writeFileSync(params, JSON.stringify({ dir: s.dir, cache: s.cache, workspace: s.workspace, name: "home:sweep-b", configPath: s.configPath, pidfile: join(s.dir, "pids"), claimed: s.claimed, assignment: s.assignment }));
+  const child = spawn(process.execPath, [join(here, "fixtures", "run-sweep", "runner.mjs"), params], { stdio: "ignore" });
+  t.after(() => child.kill("SIGKILL"));
+  const exited = new Promise((resolve) => child.on("exit", (c, sig) => resolve(sig ?? c)));
   assert.equal(await until(() => s.sleepers().length > 0), true);
-  assert.equal(alive(s.sleepers()[0]), true, "the sleeper is alive while the run goes");
-  writeFileSync(flag, "");
-  await running;
   const [pid] = s.sleepers();
   s.track(pid);
-  assert.equal(await until(() => !alive(pid), 5000), true);
+  assert.equal(alive(pid), true, "the sleeper is alive while the run goes");
+  child.kill("SIGTERM");
+  await exited;
+  assert.equal(await until(() => !alive(pid), 5000), true, "the sleeper is gone 5 s after the run ended");
 });
 
 test("the time limit ends the agent's sleeper too", async (t) => {
@@ -265,4 +266,54 @@ test("a signal that fails other than with ESRCH keeps the journal and reports in
   await until(() => !alive(kid.pid));
   const gone = await sweepJournal({ name: "home:sweep-m2", dir, log: () => {}, kill: refuse("ESRCH") }).begin(s.workspace).end();
   assert.equal(gone.incomplete, false);
+});
+
+const withChild = () => spawn(process.execPath, ["-e", `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" }); setTimeout(() => {}, 30000)`], { stdio: "ignore" });
+const reap = (t, parent) => t.after(() => { for (const p of listProcesses().filter((p) => p.ppid === parent.pid)) try { process.kill(p.pid, "SIGKILL"); } catch { /* gone */ } parent.kill("SIGKILL"); });
+
+test("a tracked pid whose start time is not the live process's is not an ancestor: its children are not added or signalled", async (t) => {
+  const parent = withChild();
+  reap(t, parent);
+  await until(() => listProcesses().some((p) => p.ppid === parent.pid));
+  const tracked = { [parent.pid]: "Mon Jan 1 00:00:00 2001" };
+  const watcher = watch(await deadPid(), tracked);
+  await pause(400);
+  watcher.stop();
+  assert.deepEqual(Object.keys(tracked), [String(parent.pid)], "nothing was attributed to the reused pid");
+  assert.deepEqual(processesOf({ tracked }), []);
+});
+
+test("the root's start time is recorded at the first look, and a reused root pid's children are not taken", async (t) => {
+  const parent = withChild();
+  reap(t, parent);
+  await until(() => listProcesses().some((p) => p.ppid === parent.pid));
+  const live = watch(parent.pid);
+  live.stop();
+  assert.equal(typeof live.tracked[parent.pid], "string", "the root's start time is recorded");
+  assert.equal(Object.keys(live.tracked).length, 2, "and its child is followed");
+  // The same pid under a different start time: a reused pid.
+  const stale = { [parent.pid]: "Mon Jan 1 00:00:00 2001" };
+  watch(parent.pid, stale).stop();
+  assert.deepEqual(Object.keys(stale), [String(parent.pid)]);
+});
+
+test("recovery keeps the journal entries it has not swept yet when a sweep before them is incomplete", async (t) => {
+  const s = setup(t, "home:sweep-n", "exit");
+  const kid = orphan(s.workspace); kid.unref(); s.track(kid.pid);
+  await pause(300);
+  const dir = join(s.cache, "run-sweeps"), file = join(dir, "home_sweep-n.json");
+  mkdirSync(dir, { recursive: true });
+  const second = join(s.dir, "second");
+  mkdirSync(second);
+  const kid2 = orphan(second); kid2.unref(); s.track(kid2.pid);
+  await pause(300);
+  writeFileSync(file, JSON.stringify({ owner: await deadPid(), runs: { 1: { workspace: s.workspace }, 2: { workspace: second } } }));
+  // Every kill is refused; the journal is read each time a sweep logs.
+  const counts = [];
+  const refuse = () => { throw Object.assign(new Error("no"), { code: "EPERM" }); };
+  const journal = sweepJournal({ name: "home:sweep-n", dir, log: () => counts.push(Object.keys(JSON.parse(readFileSync(file, "utf8")).runs).length), kill: refuse });
+  const result = await journal.recover();
+  assert.equal(result.incomplete, true);
+  assert.deepEqual(counts, [2, 2], "both entries stay on file while each is swept");
+  assert.equal(Object.keys(JSON.parse(readFileSync(file, "utf8")).runs).length, 2, "both incomplete entries remain");
 });

@@ -17,6 +17,11 @@ import { join } from "node:path";
 // directory finds what stayed; the watch finds what changed directory, if it
 // was seen while its parent lived. Only the runner's own user's processes are
 // looked at, and never this process.
+//
+// Known limit: where the system hides environments (macOS ps shows none for
+// system binaries such as /bin/sleep), a process that left the workspace and
+// whose parent exited inside one WATCH_MS look is found by none of the three.
+// This is stated, not closed: it needs elevated rights, and no test asks for it.
 
 export const MARK_VARIABLE = "ATELIER_RUN_MARK";
 const MOST_NAMED = 20;
@@ -98,8 +103,13 @@ export function watch(root, tracked = {}, onNew = () => {}) {
   const look = () => {
     let procs;
     try { procs = listProcesses(); } catch { return; }
-    const known = new Set([root, ...Object.keys(tracked).map(Number)]);
+    const byPid = new Map(procs.map((p) => [p.pid, p]));
     let grew = true, added = false;
+    // The root's start time is noted at the first look; after that it counts
+    // as an ancestor, like any tracked pid, only while the live process of
+    // that pid has the start time saved for it.
+    if (tracked[root] === undefined && byPid.has(root)) { tracked[root] = byPid.get(root).started; added = true; }
+    const known = new Set(Object.entries(tracked).filter(([pid, started]) => byPid.get(Number(pid))?.started === started).map(([pid]) => Number(pid)));
     while (grew) {
       grew = false;
       for (const p of procs) if (!known.has(p.pid) && known.has(p.ppid)) { known.add(p.pid); tracked[p.pid] = p.started; grew = added = true; }
@@ -184,14 +194,21 @@ export function sweepJournal({ name, dir, log, kill }) {
       let earlier;
       try { earlier = JSON.parse(readFileSync(file, "utf8")); } catch { return { incomplete: false }; }
       if (!earlier || earlier.owner === process.pid || (Number.isInteger(earlier.owner) && alive(earlier.owner))) return { incomplete: false };
-      let incomplete = false;
+      // Every earlier entry goes into the journal under this process first, so
+      // a crash part-way loses none; each is dropped only once swept completely.
+      const pending = [];
       for (const entry of Object.values(earlier.runs ?? {})) {
         const record = typeof entry === "string" ? { workspace: entry } : entry && typeof entry.workspace === "string" ? entry : null;
-        if (!record) continue;
-        const result = await sweepRun(record, { log, kill });
-        if (result.incomplete) { incomplete = true; keep(record); }
+        if (record) pending.push([++serial, record]);
       }
-      if (!runs.size) { try { unlinkSync(file); } catch { /* Gone. */ } } else save();
+      for (const [id, record] of pending) runs.set(id, record);
+      save();
+      let incomplete = false;
+      for (const [id, record] of pending) {
+        const result = await sweepRun(record, { log, kill });
+        if (result.incomplete) incomplete = true;
+        else { runs.delete(id); save(); }
+      }
       return { incomplete };
     },
   };
