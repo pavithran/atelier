@@ -158,6 +158,19 @@ it("of two calls at once one unblocks and the other finds the task not blocked",
   expect((await events(L, id)).filter((e) => e.kind === "item.unblocked")).toHaveLength(1);
 });
 
+it("a repeated call after a finished unblock, with the same acting model, answers 409 not_blocked and logs no second event", async () => {
+  const { L, id } = await capped("rc-repeat");
+  await revise(L, id);
+  await criteriaReview(L, id, true);
+  expect((await unblock("rc-repeat", id, {}, OPUS)).status).toBe(200);
+  const again = await unblock("rc-repeat", id, {}, OPUS);
+  expect(again.status).toBe(409);
+  expect(((await again.json()) as { error: string }).error).toBe("not_blocked");
+  const quoted = await unblock("rc-repeat", id, { quote: QUOTE });
+  expect(quoted.status).toBe(409);
+  expect((await events(L, id)).filter((e) => e.kind === "item.unblocked")).toHaveLength(1);
+});
+
 it("the command line's call, which names the model as the actor on the developer token, is judged the same and recorded under the developer", async () => {
   const { L, id } = await capped("rc-cli");
   await refused(await unblock("rc-cli", id, {}, OPUS), /not revised/);

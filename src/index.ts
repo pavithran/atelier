@@ -2939,8 +2939,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // developer's call whichever actor the session names on the developer
       // token: it lifts on an approved revision of the criteria, else it
       // refuses naming both paths.
-      const blocked = (c.body as Record<string, unknown>).quote === undefined ? (await L.item(id)).blocked : null;
-      const capped = !!blocked && !c.token && await L.heldAtRoundCap(id);
+      const blocked = (await L.item(id)).blocked;
+      // A task that is not blocked answers not_blocked before any direction check.
+      if (!blocked) throw new RuleError("not_blocked", `${id} is not blocked`, 409);
+      const capped = (c.body as Record<string, unknown>).quote === undefined && !c.token && await L.heldAtRoundCap(id);
       return json(await L.unblock(id, capped ? ownerActor(env) : actor, !!c.token, blocked?.fact || capped ? null : itemDirection(c, "unblock", id, ref.name, env)));
     }
     case "clear-secret":
