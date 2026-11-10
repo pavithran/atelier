@@ -93,6 +93,15 @@ function keysFor(issuer: string) {
   return keys;
 }
 
+// The value of the CF_Authorization cookie, or null when the request has none.
+function accessCookie(req: Request): string | null {
+  for (const part of (req.headers.get("cookie") ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === "CF_Authorization") return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
 // Whether Access vouches for the request as the owner's own: the assertion
 // header holds a token that verifies against the team's published keys, names
 // the team as its issuer and this server's application as its audience, has
@@ -102,8 +111,16 @@ function keysFor(issuer: string) {
 // says only that Access did not vouch — no header, a foreign, stale or
 // someone else's token, keys that could not be fetched — never which, and
 // nothing is logged.
+//
+// Cloudflare adds the header only on the paths the Access application lists,
+// and the bare root cannot be listed without covering the whole host. Access
+// also sets the CF_Authorization cookie, holding the same token, which the
+// browser sends on every path. So when the header is absent the cookie is read
+// and verified exactly alike; a header that is present decides alone, even
+// beside a valid cookie (t626).
 export async function accessVouches(req: Request, access: AccessSettings): Promise<boolean> {
-  const token = req.headers.get("cf-access-jwt-assertion");
+  const header = req.headers.get("cf-access-jwt-assertion");
+  const token = header !== null ? header : accessCookie(req);
   if (!token) return false;
   try {
     const { payload } = await jwtVerify(token, keysFor(access.issuer), { issuer: access.issuer, audience: access.audience });
