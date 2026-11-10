@@ -10,8 +10,8 @@ import { slotStatus } from "../cli/load.mjs";
 
 const moduleURL = new URL("../cli/load.mjs", import.meta.url).href;
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
-async function until(read, message) {
-  const deadline = Date.now() + 15000;
+async function until(read, message, limitMs = 15000) {
+  const deadline = Date.now() + limitMs;
   while (Date.now() < deadline) {
     const result = await read();
     if (result) return result;
@@ -171,21 +171,50 @@ test("real landings under the default capacity run their checks one at a time wh
   assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), ["start", "end", "start", "end", "start", "end"]);
 });
 
-test("release sequence real processes retain gaps, then yield before the fourth continuation", { timeout: 30000 }, async (t) => {
-  if (!canInspectSlots(t)) return;
-  const f = fixture(t), sequenceId = randomUUID(), order = join(f.root, "order");
-  const command = (label) => [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(order)}, ${JSON.stringify(label)});`];
-  const first = f.run(command("0"), "release", randomUUID(), { sequenceId, sequenceStep: 0 });
-  assert.equal((await first.finished).code, 0, first.output);
-  const ordinary = f.run(command("O"));
-  await until(async () => (await f.status()).waiters.length === 1, "ordinary did not queue behind reservation");
-  for (let step = 1; step <= 4; step++) {
-    const child = f.run(command(String(step)), "release", randomUUID(), { sequenceId, sequenceStep: step });
-    assert.equal((await child.finished).code, 0, child.output);
-  }
-  assert.equal((await ordinary.finished).code, 0, ordinary.output);
-  assert.equal(readFileSync(order, "utf8"), "0123O4");
-});
+// Cause (b): the idle reservation a release step leaves lasts a fixed
+// SEQUENCE_GRACE_MS of 5 seconds (cli/load.mjs:17, set at :230, dropped at :129)
+// and no setting changes it. An ordinary run that registers later than that finds
+// the slot free and never queues. So the ordinary child does its slow start (and
+// loads the module) before the first step runs, then waits at a gate file; the
+// test opens the gate when the reservation begins, so registration follows it by
+// milliseconds however long the start took.
+const WAIT_MS = 60000;
+const within = (promise, what) => {
+  let timer;
+  const deadline = new Promise((_, fail) => { timer = setTimeout(() => fail(new Error(`timed out after ${WAIT_MS} ms waiting for ${what}`)), WAIT_MS); });
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+};
+const waitUntil = (read, what) => until(read, `${what} not seen within ${WAIT_MS} ms`, WAIT_MS);
+
+function releaseSequence(startDelayMs) {
+  const name = `release sequence real processes retain gaps, then yield before the fourth continuation${startDelayMs ? ` when the ordinary run starts ${startDelayMs} ms late` : ""}`;
+  // 7 waits of WAIT_MS at most, plus the 4 continuations: 11 deadlines.
+  test(name, { timeout: 12 * WAIT_MS + startDelayMs }, async (t) => {
+    if (!canInspectSlots(t)) return;
+    const f = fixture(t), sequenceId = randomUUID(), order = join(f.root, "order"), ready = join(f.root, "ready"), gate = join(f.root, "gate");
+    const command = (label) => [process.execPath, "-e", `require('node:fs').appendFileSync(${JSON.stringify(order)}, ${JSON.stringify(label)});`];
+    const ordinary = f.spawn(`import { runSlotCommand } from ${JSON.stringify(moduleURL)};
+      import { existsSync, writeFileSync } from "node:fs";
+      await new Promise((done) => setTimeout(done, ${startDelayMs}));
+      writeFileSync(${JSON.stringify(ready)}, "ready");
+      while (!existsSync(${JSON.stringify(gate)})) await new Promise((done) => setTimeout(done, 10));
+      try { await runSlotCommand(${JSON.stringify(command("O"))}, { class: 'ordinary', project: 'project-' + process.pid, actor: 'codex/test', task: 't1' }, { path: ${JSON.stringify(f.path)} }); }
+      catch (error) { console.error(error); process.exitCode = 1; }`);
+    await waitUntil(() => existsSync(ready), "the ordinary run to finish starting");
+    const first = f.run(command("0"), "release", randomUUID(), { sequenceId, sequenceStep: 0 });
+    assert.equal((await within(first.finished, "the first release step to exit")).code, 0, first.output);
+    writeFileSync(gate, "go");
+    await waitUntil(async () => (await f.status()).waiters.length === 1, "the ordinary run to queue behind the reservation");
+    for (let step = 1; step <= 4; step++) {
+      const child = f.run(command(String(step)), "release", randomUUID(), { sequenceId, sequenceStep: step });
+      assert.equal((await within(child.finished, `release step ${step} to exit`)).code, 0, child.output);
+    }
+    assert.equal((await within(ordinary.finished, "the ordinary run to exit")).code, 0, ordinary.output);
+    assert.equal(readFileSync(order, "utf8"), "0123O4");
+  });
+}
+releaseSequence(0);
+releaseSequence(20000);
 
 test("release sequence failure frees immediately and an abandoned idle reservation expires", { timeout: 30000 }, async (t) => {
   if (!canInspectSlots(t)) return;
