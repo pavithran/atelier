@@ -9,7 +9,7 @@ import { recordedHeadStillStands } from '../cli/land.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'atelier-recorded-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const git = (args, opts = {}) => {
     const r = spawnSync('git', args, { cwd: opts.cwd ?? root, encoding: 'utf8' });
     if (opts.allowFail) return r;
@@ -19,12 +19,14 @@ function fixture(t) {
   const source = join(root, 'source'), dir = join(root, 'workspace');
   git(['init', '-q', '-b', 'main', source]);
   const g = (...args) => git(args, { cwd: source });
+  // No background gc or maintenance may write under root after a test returns.
+  g('config', 'gc.auto', '0'); g('config', 'maintenance.auto', 'false');
   g('config', 'user.name', 'Fixture'); g('config', 'user.email', 'fixture@example.invalid');
   writeFileSync(join(source, 'work'), 'base'); g('add', '.'); g('commit', '-qm', 'base');
   const base = g('rev-parse', 'HEAD');
   writeFileSync(join(source, 'work'), 'recorded'); g('commit', '-qam', 'recorded');
   const head = g('rev-parse', 'HEAD');
-  git(['clone', '-q', source, dir]);
+  git(['clone', '-q', '--config', 'gc.auto=0', '--config', 'maintenance.auto=false', source, dir]);
   writeFileSync(join(source, 'work'), 'newer tip'); g('commit', '-qam', 'unrecorded');
   const detail = { item: { head, owner: 'codex/test', state: 'submitted' }, policy: { commitIdentity: { name: 'Project', email: 'project@example.invalid' }, prepare: { command: 'npm ci' } } };
   const calls = [], lines = [];
