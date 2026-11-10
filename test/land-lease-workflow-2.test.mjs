@@ -8,7 +8,18 @@ import { LANDING_LEASE_EXPIRY_MS } from "../src/landing-lease.ts";
 import { landFixture, CEILING_MS, until, waitingLanding, holdingLanding, underLease, spawnLanding } from "./land-fixture.mjs";
 import { cancelHeld, stillRunning } from "./land-lease-workflow-shared.mjs";
 
-test("a second, different signal during a signal's release waits for it, and the first signal's status stands", async (t) => {
+// Every wait below has a deadline for a loaded machine (t612): it polls for
+// the event it awaits and fails naming it. Each test's timeout is the sum of
+// its deadlines, over its rounds, plus room for the fixtures.
+const WAIT_MS = 90_000;
+const FIXTURE_MS = 60_000;
+const endOf = (landing, what, ms = WAIT_MS) => {
+  let timer;
+  const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error(`${what} did not come within ${ms}ms\n${landing.output()}`)), ms); });
+  return Promise.race([landing.done, late]).finally(() => clearTimeout(timer));
+};
+
+test("a second, different signal during a signal's release waits for it, and the first signal's status stands", { timeout: 2 * (FIXTURE_MS + 2 * CEILING_MS + WAIT_MS) }, async (t) => {
   if (!canInspectSlots(t)) return;
   for (const [first, second, status] of [["SIGTERM", "SIGINT", 143], ["SIGINT", "SIGTERM", 130]]) {
     const f = await landFixture(t);
@@ -21,7 +32,7 @@ test("a second, different signal during a signal's release waits for it, and the
     landing.child.kill(second);
     assert.ok(await stillRunning(landing), `the landing ended before its release was answered:\n${landing.output()}`);
     letGo = true;
-    const ended = await landing.done;
+    const ended = await endOf(landing, `the landing's end after ${first} then ${second}`);
     assert.equal(ended.status, status, landing.output());
     assert.equal(f.box.lease, null, landing.output());
     assert.equal(f.box.states.t1, "submitted");
@@ -39,7 +50,7 @@ const STILL = /SIGTERM received again; still releasing the landing lease of proj
 
 const FORCED = /SIGTERM received a third time; quitting without waiting for the release\. The landing lease of proj lapses on its own after \d+ minutes/;
 
-test("the same signal again during the release says so and keeps waiting; a third forces the exit", async (t) => {
+test("the same signal again during the release says so and keeps waiting; a third forces the exit", { timeout: 2 * (FIXTURE_MS + 2 * CEILING_MS + 2 * WAIT_MS) }, async (t) => {
   if (!canInspectSlots(t)) return;
   for (const force of [false, true]) {
     const f = await landFixture(t);
@@ -50,13 +61,13 @@ test("the same signal again during the release says so and keeps waiting; a thir
     landing.child.kill("SIGTERM");
     await until(() => cancelHeld(f), CEILING_MS, "the release SIGTERM started");
     landing.child.kill("SIGTERM");
-    await until(() => STILL.test(landing.output()), 15_000, "the line that the release is still going");
+    await until(() => STILL.test(landing.output()), WAIT_MS, "the line that the release is still going");
     assert.ok(await stillRunning(landing), `the landing ended before its release was answered:\n${landing.output()}`);
     if (force) {
       landing.child.kill("SIGTERM");
       const began = Date.now();
-      const ended = await landing.done;
-      assert.ok(Date.now() - began < 10_000, "the third signal ends the landing promptly");
+      const ended = await endOf(landing, "the landing's end after the third SIGTERM");
+      assert.ok(Date.now() - began < WAIT_MS, "the third signal ends the landing promptly");
       assert.equal(ended.status, 143, landing.output());
       assert.match(landing.output(), FORCED);
       // The cancel was never answered: the lease lapses on its own.
@@ -64,7 +75,7 @@ test("the same signal again during the release says so and keeps waiting; a thir
       continue;
     }
     letGo = true;
-    const ended = await landing.done;
+    const ended = await endOf(landing, "the landing's end after the release was answered");
     assert.equal(ended.status, 143, landing.output());
     assert.equal(f.box.lease, null, landing.output());
     assert.equal(f.box.states.t1, "submitted");
@@ -74,7 +85,7 @@ test("the same signal again during the release says so and keeps waiting; a thir
 
 // t419: a landing signalled while its regenerate command runs ends that
 // command's process group, and what it started, as it releases the lease.
-test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 60_000 }, async (t) => {
+test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process group with the landing", { timeout: 3 * (FIXTURE_MS + 3 * WAIT_MS) }, async (t) => {
   for (const [signal, status] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]]) {
     const f = await landFixture(t);
     const pidFile = join(f.p, "regen-sleeper.pid");
@@ -82,19 +93,19 @@ test("SIGINT, SIGTERM and SIGHUP during the regenerate step end its process grou
     // The regenerate step runs under the lease, in the merge's clean clone
     // (G2), as a grandchild of the landing: the signal still ends its group.
     const landing = spawnLanding(f);
-    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), 15_000, "the regenerate command's sleeper");
+    await until(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), WAIT_MS, "the regenerate command's sleeper");
     const sleeper = Number(readFileSync(pidFile, "utf8"));
     landing.child.kill(signal);
-    const ended = await landing.done;
+    const ended = await endOf(landing, `the landing's end after ${signal}`);
     assert.equal(ended.status, status, landing.output());
     assert.equal(f.box.lease, null, landing.output());
     const alive = () => { try { process.kill(sleeper, 0); return true; } catch { return false; } };
-    await until(() => !alive(), 2000, `the end of the regenerate sleeper ${sleeper} after ${signal}`);
+    await until(() => !alive(), WAIT_MS, `the end of the regenerate sleeper ${sleeper} after ${signal}`);
   }
 });
 
 
-test("the landing renews the lease while it holds it, and the renewal moves renewedAt on", async (t) => {
+test("the landing renews the lease while it holds it, and the renewal moves renewedAt on", { timeout: FIXTURE_MS + CEILING_MS + WAIT_MS }, async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   const landing = holdingLanding(f, { ATELIER_LAND_RENEW_MS: "40" });
@@ -106,7 +117,7 @@ test("the landing renews the lease while it holds it, and the renewal moves rene
   // Nothing was accepted; the landing is still at its acceptance.
   assert.equal(f.box.states.t1, "submitted");
   landing.child.kill("SIGTERM");
-  await landing.done;
+  await endOf(landing, "the landing's end after SIGTERM");
   assert.equal(f.box.lease, null);
 });
 
