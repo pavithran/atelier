@@ -14,6 +14,7 @@ dist/
 build/
 .build/
 DerivedData/
+test-results/
 
 # Local project data and caches
 .ai-project-data/
