@@ -4897,7 +4897,7 @@ export default {
       }
       const access = accessConfigured.state === "on" ? accessConfigured.settings : null;
       if (access && guarded && !(await accessVouches(req, access))) {
-        return html(renderAccessRefusal("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry."), 401);
+        return html(renderAccessRefusal("This page is behind Cloudflare Access, whose sign-in this request did not carry. Sign in at the Access prompt and retry.", true), 401);
       }
       if (pathname === "/login") {
         // Behind Access the assertion just verified is the owner's sign-in,
