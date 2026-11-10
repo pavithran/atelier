@@ -12,10 +12,10 @@
 import { describe, liveOffers, unclaimed, waitingDispatch, type SeenOffer } from "./dispatch/rules.ts";
 import { isPrivateProject } from "./dispatch/private.ts";
 import { vendorOf } from "./graph.ts";
-import { EASTERN } from "./now.ts";
+import { buildNow, EASTERN } from "./now.ts";
 import { hostOf, MACHINE_NAMES } from "./runner-names.ts";
 import { machineReadings, type HostReading, type MachineReading } from "./runners/machine.ts";
-import { age, buildToday, TRACK, type TodayInputs, type TodayLane } from "./today.ts";
+import { age, todayLanes, TRACK, type TodayInputs, type TodayLane } from "./today.ts";
 import { escapeText as e, page, type Live } from "./ui";
 import rigsCss from "./rigs.css";
 
@@ -89,9 +89,10 @@ function trainsOf(inputs: TodayInputs, at: Date): Map<string, RigTrain[]> {
   const by = new Map<string, RigTrain[]>();
   for (const p of inputs.projects) {
     const dispatches = new Map(p.now.items.map((i) => [i.id, i.dispatch?.job ?? null] as const));
-    for (const l of buildToday({ projects: [p], unread: [], owner: inputs.owner }, at).lanes as TodayLane[]) {
+    for (const l of todayLanes(buildNow([p.now], at), { projects: [p], unread: [], owner: inputs.owner }, at) as TodayLane[]) {
       const runner = l.run.runner;
-      if (l.wait || !runner) continue;
+      // A task Today calls waiting still holds its runner while its progress record is unfinished (a pulse other than none).
+      if (!runner || (l.wait && l.run.pulse === "none")) continue;
       const step = Math.max(0, TRACK.indexOf(l.run.stage as (typeof TRACK)[number]));
       const hidden = isPrivateProject(l.project);
       const actor = l.run.actor ?? l.holder;
