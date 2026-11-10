@@ -63,7 +63,7 @@ test("decide --standing models records a free-text plan in full mode and unwrap 
   assert.ok(!unwrapped.requests.some((q) => /\/items\//.test(q.path)));
   const listed = await run("model-plan", "decisions");
   assert.doesNotMatch(listed.stdout, /They act while.*fast mode/);
-  const gated = await run("model-plan", "decide", "--standing", "queue-landable", "on", "--quote", "queue it");
+  const gated = await run("model-plan", "decide", "--standing", "reask-on-resubmit", "on", "--quote", "ask again");
   assert.equal(gated.code, 1);
   assert.match(gated.stderr, /not_fast/);
   assert.equal((await run("model-plan", "decisions", "withdraw", decision.id, "--note", "choose again")).code, 0);
