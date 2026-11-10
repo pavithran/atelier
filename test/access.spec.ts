@@ -155,6 +155,37 @@ it("another email, a forged or expired assertion, or a cross-origin request neve
   } finally { send.mockRestore(); }
 });
 
+// t626: Cloudflare adds the assertion header only on the paths the Access
+// application lists, not on / or /today, but the CF_Authorization cookie goes
+// on every path of the host and holds the same token.
+it("GET / with only the CF_Authorization cookie is Today; with neither it is refused", async () => {
+  const send = serveKeys();
+  try {
+    const jwt = await assertion();
+    const today = await get("/", { cookie: `CF_Authorization=${jwt}` });
+    expect(today.status).toBe(200);
+    expect(await today.text()).toContain("<title>Today · Atelier</title>");
+    expect((await get("/")).status).toBe(401);
+    expect((await get("/", { cookie: `CF_Authorization=${await assertion("-1m")}` })).status).toBe(401);
+  } finally { send.mockRestore(); }
+});
+
+it("a cross-site POST to /login carrying only the cookie is refused as with the header, and starts no session", async () => {
+  const send = serveKeys();
+  try {
+    const jwt = await assertion();
+    const post = (headers: Record<string, string>) => worker.fetch(new Request("https://atelier.test/login", {
+      method: "POST", body: new URLSearchParams({ token: TOKEN }), headers: { origin: "https://evil.test", ...headers }, redirect: "manual",
+    }), bindings);
+    const byHeader = await post({ "cf-access-jwt-assertion": jwt });
+    const byCookie = await post({ cookie: `CF_Authorization=${jwt}` });
+    expect(byHeader.status).toBe(403);
+    expect(byCookie.status).toBe(403);
+    expect(await byCookie.text()).toBe(await byHeader.text());
+    expect(byCookie.headers.get("set-cookie")).toBeNull();
+  } finally { send.mockRestore(); }
+});
+
 it("logout ends a session Access started", async () => {
   const send = serveKeys();
   try {
