@@ -84,6 +84,7 @@ import {
 import { integrationBlockers, nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
+import { cleanPlanned, designViews, PLANNED_EVENT, plansOf, repeats, type DesignPlan, type DesignView } from "./designs.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
 import { standingOf } from "./standing.ts";
 import { disputedFinding, isDispute } from "./dispatch/rework.ts";
@@ -7394,6 +7395,28 @@ export class Ledger extends DurableObject<Env> {
     return decision;
   }
 
+  // How many tasks a design plans (src/designs.ts). The one event is the only
+  // write, and nothing here awaits, so two equal records sent at once are one.
+  recordDesignPlanned(body: Record<string, unknown>, actor: string, acting: string | null = null): DesignPlan {
+    this.project();
+    const input = cleanPlanned(body);
+    const latest = plansOf(this.designEvents()).find((p) => p.name === input.name);
+    if (latest && repeats(latest, input)) return latest;
+    const at = new Date().toISOString();
+    this.log(null, actor, PLANNED_EVENT, { ...input, by: actor, acting }, at);
+    return { ...input, by: actor, acting, at };
+  }
+
+  designs(): DesignView[] {
+    this.project();
+    return designViews(plansOf(this.designEvents()), this.items());
+  }
+
+  private designEvents(): LedgerEvent[] {
+    const cutover = this.cutover().seq;
+    return this.sql.exec(`SELECT * FROM events WHERE kind = ? ORDER BY seq`, PLANNED_EVENT).toArray().map((r) => eventOf(r, this.owner, cutover));
+  }
+
   // The standing instructions that act now, by key: those recorded and not
   // withdrawn. dispatch-on-criteria also acts outside fast mode.
   standing(): Map<string, string> {
@@ -7849,6 +7872,7 @@ export class Ledger extends DurableObject<Env> {
       ORDER BY seq DESC`).toArray().map((r) => eventOf(r, this.owner, cutover));
     return {
       items, events,
+      designs: designViews(plansOf(this.designEvents()), items),
       coreFiles: this.project().policy.coreFiles,
       lease: this.readProjectLanding(),
       openReviewItems: this.sql.exec(`SELECT DISTINCT r.item FROM review_requests r JOIN items i ON i.id = r.item WHERE r.state = 'open' AND r.superseded IS NULL AND r.head = i.head`).toArray().map((r) => String(r.item)),

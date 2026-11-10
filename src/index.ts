@@ -2562,6 +2562,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     });
     return json({ project: ref.name, source, ...(await L.importTasks(source, entries, actor, c.acting ?? null)) });
   }
+  // How many tasks each design plans (t601, src/designs.ts). GET lists the
+  // designs a record names, with the tasks filed under each; POST records a
+  // count, on the developer token alone with the developer's words.
+  if (parts[2] === "designs" && parts.length === 3) {
+    if (m === "GET") return json({ designs: await L.designs() });
+    if (m === "POST") {
+      // An agent token reaches no route agentRoute (src/tokens.ts) leaves out.
+      requireOwner(env, actor);
+      return json(await L.recordDesignPlanned(body, actor, c.acting ?? null), 201);
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);
