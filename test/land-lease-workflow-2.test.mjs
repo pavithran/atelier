@@ -126,14 +126,17 @@ test("the landing renews the lease while it holds it, and the renewal moves rene
 });
 
 
-test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", { timeout: CEILING_MS }, async (t) => {
+test("a lease not renewed for the expiry is taken over, and the landing says whose lapsed", { timeout: FIXTURE_MS + CEILING_MS }, async (t) => {
   if (!canInspectSlots(t)) return;
   const f = await landFixture(t);
   // Seed an already expired lease; do not wait for fifteen minutes to elapse.
-  // run() resolves on CLI close, after the observed takeover and merge.
+  // The landing's end comes after the observed takeover and merge; the wait
+  // for it has a deadline that fails naming it, with the output so far (t624).
   const at = new Date(Date.now() - LANDING_LEASE_EXPIRY_MS - 5 * 60_000).toISOString();
   f.box.lease = { item: "t2", holder: "owner", at, renewedAt: at };
-  const r = await f.run(f.checkout, "land", "t1");
+  const landing = spawnLanding(f);
+  const ended = await endOf(landing, "the landing's end after taking over the lapsed lease", CEILING_MS);
+  const r = { status: ended.status, output: landing.output() };
   assert.equal(r.status, 0, r.output);
   assert.match(r.output, /Took over the landing lease of proj from owner, which had been landing t2 since .* and stopped renewing it 20 minutes ago; that landing is treated as ended/);
   assert.equal(f.box.states.t1, "merged");
