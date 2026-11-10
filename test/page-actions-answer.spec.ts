@@ -144,6 +144,8 @@ it("Override posts the existing verb with a reason of 1 to 500 characters kept a
   expect(second.status).toBe(409);
   expect(await second.text()).toContain('id="error-override"');
   expect((await post(NAME, id, "override", fields)).status).toBe(303);
+  // A used id is no way round the guards: the owner bearer token alone, as a fresh id has, is 403.
+  expect((await post(NAME, id, "override", fields, { cookie: false, bearer: TOKEN })).status).toBe(403);
   expect(await events(id, "review.overridden")).toHaveLength(1);
   expect(await events(id, "item.accepted")).toHaveLength(1);
 });

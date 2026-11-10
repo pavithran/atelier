@@ -4348,6 +4348,12 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // A used request id of an Answer or Override answers as its first click did, whatever the task has become since (t596).
       // A task page opened before the Override form carried an id still posts without one, and acts as it did.
       const requested = verb === "answer" || (verb === "override" && form.has("request"));
+      // The override's session and factor checks come before it: a used id is no way round them.
+      let factor: OwnerFactor | undefined;
+      if (verb === "override" || verb === "allow-override") {
+        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's own sign-in, not the developer token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403, `${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`);
+        factor = ownerFactorIn(env, c, form, project, id);
+      }
       if (requested && await L.pageRequestUsed(id, form.get("request"), verb as "answer" | "override")) return done();
       const before = await L.item(id);
       const expected = String(form.get("head") ?? "");
@@ -4375,11 +4381,6 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       // no agent holds (t371, ownerFactorIn): posted with the owner token as a
       // bearer, as an agent could, or from a session alone, which that token
       // buys, they are refused as the API's override is.
-      let factor: OwnerFactor | undefined;
-      if (verb === "override" || verb === "allow-override") {
-        if (!c.signedIn) throw new RuleError("override_unconfirmed", `an override of the independent review needs the developer's own sign-in, not the developer token: ${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`, 403, `${overrideConfirmationHint(project, id, c.url.origin, ownerFactorOf(env))}`);
-        factor = ownerFactorIn(env, c, form, project, id);
-      }
       // A change of owner takes the write token with it, as on the API routes:
       // the Ledger clears the id read here only if it is still the one recorded.
       const oldToken = await L.tokenId(id);
