@@ -67,6 +67,9 @@ export interface Item {
   // The short name of the design note the task builds on; tasks naming one
   // design wait for each other (coreOverlaps in src/dispatch/rules.ts).
   design?: string | null;
+  // 1 removes waiting or the developer's involvement, 2 is useful, 3 is
+  // long-term; the developer sets it, and a task filed without one is 2.
+  priority?: number;
   // What the change must do to be done, numbered in the review brief as a
   // plan part's acceptance criteria are; a change that fails one blocks.
   accept?: string[];
@@ -188,6 +191,9 @@ export interface ItemFields {
   // The short name of the design note the task builds on; tasks naming one
   // design wait for each other (coreOverlaps in src/dispatch/rules.ts).
   design?: string | null;
+  // 1 removes waiting or the developer's involvement, 2 is useful, 3 is
+  // long-term; the developer sets it, and a task filed without one is 2.
+  priority?: number;
   accept?: string[];
   brief?: string | null;
   title?: string;
@@ -1581,6 +1587,7 @@ export function secretClearReason(value: unknown): string {
 // one line or null. A field that is not sent is left out, so the Ledger
 // keeps the item's value for it.
 const DESIGN_MAX = 80;
+export const PRIORITY_DEFAULT = 2;
 export function itemFields(input: Record<string, unknown>): ItemFields {
   const list = (v: unknown, field: string): string[] => {
     if (!Array.isArray(v) || v.some((s) => typeof s !== "string" || !line(s))) throw new RuleError("bad_field", `${field} must be a list of strings with something in each`, 400);
@@ -1632,6 +1639,10 @@ export function itemFields(input: Record<string, unknown>): ItemFields {
     const design = line(input.design);
     if (design.length > DESIGN_MAX) throw new RuleError("bad_field", `design is a short name of at most ${DESIGN_MAX} characters; this one is ${design.length}`, 400);
     out.design = design || null;
+  }
+  if (input.priority !== undefined) {
+    if (input.priority !== 1 && input.priority !== 2 && input.priority !== 3) throw new RuleError("bad_field", "priority must be the number 1, 2 or 3", 400);
+    out.priority = input.priority;
   }
   return out;
 }

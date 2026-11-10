@@ -8,7 +8,7 @@ import { acceptedAgainstMain, acceptedState, NEXT_MARK } from "../src/rules.ts";
 import { criteriaHash, NO_CRITERIA } from "../src/criteria.ts";
 import { effectiveAdmissions, splitHarness, standardAdmissions, type ReviewerAdmission } from "../src/rules.ts";
 import { usageShortages } from "../src/rules.ts";
-import { AREAS_REMOVED, itemFields } from "../src/rules.ts";
+import { AREAS_REMOVED, itemFields, PRIORITY_DEFAULT } from "../src/rules.ts";
 import { LEDGER_RESTART_GAP_MS, ledgerRestart, missingLedgerMethod, parseLedgerRestart, parsePrivateList, privateFolderMatches, privatePath, privatePathsAmong, UPDATING_DETAIL } from "../src/rules.ts";
 import assert from "node:assert/strict";
 import { acceptancePolicy, mergeContext, mergePolicyDecision, policyChanges } from "../src/rules.ts";
