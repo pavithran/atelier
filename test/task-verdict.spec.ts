@@ -67,7 +67,8 @@ it("criterion 2: each state's verdict names its source", async () => {
 
 it("criterion 3: the verdict holds no control or command, and the page adds no form or button to main's", async () => {
   for (const id of [lc().ready[1], lc().sentBack[0], lc().protected[0], lc().blocked[0], lc().accepted[0]]) {
-    const v = verdictOf(await get(id));
+    // The Land form (t594) is the one control the verdict holds, on a task whose owner call is land or accept.
+    const v = verdictOf(await get(id)).replace(/<div class="verdict-land">[\s\S]*?<\/form>(<script[\s\S]*?<\/script>)?<\/div>/, "");
     expect(v, id).not.toMatch(/<form|<button|<pre|<code|atelier land|atelier merge/);
   }
   const ready = await get(lc().ready[1]);
@@ -81,8 +82,9 @@ it("criterion 3: the verdict holds no control or command, and the page adds no f
     "stale": { forms: ["reject", "block", "handoff", "release", "abandon"], buttons: ["Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
     "blocked": { forms: ["unblock", "abandon"], buttons: ["Unblock", "Close task without merging"] },
     "failed": { forms: ["reject", "block", "handoff", "release", "abandon"], buttons: ["Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
-    "unreadable": { forms: ["reject", "block", "handoff", "release", "abandon"], buttons: ["Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
-    "ready": { forms: ["reject", "block", "handoff", "release", "abandon"], buttons: ["Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
+    "unreadable": { forms: ["land", "reject", "block", "handoff", "release", "abandon"], buttons: ["Land", "Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
+    // Land (t594) is drawn first in the verdict block of a task ready to land, "unreadable" (a ready task whose diff cannot be read) too.
+    "ready": { forms: ["land", "reject", "block", "handoff", "release", "abandon"], buttons: ["Land", "Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
     "protected": { forms: ["approve", "override", "allow-override", "reject", "block", "handoff", "release", "abandon"], buttons: ["Approve revision", "Override the review and accept", "Allow an override from the command line", "Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
     "sent-back": { forms: ["approve", "reject", "block", "handoff", "release", "abandon"], buttons: ["Approve revision", "Send review", "Block", "Hand off task", "Release task", "Close task without merging"] },
     "accepted": { forms: ["accept", "abandon"], buttons: ["Accept this revision again", "Close task without merging"] },
@@ -222,8 +224,10 @@ it("criterion 11: the renderer reads only its arguments, the CSS holds no colour
   expect(src).not.toMatch(/\bfetch\(|\.detail\(|LEDGER|await /);
   const css = readFileSync("src/task-verdict.css", "utf8");
   expect(css).not.toMatch(/#[0-9a-fA-F]{3,8}\b|\brgba?\(\s*\d|\bhsla?\(|\boklch\(|\b(white|black|red|green|blue|gold|orange)\b\s*[;,)]/);
-  // src/ledger.ts is not pinned: t597 changes it on purpose. The end ref is main's, so later edits do not count.
-  expect(execFileSync("git", ["diff", "--name-only", "b91b451d", "7d7df93b^", "--", "src/index.ts", "src/theme.css"], { encoding: "utf8" })).toBe("");
+  // src/index.ts and src/ledger.ts are wired by t594 (the Land action), so only the theme stays as it was at the working tree.
+  // The range check ends at main's ref, so t597's change to src/ledger.ts does not count.
+  expect(execFileSync("git", ["diff", "--name-only", "b91b451d", "--", "src/theme.css"], { encoding: "utf8" })).toBe("");
+  expect(execFileSync("git", ["diff", "--name-only", "b91b451d", "7d7df93b^", "--", "src/index.ts", "src/ledger.ts", "src/theme.css"], { encoding: "utf8" })).toBe("");
 });
 
 // Criterion 12: the committed 390 px shots are of pages that do not scroll sideways. The drawn HTML is loaded

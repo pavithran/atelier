@@ -59,7 +59,7 @@ test("a 1.0 dump imports into a fresh Node server and is migrated: projects, ite
   assert.equal(r.code, 0, `${r.stdout}\n${r.stderr}`);
   assert.match(r.stdout, /relic on 127\.0\.0\.1:\d+: imported 56 rows of 33 tables/);
   // events gained stage (G3/G4's recording half) and items blocked_by (G3's read) since 1.0.
-  assert.match(r.stdout, /written by older code: events, items were migrated to this server's schema/);
+  assert.match(r.stdout, /written by older code: events, items, land_jobs were migrated to this server's schema/);
   assert.match(r.stdout, /relic was not registered on this server and is now/);
 
   // The project and its policy.
@@ -127,7 +127,7 @@ test("an import whose stored rows fall short of the manifest is not finished, an
   manifest.tables.find((t) => t.name === "items").count = 6;
   const begun = await api("POST", "/projects/short/ledger/import", { step: "begin", manifest });
   assert.equal(begun.status, 201, JSON.stringify(begun.body));
-  assert.deepEqual(begun.body.reshaped, ["events", "items"]);
+  assert.deepEqual(begun.body.reshaped, ["events", "items", "land_jobs"]);
   // The remade table has the dump's shape while the import runs.
   assert.ok(!(await columnsOf("short", "events")).includes("stage"));
   for (const t of dump.tables) {

@@ -119,6 +119,7 @@ import { parseReport } from "./refresh/mechanical.ts";
 import { pickResolver, resolverRefusal } from "./refresh/resolver.ts";
 import { refreshReview } from "./refresh/review.ts";
 import { SIZE_REFUSED } from "./large-diff.ts";
+import { assertShown, ensureRequestTable, keepRequest, planLand, replayOf, type ShownLand } from "./page-requests.ts";
 
 // One Ledger per project holds its items, evidence, reviews and an append-only
 // event log. A Durable Object runs one request at a time, so "exactly one owner"
@@ -488,6 +489,9 @@ export const LAND_TAIL_MAX = 2000;
 // the attempt began at; a failed attempt stops the land job until the head
 // changes or the developer queues it again (`requeued`). `cancelled` is when
 // `land --queue --cancel` removed the queue row.
+// What Ledger.requestLand answers; `replayed` marks the first answer returned again to a used request id (t594).
+export interface LandRequested { item: string; by: string; at: string; quote?: string; queued: boolean; requeued?: { failedStep: string; attempt: number }; replayed?: boolean }
+
 export interface LandingRecord {
   step: string;
   attempt: number;
@@ -1099,6 +1103,9 @@ export class Ledger extends DurableObject<Env> {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS land_jobs (item TEXT PRIMARY KEY, by TEXT NOT NULL, at TEXT NOT NULL)`);
     // The words that asked for the landing (t264), kept with the request.
     if (!this.sql.exec(`PRAGMA table_info(land_jobs)`).toArray().some((c) => c.name === "quote")) this.sql.exec(`ALTER TABLE land_jobs ADD COLUMN quote TEXT`);
+    // The head a page's Land was asked at (t594); null for a job the command line queued.
+    if (!this.sql.exec(`PRAGMA table_info(land_jobs)`).toArray().some((c) => c.name === "at_head")) this.sql.exec(`ALTER TABLE land_jobs ADD COLUMN at_head TEXT`);
+    ensureRequestTable(this.sql);
     // The developer's branches (t641), one row each by name.
     this.sql.exec(`CREATE TABLE IF NOT EXISTS developer_branches (name TEXT PRIMARY KEY, json TEXT NOT NULL)`);
     const eventColumns = this.sql.exec(`PRAGMA table_info(events)`).toArray().map((c) => c.name);
@@ -3270,7 +3277,7 @@ export class Ledger extends DurableObject<Env> {
     for (const i of items) { const p = this.progressOf(i.id); if (p) progress[i.id] = p; }
     const reviewRequests = this.sql.exec(`SELECT id, item, head, state, dispatch, claimedBy, runner, claimedAt, tier FROM review_requests WHERE state IN ('open', 'claimed') ORDER BY id`).toArray()
       .map((r) => ({ id: Number(r.id), item: r.item as string, head: r.head as string, state: r.state as string, dispatch: JSON.parse(r.dispatch as string) as Dispatch, claimedBy: (r.claimedBy as string | null) ?? null, runner: (r.runner as string | null) ?? null, claimedAt: (r.claimedAt as string | null) ?? null, tier: r.tier === 1 }));
-    const landJobs = this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at`).toArray().map((r) => ({ item: r.item as string, by: r.by as string, at: r.at as string }));
+    const landJobs = this.sql.exec(`SELECT item, by, at, at_head AS head FROM land_jobs ORDER BY at`).toArray().map((r) => ({ item: r.item as string, by: r.by as string, at: r.at as string, head: (r.head as string | null) ?? null }));
     const project = this.project();
     return { project: { name: project.name, policy: project.policy }, mode: this.mode(), items, stages, held, reviewRequests, landingLease: this.projectLanding(), landJobs, landings, lastChecks, standing: this.standingDecisions(), blockers, progress };
   }
@@ -3330,9 +3337,9 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The landing the developer asked for (atelier land --queue), with their words, while it stands.
-  private landJobOf(id: string): { by: string; at: string; quote: string | null } | null {
-    const row = this.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
-    return row ? { by: row.by as string, at: row.at as string, quote: (row.quote as string | null) ?? null } : null;
+  private landJobOf(id: string): { by: string; at: string; quote: string | null; head: string | null } | null {
+    const row = this.sql.exec(`SELECT by, at, quote, at_head AS head FROM land_jobs WHERE item = ?`, id).toArray()[0];
+    return row ? { by: row.by as string, at: row.at as string, quote: (row.quote as string | null) ?? null, head: (row.head as string | null) ?? null } : null;
   }
 
   private cutover(): { seq: number; at: string } {
@@ -11360,28 +11367,39 @@ export class Ledger extends DurableObject<Env> {
   // Queues a task's landing for a runner that holds the registered checkout
   // (t226, atelier land ID --queue). A task already merged or closed has no
   // landing to run; one already queued keeps its place.
-  requestLand(id: string, by: string, quote?: string): { item: string; by: string; at: string; quote?: string; queued: boolean; requeued?: { failedStep: string; attempt: number } } {
+  //
+  // `shown` is the page's Land (t594): the head the page showed and the
+  // one-use request id of that click. The Ledger runs one call at a time and
+  // this one is a single transaction, so the head is checked against the
+  // task's now, the job and its event written, and the id kept with the first
+  // answer, all or none. A used id returns that first answer and acts not
+  // again. Without `shown` (the command line's --queue) it acts as before.
+  requestLand(id: string, by: string, quote?: string, shown?: ShownLand): LandRequested {
+    return this.ctx.storage.transactionSync(() => this.requestLandIn(id, by, quote, shown));
+  }
+
+  private requestLandIn(id: string, by: string, quote: string | undefined, shown: ShownLand | undefined): LandRequested {
+    if (shown) {
+      const first = replayOf<LandRequested>(this.sql, shown.requestId, id, "land", new Date().toISOString());
+      if (first) return first;
+    }
     const item = this.item(id);
+    if (shown) assertShown(shown, id, item.head ?? null, criteriaOf(item));
     this.assertParallelCriteriaReviewed(id);
     if (item.state === "merged" || item.state === "abandoned") throw new RuleError("not_landable", `${id} is ${item.state}, so there is nothing to land`, 409, "run atelier ls to pick another task");
     const at = new Date().toISOString();
     if (item.state === "blocked") throw new RuleError("blocked", `${id} is blocked, so it is not queued to land: ${item.blocked?.reason ?? "no reason recorded"}`, 409, `run atelier unblock ${id}, then atelier land ${id} --queue`);
-    const existing = this.sql.exec(`SELECT by, at, quote FROM land_jobs WHERE item = ?`, id).toArray()[0];
+    const existing = this.landJobOf(id);
     // A landing that failed at this head is queued again only by asking
     // again (G1): the record says so, and the lander may take it once more.
     const stopped = this.landingStopped(item);
-    const said = quote?.trim().slice(0, 500) || null;
-    if (stopped) {
-      this.saveLandingRecord(id, { ...stopped, requeued: at });
-      if (existing) this.sql.exec(`UPDATE land_jobs SET at = ? WHERE item = ?`, at, id);
-      else this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote) VALUES (?, ?, ?, ?)`, id, by, at, said);
-      this.log(id, by, "land.requested", { by, requeued: true, failedStep: stopped.failedStep, attempt: stopped.attempt, ...(said ? { quote: said } : {}) }, at);
-      return { item: id, by, at, ...(said ? { quote: said } : {}), queued: true, requeued: { failedStep: stopped.failedStep!, attempt: stopped.attempt } };
-    }
-    if (existing) return { item: id, by: existing.by as string, at: existing.at as string, ...(existing.quote ? { quote: existing.quote as string } : {}), queued: false };
-    this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote) VALUES (?, ?, ?, ?)`, id, by, at, said);
-    this.log(id, by, "land.requested", { by, ...(said ? { quote: said } : {}) }, at);
-    return { item: id, by, at, ...(said ? { quote: said } : {}), queued: true };
+    const plan = planLand({ id, by, at, said: quote?.trim().slice(0, 500) || null, head: shown?.head ?? null, existing, stopped });
+    if (plan.requeue && stopped) this.saveLandingRecord(id, { ...stopped, requeued: at });
+    if (plan.write === "insert") this.sql.exec(`INSERT INTO land_jobs (item, by, at, quote, at_head) VALUES (?, ?, ?, ?, ?)`, id, plan.row.by, plan.row.at, plan.row.quote, plan.row.head);
+    else if (plan.write === "update") this.sql.exec(`UPDATE land_jobs SET by = ?, at = ?, at_head = ? WHERE item = ?`, plan.row.by, plan.row.at, plan.row.head, id);
+    if (plan.event) this.log(id, by, "land.requested", plan.event, at);
+    if (shown) keepRequest(this.sql, shown.requestId, id, "land", JSON.stringify(plan.answer), at);
+    return plan.answer;
   }
 
   // The landing enters its merge (G1): `atelier merge ID --landing` calls
@@ -11439,7 +11457,7 @@ export class Ledger extends DurableObject<Env> {
   landJobs(offer: RunnerOffer, names: string[]): Item[] {
     if (!(offer.jobs ?? []).includes("land") || !names.some((n) => (offer.checkouts ?? []).includes(n))) return [];
     const jobs: Item[] = [];
-    for (const r of this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at, item`).toArray()) {
+    for (const r of this.sql.exec(`SELECT item, by, at, at_head AS head FROM land_jobs ORDER BY at, item`).toArray()) {
       const item = this.item(r.item as string);
       // A merged task keeps its job while its post-merge run is open: the
       // merge is recorded before the journal is cleared and the run executes,
@@ -11449,6 +11467,15 @@ export class Ledger extends DurableObject<Env> {
       // not dropped here: the stage tick finishes it.)
       const run = item.state === "merged" ? this.postMergeRun(item.id) : null;
       if (item.state === "abandoned" || (item.state === "merged" && (!run || run.state === "complete" || run.state === "failed"))) { this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id); continue; }
+      // A job a page queued at one head is not offered once the task has
+      // moved to another (t594): its row is dropped, and the stop is logged
+      // with both heads. The page then draws Land again at the new head.
+      const queuedAt = (r.head as string | null) ?? null;
+      if (queuedAt && item.head && queuedAt !== item.head && item.state !== "merged") {
+        this.sql.exec(`DELETE FROM land_jobs WHERE item = ?`, item.id);
+        this.log(item.id, ORCHESTRATOR, "land.stopped", { reason: "stale_head", shown: queuedAt, current: item.head }, new Date().toISOString());
+        continue;
+      }
       // A blocked task is never landed, and a landing that failed at the
       // task's head is not tried again until the head changes or the
       // developer queues it again (G1): the job stays queued, unoffered.
