@@ -141,3 +141,15 @@
 @media (prefers-reduced-motion: reduce) {
   .task-verdict *, .task-verdict *::after { animation: none !important; transition: none !important; }
 }
+
+/* The Land form and its states in the verdict block (t594). */
+.task-verdict .verdict-land { margin-top: 14px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.task-verdict .verdict-land .land-form { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.task-verdict .verdict-land .land-form button { min-height: 44px; padding: 0 22px; transition: transform .15s var(--ease, ease), opacity .15s; }
+.task-verdict .verdict-land .land-form button:active { transform: translateY(1px); }
+.task-verdict .verdict-land .land-form button:disabled { opacity: .6; cursor: progress; }
+.task-verdict .verdict-land .land-state { margin: 0; font-size: 14px; color: var(--text-muted); }
+.task-verdict .verdict-land .land-queued { color: var(--observed); font-weight: 600; }
+.task-verdict .verdict-land .land-moved, .task-verdict .verdict-land .land-failed { color: var(--caution); flex-basis: 100%; }
+.task-verdict .verdict-land .form-error { flex-basis: 100%; margin: 0; }
+@media (prefers-reduced-motion: reduce) { .task-verdict .verdict-land .land-form button { transition: none; } }

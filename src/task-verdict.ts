@@ -1,7 +1,7 @@
 // The task page (t586): it leads with its verdict, then the five-step track,
 // then the evidence as a checklist, the builder's summary marked Not verified,
 // and the diff; the thread, rounds, history, brief and technical details sit
-// folded below. Read only: it draws no button or form of its own. The forms
+// folded below. Read only, but for the Land form (t594) in the verdict block. The forms
 // the page has always drawn arrive in `parts`, already drawn by src/ui.ts, and
 // are set below the verdict in the order they had.
 //
@@ -201,7 +201,7 @@ export function renderTaskVerdict(d: Detail, diff: ItemDiff | "unavailable" | nu
     ${v.kind === "ready" ? "" : `<p class="review-description">${e(parts.status.detail)}</p>`}
     ${parts.status.unknowns.map((u) => `<p class="meta">${e(u)}</p>`).join("")}
   </header>
-  <div class="verdict" id="verdict"><p class="verdict-line">${e(v.line)}</p><p class="verdict-ask">${e(v.ask)}</p></div>
+  <div class="verdict" id="verdict"><p class="verdict-line">${e(v.line)}</p><p class="verdict-ask">${e(v.ask)}</p>${parts.land ? `<div class="verdict-land">${parts.land}</div>` : ""}</div>
   ${trackOf(d, ctx, v.kind)}
 </article>`;
 
