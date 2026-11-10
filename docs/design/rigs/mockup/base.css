@@ -1,0 +1,61 @@
+/* Shared by every mockup. Tokens come from theme.css (a copy of Atelier's src/theme.css);
+   family colours are copied from src/layout.css. Light and dark follow the device. */
+:root {
+  --m-anthropic: #ff8a5b; --m-openai: #3fe0b0; --m-zai: #6f9bff; --m-google: #ff8fcf; --m-qwen: #b5e55c;
+  --ok: var(--observed); --warn: var(--caution); --bad: var(--fault); --you: var(--signal);
+  --ease: cubic-bezier(.2,.7,.2,1);
+}
+@media (prefers-color-scheme: light) {
+  :root { --m-anthropic: #983b18; --m-openai: #09654c; --m-zai: #2c50bb; --m-google: #9b2a6c; --m-qwen: #3f620f; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--surface); color: var(--text); font: 15px/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; }
+.mono { font-family: var(--font-mono); font-size: .86em; }
+.muted { color: var(--text-muted); }
+.dim { color: var(--text-dim); }
+h1, h2, h3 { font-family: var(--font-display); margin: 0; letter-spacing: -.01em; }
+
+/* Family colours */
+.f-anthropic { --fam: var(--m-anthropic); } .f-openai { --fam: var(--m-openai); }
+.f-zai { --fam: var(--m-zai); } .f-google { --fam: var(--m-google); } .f-qwen { --fam: var(--m-qwen); } .f-you { --fam: var(--signal); }
+.fam-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fam); flex: none; }
+
+/* State chips: colour plus a shape, never colour alone */
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 12px/1 var(--font-sans); padding: 5px 9px 5px 8px; border-radius: var(--radius-pill); white-space: nowrap; border: 1px solid transparent; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.chip.ok { color: var(--ok); background: rgba(var(--observed-rgb), .12); }
+.chip.warn { color: var(--warn); background: rgba(var(--caution-rgb), .12); }
+.chip.warn::before { border-radius: 1px; transform: rotate(45deg); }
+.chip.bad { color: var(--bad); background: rgba(var(--fault-rgb), .12); }
+.chip.bad::before { border-radius: 1px; }
+.chip.run { color: var(--text); background: rgba(var(--text-rgb), .07); }
+.chip.run::before { background: var(--fam, var(--ok)); animation: breathe 2.4s var(--ease) infinite; }
+.chip.you { color: var(--on-accent); background: var(--signal); }
+.chip.you::before { background: var(--on-accent); }
+.chip.quiet { color: var(--text-muted); background: transparent; border-color: var(--line); }
+.chip.quiet::before { display: none; }
+@keyframes breathe { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 8px; font: 600 14px/1 var(--font-sans); padding: 10px 14px; border-radius: var(--radius-small); border: 1px solid var(--line-bright); background: var(--surface-raised); color: var(--text); cursor: pointer; transition: transform .15s var(--ease), background .15s; }
+.btn:hover { transform: translateY(-1px); }
+.btn.primary { background: var(--signal); color: var(--on-accent); border-color: var(--signal); }
+.btn.sm { padding: 7px 10px; font-size: 13px; }
+.btn svg { width: 15px; height: 15px; }
+
+/* Stage track: five stages as a graphic control */
+.track { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; }
+.track i { height: 5px; border-radius: 3px; background: rgba(var(--text-rgb), .12); }
+.track i.done { background: var(--fam, var(--ok)); }
+.track i.now { background: var(--fam, var(--ok)); position: relative; overflow: hidden; }
+.track i.now::after { content: ""; position: absolute; inset: 0; background: var(--surface); opacity: .5; animation: sweep 1.8s var(--ease) infinite; }
+.track i.wait { background: var(--signal); }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* Mockup note */
+body { position: relative; }
+.mock-note { position: absolute; right: 10px; bottom: 8px; font: 11px/1.3 var(--font-mono); color: var(--text-dim); background: var(--surface-raised); border: 1px solid var(--line); padding: 4px 8px; border-radius: 6px; z-index: 50; }
+@media (max-width: 600px) { .mock-note { display: none; } }
