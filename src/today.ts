@@ -469,11 +469,11 @@ export function todayBody(v: TodayView, act?: TodayAct): string {
     + `<p class="meta today-zone">Times are Eastern.</p></div>`;
 }
 
-// The Land forms are drawn only when the entry's page-action guard lets the request act (src/page-actions.ts).
+// The Land, Answer and Override forms are drawn only when the entry's page-action guard lets the request act (src/page-actions.ts).
 export type TodayAct = { newId: () => string; nonce?: string };
 
 // Today follows the device's colour scheme, as Now does. The page draws no
-// form or button but Land, so it is drawn without the owner menu's sign-out form
+// form or button but Land, Answer and Override, so it is drawn without the owner menu's sign-out form
 // (page's signedIn = false).
 export function renderToday(v: TodayView, ownerName: string | null = null, live?: Live, act?: TodayAct): string {
   return page("Today", todayBody(v, act), "Today", ownerName, 0, false, live, { css: todayCss });
