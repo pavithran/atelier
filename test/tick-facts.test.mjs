@@ -166,7 +166,7 @@ test("criterion 3: a review's finding is a goal note, which show numbers; file-f
 });
 
 test("criterion 6: decide --standing records a standing instruction in fast mode alone; decisions lists it; a session withdraws it", async () => {
-  const full = await cli(["decide", "--standing", "queue-landable", "on", "--quote", "queue them", "--project", "demo"]);
+  const full = await cli(["decide", "--standing", "reask-on-resubmit", "on", "--quote", "queue them", "--project", "demo"]);
   assert.notEqual(full.code, 0, "refused outside fast mode");
   assert.match(said(full), /demo is not in fast mode, and a standing instruction is recorded only for a project in fast mode/);
   assert.match(said(full), /next: only the developer can: atelier mode fast --reason TEXT --project demo/);
@@ -185,7 +185,7 @@ test("criterion 6: decide --standing records a standing instruction in fast mode
   assert.match(said(dup), new RegExp(`${id} already records the standing instruction queue-landable = on`));
   assert.deepEqual([...(await L().standing())], [["queue-landable", "on"]]);
   const listed = await cli(["decisions", "--project", "demo"]);
-  assert.match(listed.stdout, new RegExp(`Standing instructions: queue-landable = on \\(${id}\\)\\. They act while demo is in fast mode\\.`), said(listed));
+  assert.match(listed.stdout, new RegExp(`Standing instructions: queue-landable = on \\(${id}\\)\\. dispatch-on-criteria, queue-landable and deploy-on-landing act in either mode; other instructions require fast mode\\.`), said(listed));
   // A session acting on the developer token withdraws it (G18 records the acting model).
   const withdrawn = await cli(["decisions", "withdraw", id, "--note", "landing by hand now", "--project", "demo"]);
   assert.equal(withdrawn.code, 0, said(withdrawn));
