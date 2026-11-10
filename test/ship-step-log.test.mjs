@@ -135,6 +135,30 @@ test("a failed step with no output still gets a log holding its exit line, and t
   assert.match(r.out, new RegExp(`deploy: full output saved to ${join(s.logDir, file).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 });
 
+test("whitespace-only output is saved as printed, with the [atelier] line appended after it", async (t) => {
+  const s = setup(t, { run: ["/bin/sh", "-c", "printf '\\n\\n'; exit 1"] });
+  await runShip(s);
+  assert.equal(readFileSync(join(s.logDir, logs(s.logDir)[0]), "utf8"), "\n\n[atelier] exited 1\n");
+});
+
+test("output that does not end in a newline gets one before the appended [atelier] line", async (t) => {
+  const s = setup(t, { run: ["/bin/sh", "-c", "printf '  '; exit 1"] });
+  await runShip(s);
+  assert.equal(readFileSync(join(s.logDir, logs(s.logDir)[0]), "utf8"), "  \n[atelier] exited 1\n");
+});
+
+test("a step with no output saves just the [atelier] line", async (t) => {
+  const s = setup(t, { run: ["/bin/sh", "-c", "exit 1"] });
+  await runShip(s);
+  assert.equal(readFileSync(join(s.logDir, logs(s.logDir)[0]), "utf8"), "[atelier] exited 1\n");
+});
+
+test("ordinary output is saved unchanged with no added line", async (t) => {
+  const s = setup(t, { run: ["/bin/sh", "-c", "printf 'a\\n\\nb  '; exit 1"] });
+  await runShip(s);
+  assert.equal(readFileSync(join(s.logDir, logs(s.logDir)[0]), "utf8"), "a\n\nb  ");
+});
+
 test("a record that throws after a failed step does not lose its log", async (t) => {
   const s = setup(t, { run: ["/bin/sh", "-c", "echo kept; exit 1"] });
   const request = async (method, path, body) => {
