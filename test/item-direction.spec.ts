@@ -95,15 +95,18 @@ it("without the words a model on the developer token is stopped, and the stop na
     .toContain(`atelier abandon t2 --note "superseded" --delivered-by t1 --quote "the developer's words" --as H/M --project ${name}`);
   expect(await stop(await post(name, "t1", "clear-secret", { reason: "a fake key" }, acting)))
     .toContain(`atelier clear-secret t1 --note "a fake key" --quote "the developer's words" --as H/M --project ${name}`);
+  // An unblock is stopped for words only on a task that is blocked; one that
+  // is not blocked answers not_blocked first.
+  await L.block("t1", "owner", "waiting on the schema");
   expect(await stop(await post(name, "t1", "unblock", {}, acting))).toContain(`atelier unblock t1 --quote`);
-  expect(await L.item("t1")).toMatchObject({ state: "open" });
+  expect(await L.item("t1")).toMatchObject({ state: "blocked" });
   expect(await L.item("t2")).toMatchObject({ state: "open" });
 
   // Block and unblock go out under the model's own actor, with no acting
   // header: they are stopped the same way, held or not.
   expect(await stop(await post(name, "t1", "block", { reason: "x" }, {}, TOKEN, OPUS))).toContain(`atelier block t1 "x" --quote`);
   expect(await stop(await post(name, "t1", "unblock", {}, {}, TOKEN, OPUS))).toContain(`atelier unblock t1 --quote`);
-  expect(await L.item("t1")).toMatchObject({ state: "open" });
+  expect(await L.item("t1")).toMatchObject({ state: "blocked" });
 
   // G18: the developer's own call, with no model named, no longer reaches /api
   // (their own use is the signed-in pages): it is refused naming --as. The
@@ -112,7 +115,7 @@ it("without the words a model on the developer token is stopped, and the stop na
     const res = await post(name, verb === "abandon" ? "t2" : "t1", verb, body);
     expect([res.status, await res.json()]).toMatchObject([400, { error: "acting_required", next: expect.stringContaining("--as H/M") }]);
   }
-  expect(await L.item("t1")).toMatchObject({ state: "open" });
+  expect(await L.item("t1")).toMatchObject({ state: "blocked" });
   expect(await L.abandon("t2", "owner", "by hand", undefined, undefined, null)).toMatchObject({ state: "abandoned" });
   expect((await events(L, "item.abandoned"))[0].data).not.toHaveProperty("quote");
 });
@@ -148,12 +151,15 @@ it("an agent's own token cannot carry the words; the page's forms and --no-overr
   await L.newItem("Wire the keys", ["src/**"], "owner", { accept: ["Works"] });
   await L.claim("t1", GPT);
   const agent = await agentToken(name);
+  // Blocked first: an unblock of a task that is not blocked answers 409.
+  await L.block("t1", GPT, "waiting");
   for (const verb of ["block", "unblock", "abandon", "clear-secret"]) {
     const res = await post(name, "t1", verb, { reason: "x", quote: QUOTE }, {}, agent, GPT);
     expect(res.status, verb).toBe(403);
   }
-  expect(await L.item("t1")).toMatchObject({ state: "claimed" });
+  expect(await L.item("t1")).toMatchObject({ state: "blocked" });
   // The holder's own token blocks and unblocks with no words, as before.
+  expect((await post(name, "t1", "unblock", {}, {}, agent, GPT)).status).toBe(200);
   expect((await post(name, "t1", "block", { reason: "waiting" }, {}, agent, GPT)).status).toBe(200);
   expect((await events(L, "item.blocked"))[0]).toMatchObject({ actor: GPT, proved: true });
   expect((await events(L, "item.blocked"))[0].data).not.toHaveProperty("quote");
