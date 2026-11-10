@@ -5554,7 +5554,37 @@ export class Ledger extends DurableObject<Env> {
   // while the route was away (checking the revision, looking for a
   // reviewer) refuse the acceptance rather than accept under criteria the
   // owner never read (t457).
-  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null, quote?: unknown): Item {
+  //
+  // `requestId` is the page's Override (t596): its click's one-use id. The
+  // call is then one transaction, the id kept after the override and the
+  // acceptance and with them or not at all; a used id answers as the first
+  // click did, and a task no longer submitted refuses, so two clicks with two
+  // ids record one override.
+  accept(id: string, actor: string, expected?: string, overrideReason?: string, note?: string, confirmedBy?: OwnerFactor, availability?: ReviewerAvailability, criteria?: string, acting: string | null = null, quote?: unknown, requestId?: string): Item {
+    if (requestId === undefined) return this.acceptIn(id, actor, expected, overrideReason, note, confirmedBy, availability, criteria, acting, quote);
+    return this.ctx.storage.transactionSync(() => {
+      const at = new Date().toISOString();
+      if (replayOf(this.sql, requestId, id, "override", at)) return this.item(id);
+      const before = this.item(id);
+      if (before.state !== "submitted") {
+        throw new RuleError("not_submitted", before.state === "accepted"
+          ? `${id} was already accepted at ${(before.acceptedHead ?? before.head ?? "").slice(0, 8)} since this page was drawn, so this override would record a second override and acceptance`
+          : `${id} is ${before.state}; an override is made only on a submitted revision`, 409, `run atelier show ${id}`);
+      }
+      const accepted = this.acceptIn(id, actor, expected, overrideReason, note, confirmedBy, availability, criteria, acting, quote);
+      keepRequest(this.sql, requestId, id, "override", JSON.stringify({ item: id }), at);
+      return accepted;
+    });
+  }
+
+  // Whether a page form's request id was used for this task and verb already
+  // (t596), asked by the route first so a replay is answered as the first
+  // click was, whatever the task has become since. A malformed id is refused.
+  pageRequestUsed(id: string, requestId: unknown, verb: "answer" | "override"): boolean {
+    return replayOf(this.sql, requestId, id, verb, new Date().toISOString()) !== null;
+  }
+
+  private acceptIn(id: string, actor: string, expected: string | undefined, overrideReason: string | undefined, note: string | undefined, confirmedBy: OwnerFactor | undefined, availability: ReviewerAvailability | undefined, criteria: string | undefined, acting: string | null, quote: unknown): Item {
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer accepts", 403, `only the developer can: atelier accept ${id}`);
     // The developer's words go with an override (t629); alone they direct nothing.
     if (quote !== undefined && overrideReason === undefined) throw new RuleError("bad_quote", "the developer's words (--quote) go with an override of the independent review: --override-review REASON --quote \"what the developer said\"", 400);

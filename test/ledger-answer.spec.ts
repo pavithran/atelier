@@ -22,9 +22,9 @@ const head = (n: number) => String(n).repeat(40);
 
 const ledger = (project: string) => env.LEDGER.get(env.LEDGER.idFromName(`project:${project}`));
 type L = ReturnType<typeof ledger>;
-async function setup(project: string) {
+async function setup(project: string, projectPolicy: ProjectPolicy = policy) {
   const L = ledger(project);
-  await L.setProject({ name: project, repo: `${project}--baseline`, policy, createdAt: new Date().toISOString() }, "owner");
+  await L.setProject({ name: project, repo: `${project}--baseline`, policy: projectPolicy, createdAt: new Date().toISOString() }, "owner");
   return L;
 }
 const events = async (L: L, id: string, kind?: string) => ((await L.events(id)) as unknown as LedgerEvent[]).filter((e) => !kind || e.kind === kind).reverse();
@@ -172,5 +172,62 @@ it("after an Answer the holder's jobBrief holds the developer's words with their
     const after = await L.jobBrief(id, A);
     expect(after.text, how).not.toContain("The developer's words");
     expect(after.text, how).toContain("wrong");
+  }
+});
+
+// Criteria 3, 8 and 9 for Override: Ledger.accept with the page's request id.
+async function overridable(project: string) {
+  const L = await setup(project, { ...policy, protected: ["security.ts"] });
+  const id = (await L.newItem("Touch a protected path", ["security.ts"], "owner", { accept: ["Keeps the prompts"] })).id;
+  await L.claim(id, A, RUNNER);
+  await L.setWorkspace(id, `${project}--${id}`, "0".repeat(40), A);
+  await L.recordPush(id, A, head(1), head(1));
+  await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: head(1), passed: true, by: "owner", at: new Date().toISOString(), changedPaths: ["security.ts"] } satisfies Evidence);
+  await L.submit(id, A);
+  return { L, id, criteria: (await L.criteria(id)) as string };
+}
+const override = (L: L, id: string, criteria: string, requestId: string, reason = "No other family qualifies") =>
+  L.accept(id, "owner", head(1), reason, undefined, "access", undefined, criteria, null, undefined, requestId);
+
+it("Override with a request id accepts once and records review.overridden with the reason; a new id after it acted is not_submitted; the first id replays", async () => {
+  const { L, id, criteria } = await overridable("override-id");
+  const first = crypto.randomUUID();
+  expect((await override(L, id, criteria, first)).state).toBe("accepted");
+  const overridden = await events(L, id, "review.overridden");
+  expect(overridden).toHaveLength(1);
+  expect(overridden[0].data).toMatchObject({ reason: "No other family qualifies", confirmed: "page", factor: "access" });
+  await refusal(override(L, id, criteria, crypto.randomUUID()), "not_submitted", /accepted/);
+  expect((await override(L, id, criteria, first)).state).toBe("accepted");
+  expect(await events(L, id, "review.overridden")).toHaveLength(1);
+  expect(await events(L, id, "item.accepted")).toHaveLength(1);
+});
+
+it("Override: a refusal records nothing and leaves the id unused; a crash before the id is kept leaves neither the override nor the acceptance", async () => {
+  const { L, id, criteria } = await overridable("override-crash");
+  const requestId = crypto.randomUUID();
+  await refusal(override(L, id, criteria, requestId, "   "), "override_reason", /needs a reason/);
+  await refusal(override(L, id, criteria, requestId, "x".repeat(501)), "override_reason", /at most 500/);
+  await refusal(override(L, id, "1. Other", requestId), "stale_criteria", /criteria changed/);
+  expect(await events(L, id, "review.overridden")).toEqual([]);
+  await runInDurableObject(L, async (ledger) => {
+    (ledger as unknown as { sql: { exec: (q: string) => unknown } }).sql.exec(`CREATE TRIGGER crash_before_id BEFORE INSERT ON page_requests BEGIN SELECT RAISE(ABORT, 'crash'); END`);
+  });
+  await expect(override(L, id, criteria, requestId)).rejects.toThrow();
+  expect((await L.item(id)).state).toBe("submitted");
+  expect(await events(L, id, "review.overridden")).toEqual([]);
+  expect(await events(L, id, "item.accepted")).toEqual([]);
+  await runInDurableObject(L, async (ledger) => { (ledger as unknown as { sql: { exec: (q: string) => unknown } }).sql.exec(`DROP TRIGGER crash_before_id`); });
+  expect((await override(L, id, criteria, requestId)).state).toBe("accepted");
+});
+
+it("two Overrides at once, with one id or with two, record one override and one acceptance", async () => {
+  for (const same of [true, false]) {
+    const { L, id, criteria } = await overridable(`override-race-${same}`);
+    const a = crypto.randomUUID(), b = same ? a : crypto.randomUUID();
+    const settled = await Promise.allSettled([override(L, id, criteria, a), override(L, id, criteria, b)]);
+    expect(await events(L, id, "review.overridden"), `same id ${same}`).toHaveLength(1);
+    expect(await events(L, id, "item.accepted"), `same id ${same}`).toHaveLength(1);
+    const refused = settled.filter((s) => s.status === "rejected") as PromiseRejectedResult[];
+    expect(refused.map((r) => parseRuleError(r.reason)?.code), `same id ${same}`).toEqual(same ? [] : ["not_submitted"]);
   }
 });
