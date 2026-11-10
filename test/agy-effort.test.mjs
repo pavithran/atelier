@@ -11,6 +11,9 @@ test("both Antigravity review paths honour effort and preserve defaults", () => 
     ["some-other-id", "medium", "some-other-id"],
     ["gemini-4-argon", "", "gemini-4-argon-high"],
     ["gpt-oss-120b", "", "gpt-oss-120b-medium"],
+    ["gemini-4-carbon", "", "gemini-4-carbon-high"],
+    ["gemini-4-carbon", "low", "gemini-4-carbon-low"],
+    ["gemini-4-carbon", "medium", "gemini-4-carbon-medium"],
   ]) {
     // Intercept agy's process boundary so the legacy entry point needs no files.
     const script = `

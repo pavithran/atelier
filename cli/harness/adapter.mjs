@@ -212,7 +212,7 @@ const CLAUDE_DENIED = ["Bash(git push:*)", "Bash(atelier:*)", "WebFetch", "WebSe
 
 // Antigravity's model ids for Atelier's; any other id passes through.
 // The review adapter (cli/agy-review.mjs) reads this table too (t573).
-const AGY_DEFAULT_MODELS = { "gemini-4-argon": "gemini-4-argon-high", "gemini-3.1-pro": "gemini-3.1-pro-high", "gemini-3.8-flash": "gemini-3.8-flash-high", "claude-opus-5.5": "claude-opus-5-5-high", "claude-sonnet-5.5": "claude-sonnet-5-5-high", "gpt-oss-120b": "gpt-oss-120b-medium" };
+const AGY_DEFAULT_MODELS = { "gemini-4-carbon": "gemini-4-carbon-high", "gemini-4-argon": "gemini-4-argon-high", "gemini-3.1-pro": "gemini-3.1-pro-high", "gemini-3.8-flash": "gemini-3.8-flash-high", "claude-opus-5.5": "claude-opus-5-5-high", "claude-sonnet-5.5": "claude-sonnet-5-5-high", "gpt-oss-120b": "gpt-oss-120b-medium" };
 // Both review entry points read this table. An explicit model suffix takes
 // precedence over the environment; an unset effort keeps each model's default.
 export const AGY_MODELS = Object.fromEntries(Object.entries(AGY_DEFAULT_MODELS).flatMap(([model, mapped]) => {
