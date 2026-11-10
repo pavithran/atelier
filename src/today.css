@@ -121,3 +121,13 @@ a.today-proj:hover, a.today-proj:focus-visible { border-color: var(--line-bright
   .today-projects { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .today * { animation: none !important; transition: none !important; } }
+
+/* Land on a needs-you card (t594): the button, or the fact that the landing waits. */
+.today-land { margin-top: 10px; }
+.today-land .land-form { margin: 0; display: inline-flex; flex-wrap: wrap; gap: 8px; }
+.today-land .land-form button { min-height: 44px; padding: 0 22px; transition: transform .15s var(--ease), opacity .15s; }
+.today-land .land-form button:active { transform: translateY(1px); }
+.today-land .land-form button:disabled { opacity: .6; cursor: progress; }
+.today-land .land-state { margin: 0; font-size: 13.5px; color: var(--text-muted); }
+.today-land .land-queued { color: var(--ok); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .today-land .land-form button { transition: none; } }
