@@ -13,6 +13,7 @@ import { after, before, test } from "node:test";
 import { promisify } from "node:util";
 import { execFileSync } from "node:child_process";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-runner.ts";
 import "./support/default-proof.ts";
 import { claimRefusedLine, lostToHold } from "../cli/runner.mjs";
 import { ROLE_PROMPTS } from "../src/usage.ts";
@@ -249,7 +250,7 @@ test("wait --for answered returns once the task's review request is answered, at
   await observed(id, sha("2"));
   await L().submit(id, AGENT, "done");
   const opus = { id: "opus-5.5", harness: "claude-code", where: "cloud", provider: "subscription", aliases: [], family: "anthropic", note: "", addedBy: "owner", addedAt: new Date().toISOString() };
-  await L().requestReview(id, "owner", OTHER, [opus], true);
+  await L().requestReview(id, "owner", OTHER, [opus], true, false, undefined, undefined, true);
   const w = waiting([id, "--for", "answered"]);
   await pause(400);
   assert.equal(w.ended(), false, "an open request is not answered");
@@ -352,7 +353,7 @@ test("wait --any --for answered through the CLI returns when one of two review r
     await L().observePush(id, sha(c), null);
     await observed(id, sha(c));
     await L().submit(id, AGENT, "done");
-    await L().requestReview(id, "owner", OTHER, [opus], true);
+    await L().requestReview(id, "owner", OTHER, [opus], true, false, undefined, undefined, true);
     ids.push(id);
   }
   const all = await cli(["wait", "--all", ids.join(","), "--for", "answered", "--timeout", "0.5", "--interval", "0.1", "--project", "demo"]);

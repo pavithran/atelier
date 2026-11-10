@@ -6,6 +6,10 @@ import { planText, type PlanView } from "../src/plans/show.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { OFFER_LIVE_MS } from "../src/dispatch/rules.ts";
 import { parseRuleError, type ProjectPolicy } from "../src/rules.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide which runners are live, or that none is: no default runner joins them.
+withoutDefaultRunner();
 
 // The routes the developer names at an approval (G17: Atelier picks none): every part built by
 // zcode/glm-5.3 and reviewed by codex/gpt-6-astra, another family.

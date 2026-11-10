@@ -3552,7 +3552,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "criteria-review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null || body.reviewer === "" ? null : String(body.reviewer);
-      return json(await L.requestCriteriaReview(id, actor, reviewer, await index(env).models(), !!c.token));
+      return json(await L.requestCriteriaReview(id, actor, reviewer, await index(env).models(), !!c.token, await index(env).runnerOffers()));
     }
     // The reviewer's runner claims the open criteria review and gets the
     // brief, the revision and binding its verdict must name, and the review's id.

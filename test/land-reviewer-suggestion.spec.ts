@@ -3,6 +3,10 @@ import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide which runners offer the review job, or that none does: no default runner joins them.
+withoutDefaultRunner();
 
 // t162: `atelier land ID` with no --reviewer asks POST .../review-request with
 // no reviewer. G17: the server then picks none; it refuses with reviewer_needed

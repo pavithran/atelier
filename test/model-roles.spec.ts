@@ -6,6 +6,7 @@ import worker from "../src/index.ts";
 import type { Assignment, AssignmentView } from "../src/models/assignments.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { signIn } from "./signin.ts";
+import { withoutDefaultRunnerDuring } from "./support/default-runner.ts";
 
 // Role assignments (t622) through the Worker's routes and the Ledgers'
 // storage: the developer records one with checked evidence, the index keeps
@@ -371,7 +372,8 @@ it("a plan's review request records what the role assignments said of its review
 // (plan.review_needed), with the candidates: one a live runner offers for the
 // review job at home carries no refusal, and the assigned one nobody offers
 // carries its refusal.
-it("a plan's part whose routed reviewer contributed records the candidates, and asks nobody", async () => {
+// This test records the runners that are live and what they offer: no default runner joins them.
+it("a plan's part whose routed reviewer contributed records the candidates, and asks nobody", async () => withoutDefaultRunnerDuring(async () => {
   const { L, partId, route, runner } = await planned("roles-plan-offers", undefined, []);
   const builder = route.builder!.actor, reviewer = route.reviewer!.actor;
   // The routed reviewer claims the part and lets it go, so it is a contributor.
@@ -397,7 +399,7 @@ it("a plan's part whose routed reviewer contributed records the candidates, and 
   expect(candidates.find((c) => c.actor === offered)?.refusal).toBeNull();
   expect(candidates.find((c) => c.actor === unoffered)?.refusal).toMatch(/no live runner offers the review job/);
   expect(needed[0].data.next).toBe(`atelier plan reroute ${partId} --to H/M`);
-});
+}));
 
 // Rule 2 of t622, at every ledger site that records an explicit choice
 // (gpt-6-astra's seventh review, finding 2): the developer's named planner
