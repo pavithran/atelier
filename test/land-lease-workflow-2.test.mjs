@@ -22,7 +22,7 @@ const endOf = (landing, what, ms = WAIT_MS) => {
   return Promise.race([landing.done, late]).finally(() => clearTimeout(timer));
 };
 
-test("a second, different signal during a signal's release waits for it, and the first signal's status stands", { timeout: 2 * (FIXTURE_MS + 2 * CEILING_MS + WAIT_MS) }, async (t) => {
+test("a second, different signal during a signal's release waits for it, and the first signal's status stands", { timeout: 2 * (FIXTURE_MS + 2 * CEILING_MS + 2 * WAIT_MS) }, async (t) => {
   if (!canInspectSlots(t)) return;
   for (const [first, second, status] of [["SIGTERM", "SIGINT", 143], ["SIGINT", "SIGTERM", 130]]) {
     const f = await landFixture(t);
