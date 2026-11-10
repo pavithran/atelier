@@ -3,7 +3,8 @@
 // each bounded, so a runner cannot store more than a status display shows. A
 // reading that fails any bound is dropped whole, never repaired: a display
 // would rather show no reading than a guess. The newest reading per host,
-// and whether it has gone stale, is machineReadings.
+// and whether it has gone stale, is machineReadings. Its time is the offer's
+// stored time, which an unchanged poll within OFFER_REFRESH_MS does not renew.
 
 export interface MachineReading {
   host: string;                                   // the machine's name, as its runner reads it

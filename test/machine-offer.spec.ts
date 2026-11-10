@@ -1,6 +1,7 @@
 import { env } from "./support/workers.ts";
 import { expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { OFFER_REFRESH_MS } from "../src/dispatch/rules.ts";
 import { MACHINE_STALE_MS, machineReadings, type MachineReading } from "../src/runners/machine.ts";
 
 // t607, the server's half: a runner's machine reading goes with its poll on
@@ -112,6 +113,21 @@ it("a poll that fails leaves the old offer and reading whole", async () => {
   const failed = await poll("not a runner", { machine: reading({ loadavg: [7, 7, 7] }) }, T0 + 9000);
   expect(failed.status).toBe(400);
   expect(await offerOf("home:m-fail")).toEqual(before);
+  // The same runner, whose offer a success would replace, with a request the
+  // queue refuses (a wrong token): the old offer stays.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(T0 + 90_000));
+  let same: Response;
+  try {
+    same = await worker.fetch(new Request("https://atelier.test/api/queue", {
+      method: "POST",
+      headers: { authorization: "Bearer wrong-token", "content-type": "application/json" },
+      body: JSON.stringify({ runner: "home:m-fail", kind: "home", jobs: ["build"], machine: reading({ loadavg: [8, 8, 8] }) }),
+    }), testEnv);
+  } finally { vi.useRealTimers(); }
+  expect(same.status).toBeGreaterThanOrEqual(400);
+  expect(await offerOf("home:m-fail")).toEqual(before);
+  expect((await offerOf("home:m-fail"))?.at).toBe(iso(T0));
 });
 
 it("two polls at once from one runner keep the one stored last, reading and memory from the same poll", async () => {
@@ -121,20 +137,38 @@ it("two polls at once from one runner keep the one stored last, reading and memo
   const offer = await offerOf("home:m-race");
   const n = offer?.machine?.loadavg[0] as number;
   expect([3, 4]).toContain(n);
+  // Run in order the same way, the second poll's reading is the one stored.
+  await poll("home:m-race2", mine(3), T0 + 1000);
+  await poll("home:m-race2", mine(4), T0 + 2000);
+  expect((await offerOf("home:m-race2"))?.machine?.loadavg[0]).toBe(4);
   expect((offer as unknown as { memory: { reasons: { why: string }[] } }).memory.reasons[0].why).toBe(`poll ${n}`);
 });
 
 it("a poll whose response is lost still leaves its offer and reading; the retry replaces them with the retry's received time", async () => {
   // The caller never reads this response: the offer is stored all the same.
-  void (await poll("home:m-lost", { machine: reading({ loadavg: [5, 5, 5] }) }, T0)).body?.cancel();
+  const lost = (n: number) => ({ machine: reading({ host: "host-lost", loadavg: [n, 5, 5] }) });
+  void (await poll("home:m-lost", lost(5), T0)).body?.cancel();
   expect((await offerOf("home:m-lost"))?.machine?.loadavg).toEqual([5, 5, 5]);
   expect((await offerOf("home:m-lost"))?.at).toBe(iso(T0));
-  await poll("home:m-lost-other", { machine: reading({ loadavg: [6, 6, 6] }) }, T0 + 20_000);
+  await poll("home:m-lost-other", { machine: reading({ host: "host-lost", loadavg: [6, 6, 6] }) }, T0 + 20_000);
   // The retry is an ordinary poll, at the server's later clock.
-  await poll("home:m-lost", { machine: reading({ loadavg: [5.5, 5, 5] }) }, T0 + 40_000);
+  await poll("home:m-lost", lost(5.5), T0 + 40_000);
   const offer = await offerOf("home:m-lost");
   expect(offer?.at).toBe(iso(T0 + 40_000));
   expect(offer?.machine?.loadavg).toEqual([5.5, 5, 5]);
-  const host = machineReadings(await index().runnerOffers(), T0 + 41_000).find((r) => r.host === "host-a" && r.runner === "home:m-lost");
+  const host = machineReadings(await index().runnerOffers(), T0 + 41_000).find((r) => r.host === "host-lost");
+  expect(host?.runner).toBe("home:m-lost");
   expect(host?.loadavg[0]).toBe(5.5);
+});
+
+it("an identical retry within OFFER_REFRESH_MS keeps the stored received time; after it, or with a changed reading, the retry's time is stored", async () => {
+  const same = () => ({ machine: reading({ loadavg: [4, 4, 4] }) });
+  await poll("home:m-throttle", same(), T0);
+  await poll("home:m-throttle", same(), T0 + 40_000);
+  expect((await offerOf("home:m-throttle"))?.at).toBe(iso(T0));
+  await poll("home:m-throttle", same(), T0 + OFFER_REFRESH_MS + 1000);
+  expect((await offerOf("home:m-throttle"))?.at).toBe(iso(T0 + OFFER_REFRESH_MS + 1000));
+  const t = T0 + OFFER_REFRESH_MS + 11_000;
+  await poll("home:m-throttle", { machine: reading({ loadavg: [4.5, 4, 4] }) }, t);
+  expect((await offerOf("home:m-throttle"))?.at).toBe(iso(t));
 });
