@@ -49,6 +49,30 @@ it("the broken-Access 503 draws no owner bar, keeps its status and message, and 
   expect(html).not.toContain("Go back");
 });
 
+// t625: the 401 offers the way forward, a primary Sign in link to /login (which
+// the edge sends to the Access prompt). The 503 offers none.
+const firstMainLink = (html: string) => /<main id="main"[^>]*>[\s\S]*?<a ([^>]*)>([^<]*)<\/a>/.exec(html);
+
+for (const path of ["/", "/today"]) {
+  it(`the Access 401 on ${path} leads with a primary Sign in link to /login`, async () => {
+    const res = await get(on, path);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("set-cookie")).toBeNull();
+    const html = await res.text();
+    expect(html).toContain(MESSAGE_401);
+    const link = firstMainLink(html);
+    expect(link?.[1]).toContain('href="/login"');
+    expect(link?.[1]).toMatch(/class="[^"]*\bbutton\b[^"]*\bprimary\b/);
+    expect(link?.[2]).toBe("Sign in");
+  });
+}
+
+it("the broken-Access 503 shows no Sign in link", async () => {
+  const html = await (await get(broken, "/today")).text();
+  expect(html).not.toContain("Sign in");
+  expect(html).not.toContain('href="/login"');
+});
+
 async function unknownAction(cookie: string) {
   const L = await project("refusal-chrome");
   const made = await L.newItem("A task", [], "owner", {});
@@ -78,7 +102,7 @@ async function sha(text: string) {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// SHA-256 of the pages as main draws them (49973c88, re-taken at t585 for the new bar and device theme), so any change to their
+// SHA-256 of the pages as main draws them (49973c88, re-taken at t585 for the new bar and device theme, and at t596 for the synced theme and the Answer styles), so any change to their
 // status, message or chrome shows: a signed-in 404, a signed-out 404 (which
 // main answers with a redirect to the sign-in page) and a signed-in 400.
 it("other error pages are byte for byte as on main", async () => {
@@ -91,8 +115,8 @@ it("other error pages are byte for byte as on main", async () => {
   const bad = await unknownAction(cookie);
   seen["400 in"] = `${bad.status} ${await sha(await bad.text())}`;
   expect(seen).toEqual({
-    "404 in": "404 3e8b28264ad41bdb05b04cc9c1fdd0d1bfa9e08fd1933b6b00d699c681c710c6",
+    "404 in": "404 68595d53f679f3c5d85d53b7515abc764121ac5afd652679b2b165752a41a605",
     "404 out": "303 https://atelier.test/login e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "400 in": "400 db6a229150cc29f545a8025a2dc3570f12ab188edfec5abc0bb64e57d1db62ed",
+    "400 in": "400 636826f23e080ba52f6092bdf5bee38fef44a1e55243938d9bc3a8a66bf1d8bc",
   });
 });

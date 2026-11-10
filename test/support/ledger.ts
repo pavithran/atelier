@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { Namespace } from "../../src/runtime/namespace.mjs";
 import { Ledger } from "../../src/ledger.ts";
 import { installDefaultProof } from "./proof.ts";
+import "./default-runner.ts";
 
 installDefaultProof();
 

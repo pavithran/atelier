@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { COMMAND_USAGE } from "../src/usage.ts";
 import { parseStanding } from "../src/standing.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { runnerOffers } from "./support/offers.ts";
 
 const BUILDER = "claude-code/opus-5.5", REVIEWER = "codex/gpt-6-astra";
 const HEAD = "a".repeat(40), AT = new Date().toISOString();
@@ -29,6 +30,7 @@ async function setup(value = `anthropic=${REVIEWER}`, builder = BUILDER) {
   }
   // The project receives the same pool snapshot used by explicit review requests.
   await L.poolChanged(pool);
+  await runnerOffers(L, [REVIEWER, BUILDER, "claude-code/sonnet-5.5"]);
   return { L, d, task };
 }
 const requests = async (L: Awaited<ReturnType<typeof setup>>["L"], id: string) => (await L.events(id, 1000)).filter(e => e.kind === "review.requested");

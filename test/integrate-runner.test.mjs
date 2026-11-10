@@ -383,8 +383,16 @@ test("runRunner --integrate offers only the integrate, refresh and task-refresh 
     async queue(offer) { offers.push(offer); process.emit("SIGINT"); return []; },
   });
   // The offer also says when the process started (t420).
-  assert.deepEqual(offers.map(({ started, ...offer }) => offer), [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }]);
+  assert.deepEqual(offers.map(({ started, machine, ...offer }) => offer), [{ runner: "home:studio", kind: "home", agents: [], jobs: ["integrate", "refresh", "task-refresh"] }]);
   assert.ok(Number.isFinite(Date.parse(offers[0].started)));
+  // The machine reading criterion 1 of t607 names.
+  const m = offers[0].machine;
+  assert.equal(typeof m.host, "string");
+  assert.ok(Number.isInteger(m.cpus) && m.cpus > 0);
+  assert.equal(m.loadavg.length, 3);
+  assert.ok(m.loadavg.every((n) => typeof n === "number" && n >= 0));
+  assert.ok(m.memFreePercent >= 0 && m.memFreePercent <= 100);
+  assert.ok(m.testSlots === null || (Number.isInteger(m.testSlots.capacity) && Number.isInteger(m.testSlots.inUse)));
 });
 
 // t213: any error after the claim gives the plan item back; before, a failed

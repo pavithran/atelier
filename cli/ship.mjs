@@ -18,6 +18,7 @@ import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
 import { directionText, matchesAny } from "../src/rules.ts";
 import { runGroup } from "./group.mjs";
 import { pushCheckoutRemote } from "./checkout-push.mjs";
+import { failedStepReport } from "./ship-log.mjs";
 
 export const SHIP_FILE = "docs/atelier/ship.json";
 
@@ -689,6 +690,13 @@ export async function ship(ctx) {
         }
         if (!results.at(-1).passed) break;
       }
+    }
+    // A failed step's log is saved and named before the fallible record calls,
+    // so a server failure does not lose it.
+    const lost = results.at(-1)?.passed === false ? results.at(-1) : null;
+    if (lost) {
+      const ended = lost.signal ? `ended by ${lost.signal}` : lost.status !== null && lost.status !== undefined ? `exited ${lost.status}` : "failed";
+      print(failedStepReport({ dir: ctx.logDir, ship: id, step: s.step, output: lost.output, ended, secrets: ctx.secrets, redact: ctx.redact, io: ctx.logIo }));
     }
     for (const r of results) {
       await record(s.step, r, r.note);

@@ -7,7 +7,8 @@ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 import type { RunReport } from "../models/reliability.ts";
 import { SIZE_FIX, SIZE_REFUSED } from "../large-diff.ts";
 import { inScope } from "../tokens.ts";
-import { detectStuck, holdStart, pushObservedAt } from "./rules.ts";
+import type { DesignView } from "../designs.ts";
+import { detectStuck, holdStart, pushObservedAt, unfiledPlans } from "./rules.ts";
 
 export const REPORT_DEFAULTS = { noPushHours: 6, unansweredHours: 24, coreHoldMinutes: 30, runnerPollMinutes: RUNNER_GONE_MS / 60_000, reviewAnswerHours: 1 };
 const IDLE_RUNNER_MAX_MS = 48 * 3_600_000;
@@ -29,6 +30,7 @@ export interface RequestObservation { id: number; item: string; head: string; di
 export const REVIEW_OFFER_MINUTES = 15;
 export interface Snapshot {
   items: Item[]; events: LedgerEvent[]; coreFiles?: string[]; lease: LandingLease | null;
+  designs?: DesignView[];
   reviews: ReviewObservation[]; openReviewItems?: string[]; runSkips?: (RunSkip & { item: string })[]; openRequests?: RequestObservation[];
 }
 export interface Entry { kind: string; subject: string; reason: string; since: string; ageMs: number; evidence: string; recovery: string }
@@ -115,6 +117,11 @@ export function stuckReport(project: string, origin: string, now: Date, limits: 
       add("task", f.itemId, f.reason, f.since, f.suggestion === "hand off"
         ? `hand off: choose the next agent H/M, then ${command(`handoff ${f.itemId} --to H/M`)}`
         : `check in with the holder${f.owner ? ` (${f.owner})` : ""}: inspect ${command(`show ${f.itemId} --reviews`)} and contact them before handing the task to another agent`);
+    // A plan the developer approved is filed whole; a design with fewer tasks
+    // naming it than it plans is shown from the moment the plan is recorded.
+    for (const d of unfiledPlans(snapshot.designs ?? []))
+      add("unfiled-plan", `design:${d.name}`, d.reason, d.since,
+        `file the ${d.missing} planned ${d.missing === 1 ? "task" : "tasks"} still unfiled with --design ${quote(d.name)}; or, if the plan shrank, ${command(`design ${quote(d.name)} --planned N --quote "the developer's words"`)}`, `${origin}/api/projects/${encodeURIComponent(project)}/designs`);
     if (lease && !landingLeaseLapsed(lease, time)) {
       const item = items.find((i) => i.id === lease.item);
       const closed = !item || ["merged", "abandoned"].includes(item.state);

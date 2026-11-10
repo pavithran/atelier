@@ -1,0 +1,193 @@
+// t589: a build that times out or exits nonzero keeps the harness's last
+// output and the commands the progress record saw in its run log (runFacts).
+// The stub harness is a real child process run through startHarness, the
+// runner's own executor, with a short ceiling; the run goes through runTask.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runTask, runFacts, startHarness } from "../cli/runner.mjs";
+import { progressTracker, newStream, foldStream } from "../cli/progress.mjs";
+import { logTextOf, lineRing, LINE_MAX } from "../cli/run-log-text.mjs";
+import { fixture } from "./runner-shared.mjs";
+
+const entry = { agent: "claude-code", models: ["sonnet-5.5"], command: ["claude", "{model}", "{brief_file}", "{workspace}"] };
+const config = { agents: [entry] };
+const assignment = { project: "atelier", item: { id: "t589", title: "Run log", scope: ["cli/**"] }, agent: "claude-code", model: "sonnet-5.5", actor: "claude-code/sonnet-5.5" };
+const dir = mkdtempSync(join(tmpdir(), "atelier-run-log-"));
+const scripts = mkdtempSync(join(tmpdir(), "atelier-run-log-scripts-"));
+
+// A stub harness: a node script run as a child of the runner, as the real one is.
+const stub = (name, body) => { const file = join(scripts, `${name}.cjs`); writeFileSync(file, body); return file; };
+// The Claude Code adapter writes its stream-json log to the file ATELIER_PROGRESS_LOG names.
+const streamLine = (o) => `require("node:fs").appendFileSync(process.env.ATELIER_PROGRESS_LOG, ${JSON.stringify(JSON.stringify(o) + "\n")});`;
+const toolStart = (id, command) => streamLine({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] } });
+
+async function runWith(script, { ceilingMs = 600, tick } = {}) {
+  const progress = progressTracker({ now: tick });
+  const { io } = fixture({ head: "before", code: 1 });
+  io.progress = progress;
+  io.harness = (argv, cwd, env, opts) => startHarness([process.execPath, script], dir, { ...env, PATH: process.env.PATH }, { ...opts, stream: false, timeoutMs: ceilingMs });
+  io.workspacePath = (project, id) => join(dir, "work", project, id);
+  const state = await runTask(assignment, config, "home:studio", io);
+  return { state, facts: runFacts({ project: "atelier", item: assignment.item, agent: "claude-code" }, state, { dir }) };
+}
+const logOf = (facts) => readFileSync(facts.log, "utf8");
+
+const printing = `for (let i = 1; i <= 300; i++) { console.log("out line " + i); console.error("err line " + i); }`;
+
+test("a timed-out harness leaves the last 200 lines of its stdout and stderr in the run log", async () => {
+  const { state, facts } = await runWith(stub("hang", `${printing} setInterval(() => {}, 1000);`));
+  assert.equal(state.harnessExit.kind, "timed-out");
+  const text = logOf(facts);
+  assert.match(text, /harness timed out/);
+  assert.ok(text.includes("out line 300") && text.includes("err line 300"), "the last lines are there");
+  assert.ok(text.includes("out line 101") && text.includes("err line 101"), "200 lines of each stream");
+  assert.ok(!text.includes("out line 100\n") && !text.includes("err line 100\n"), "no more than 200 lines of each");
+});
+
+test("a harness that exits 1 leaves the last 200 lines of its stdout and stderr in the run log", async () => {
+  const { state, facts } = await runWith(stub("fail", `${printing} process.exit(1);`));
+  assert.equal(state.harnessExit.code, 1);
+  const text = logOf(facts);
+  assert.ok(text.includes("out line 300") && text.includes("err line 300"));
+  assert.ok(text.includes("out line 101") && text.includes("err line 101"));
+  assert.ok(!text.includes("out line 100\n") && !text.includes("err line 100\n"));
+});
+
+test("the run log lists each command the progress record saw start, with its start time", async () => {
+  let ms = Date.parse("2026-11-08T22:00:00Z");
+  const { facts } = await runWith(stub("commands", `${toolStart("a", "npm test")} ${toolStart("b", "git status")} setInterval(() => {}, 1000);`), { tick: () => (ms += 1000) });
+  const text = logOf(facts);
+  assert.match(text, /^\d{4}-\d\d-\d\dT[\d:.]+Z Bash npm$/m);
+  assert.match(text, /^\d{4}-\d\d-\d\dT[\d:.]+Z Bash git$/m);
+  assert.ok(text.indexOf(" Bash npm") < text.indexOf(" Bash git"), "in the order they started");
+});
+
+test("the run log lists the first and the last of 1,001 commands", () => {
+  const state = newStream();
+  const lines = Array.from({ length: 1001 }, (_, i) => JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: `t${i}`, name: "Bash", input: { command: `cmd${i} --flag` } }] } }));
+  foldStream(state, lines.join("\n") + "\n", "2026-11-08T22:00:00.000Z");
+  const text = logTextOf({ harnessTail: { stdout: [], stderr: [] }, commandTrail: state.trail });
+  assert.match(text, /\(1001\)/);
+  assert.match(text, /^2026-11-08T22:00:00\.000Z Bash cmd0$/m);
+  assert.match(text, /^2026-11-08T22:00:00\.000Z Bash cmd1000$/m);
+});
+
+const wide = `for (let i = 1; i <= 200; i++) console.error("E" + String(i).padStart(3, "0") + ":" + "x".repeat(2000));`;
+const intact = (text) => {
+  const found = text.split("\n").filter((l) => /^E\d{3}:/.test(l));
+  assert.equal(found.length, 200, "all 200 stderr lines");
+  found.forEach((l, i) => assert.equal(l, "E" + String(i + 1).padStart(3, "0") + ":" + "x".repeat(2000), "no line partial"));
+};
+
+test("200 stderr lines of 2 KiB each are intact in the log after a timeout", async () => {
+  const { facts } = await runWith(stub("wide-hang", `${wide} setInterval(() => {}, 1000);`));
+  intact(logOf(facts));
+});
+
+test("200 stderr lines of 2 KiB each are intact in the log after exit 1", async () => {
+  const { facts } = await runWith(stub("wide-fail", `${wide} process.exitCode = 1;`));
+  intact(logOf(facts));
+});
+
+const longLine = `process.stdout.write("ERROR first" + "x".repeat(70000 - 19) + "last END`;
+const longChecked = (text) => {
+  const line = text.split("\n").find((l) => l.endsWith("last END"));
+  assert.ok(line, "the end of the long line is in the log");
+  assert.ok(line.startsWith("ERROR first"), "the start of the long line is in the log");
+  assert.match(line, /^ERROR first.* \[cut 4464 characters\] .*last END$/);
+  assert.equal(line.length, 65536 + " [cut 4464 characters] ".length);
+};
+
+test("a 70,000-character stdout line keeps its start, end and a cut marker after a timeout", async () => {
+  const { facts } = await runWith(stub("long-hang", `${longLine}\\n"); setInterval(() => {}, 1000);`));
+  longChecked(logOf(facts));
+});
+
+test("a 70,000-character stdout line keeps its start, end and a cut marker after exit 1", async () => {
+  const { facts } = await runWith(stub("long-fail", `${longLine}\\n"); process.exitCode = 1;`));
+  longChecked(logOf(facts));
+});
+
+test("a pending 70,000-character stdout line with no newline keeps its start and end after a timeout", async () => {
+  const { facts } = await runWith(stub("pending-hang", `${longLine}"); setInterval(() => {}, 1000);`));
+  longChecked(logOf(facts));
+});
+
+test("a pending 70,000-character stdout line with no newline keeps its start and end after exit 1", async () => {
+  const { facts } = await runWith(stub("pending-fail", `${longLine}"); process.exitCode = 1;`));
+  longChecked(logOf(facts));
+});
+
+const longText = "ERROR first" + "x".repeat(70000 - 19) + "last END";
+test("lineRing gives the same lines for one write and for 1,000-character chunks", () => {
+  const whole = lineRing();
+  whole.write(longText);
+  const chunked = lineRing();
+  for (let i = 0; i < longText.length; i += 1000) chunked.write(longText.slice(i, i + 1000));
+  assert.deepEqual(chunked.lines(), whole.lines());
+  assert.equal(whole.lines().length, 1);
+  assert.match(whole.lines()[0], / \[cut 4464 characters\] /);
+  const done = lineRing();
+  done.write(longText + "\n");
+  assert.deepEqual(done.lines(), whole.lines());
+});
+
+test("a line of LINE_MAX characters is whole and one more is cut by exactly 1", () => {
+  for (const tail of ["", "\n"]) {
+    const exact = lineRing();
+    exact.write("a" + "b".repeat(LINE_MAX - 2) + "z" + tail);
+    assert.equal(exact.lines()[0], "a" + "b".repeat(LINE_MAX - 2) + "z");
+    const over = lineRing();
+    over.write("a" + "b".repeat(LINE_MAX - 1) + "z" + tail);
+    const [line] = over.lines();
+    assert.equal(line, "a" + "b".repeat(LINE_MAX / 2 - 1) + " [cut 1 characters] " + "b".repeat(LINE_MAX / 2 - 1) + "z");
+  }
+});
+
+test("a harness that ends normally keeps the log content it had", () => {
+  const state = { phase: "done", reason: null, output: "all done" };
+  const facts = runFacts({ project: "atelier", item: assignment.item, agent: "claude-code" }, state, { dir });
+  assert.equal(logOf(facts), "all done\n");
+});
+
+const task = { project: "atelier", item: assignment.item, agent: "claude-code" };
+const runnerUrl = new URL("../cli/runner.mjs", import.meta.url).href;
+// A runner process that writes one log with the clock fixed, or dies first.
+const child = (code, folder) => new Promise((done) => execFile(process.execPath, ["--input-type=module", "-e", `import { runFacts } from ${JSON.stringify(runnerUrl)}; ${code}`, folder], { encoding: "utf8" }, (error, stdout) => done({ error, stdout })));
+const writes = (folder) => `const f = runFacts({ project: "atelier", item: { id: "t589" }, agent: "claude-code" }, { reason: "r" }, { dir: process.argv[1], now: () => 5 }); console.log(f.log);`;
+
+test("retried and repeated runs each write their own log, and the earlier logs stay", () => {
+  const before = readdirSync(dir).length;
+  const a = runFacts(task, { reason: "one" }, { dir, now: () => 5 });
+  const b = runFacts(task, { reason: "two" }, { dir, now: () => 5 });
+  assert.notEqual(a.log, b.log);
+  assert.equal(logOf(a), "one\n");
+  assert.equal(logOf(b), "two\n");
+  assert.equal(readdirSync(dir).length, before + 2);
+  assert.match(a.log, /atelier-t589-5-\d+-\d+\.log$/);
+});
+
+test("concurrent runs in separate processes share no log", async () => {
+  const folder = join(scripts, "concurrent");
+  const [a, b] = await Promise.all([child(writes(), folder), child(writes(), folder)]);
+  assert.ok(!a.error && !b.error);
+  assert.notEqual(a.stdout.trim(), b.stdout.trim());
+  assert.equal(readdirSync(folder).length, 2);
+});
+
+test("a failed write leaves log null; a crash before the write keeps none", async () => {
+  const file = join(scripts, "a-file");
+  writeFileSync(file, "x");
+  const was = process.env.TMPDIR;
+  process.env.TMPDIR = file;
+  try { assert.equal(runFacts(task, { reason: "three" }, { dir: join(file, "inside") }).log, null); }
+  finally { process.env.TMPDIR = was; }
+  const folder = join(scripts, "crash");
+  const crashed = await child(`process.kill(process.pid, "SIGKILL"); ${writes()}`, folder);
+  assert.equal(crashed.error?.signal, "SIGKILL");
+  assert.deepEqual(readdirSync(scripts).filter((n) => n === "crash"), [], "nothing was made");
+});

@@ -100,6 +100,8 @@ it("a crashed holder cannot reclaim a build after a criteria edit until the curr
   await t.L.setProject({ ...project, policy: { ...project.policy, requireCriteriaReview: true } }, "owner");
   const approve = async () => {
     const reviewer = "claude-code/opus-5.5";
+    // A criteria review is asked only of a reviewer a live runner offers (t591).
+    expect((await t.api("POST", "/queue", { ...t.offer, agents: [...t.offer.agents, { agent: "claude-code", models: ["opus-5.5"] }], jobs: [...t.offer.jobs, "criteria-review"] })).status).toBe(200);
     await t.L.requestCriteriaReview("t1", "owner", reviewer, [{ id: "opus-5.5", harness: "claude-code", family: "anthropic", where: "home", provider: "subscription", aliases: [], note: "", addedBy: "owner", addedAt: new Date().toISOString() }]);
     const claim = await t.L.claimCriteriaReview("t1", reviewer, { runner: "home:reviewer", kind: "home" });
     await t.L.addCriteriaReview({ itemId: "t1", by: reviewer, rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: true, summary: "Measurable." }, true);

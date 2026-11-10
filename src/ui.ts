@@ -6,7 +6,7 @@ import { nowBody, type NowView } from "./now.ts";
 import nowCss from "./now.css";
 import verdictCss from "./task-verdict.css";
 import { renderTaskVerdict } from "./task-verdict.ts";
-import { landBlock, landStateOf, LAND_CALLS } from "./page-actions.ts";
+import { answerBlock, landBlock, landStateOf, LAND_CALLS } from "./page-actions.ts";
 import { sessionNoteText, type SessionNote } from "./sessions.ts";
 // Server-rendered pages. Every action is a plain form post and every page
 // reads fully without script; the Studio refreshes itself with a meta
@@ -258,6 +258,8 @@ export function publicPage(o: { title: string; description: string; brand: strin
 export interface Detail {
   // Set by the entry for a request the page-action guard lets act (src/page-actions.ts): the Land form is drawn, with a request id new to each drawing.
   pageAct?: { newId: () => string; nonce?: string };
+  // A new one-use request id for each form the page draws that carries one (the override form), with or without Access.
+  requestId?: () => string;
   // The landing a page or the command line queued, with the head a page asked it at; and the landing record (Ledger.detail).
   landJob?: { by: string; at: string; quote: string | null; head: string | null } | null;
   landing?: { failedStep: string | null; requeued?: string; head: string | null } | null;
@@ -304,7 +306,7 @@ export interface Detail {
   // the page is drawn without a ledger, which then reads `events`.
   judgementEvents?: LedgerEvent[];
 }
-export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override" | "land"; message: string; note?: string }
+export interface FormError { verb: "approve" | "reject" | "accept" | "override" | "allow-override" | "land" | "answer"; message: string; note?: string }
 // `full` is set on the task's own page, the one place that shows the task's
 // brief and acceptance criteria; every other view shows its short title.
 // `auto` marks the decision Decisions selects itself when the owner picked
@@ -2420,7 +2422,7 @@ function secretNotice(item: Item, revision: string, action: (verb: string) => st
 export interface ReviewParts {
   status: { title: string; detail: string; unknowns: string[]; tone: string };
   text: string; notice: string; ownerState: string; ownerRows: string;
-  actions: string; secret: string; askReview: string; merge: string; reaccept: string; revision: string; land: string;
+  actions: string; secret: string; askReview: string; merge: string; reaccept: string; revision: string; land: string; answer: string;
   origin: string; framing: string; thread: string; brief: string; briefAsk: string;
   openScope: string; fastReady: string; notices: string;
   diff: string; scope: string; protectedNote: string; checks: string; fast: string;
@@ -2511,7 +2513,7 @@ export function reviewParts({ project: p, detail: d, diff, thread, full }: Revie
     // nothing; each of its two forms has its own explicit button. A refused
     // override reopens it with the reason kept and the secret never refilled.
     ? `<details class="override-disclosure"${d.formError?.verb === "override" || d.formError?.verb === "allow-override" ? " open" : ""}><summary><span class="disclosure-marker" aria-hidden="true"></span>Accept without an independent review <span class="meta disclosure-hint"><span class="when-closed">show the override and command-line permission</span><span class="when-open">hide</span></span></summary>
-      <form class="stack" method="post" action="${action("override")}">${revision}
+      <form class="stack" method="post" action="${action("override")}">${revision}${d.requestId ? `<input type="hidden" name="request" value="${e(d.requestId())}">` : ""}
         <h4>Override and accept</h4>
         <label>Why are you overriding the independent review?<textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}">${e(d.formError?.verb === "override" ? d.formError.note ?? "" : "")}</textarea></label>${confirmField}
         <p class="meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review. ${confirmWords}</p>
@@ -2559,11 +2561,15 @@ export function reviewParts({ project: p, detail: d, diff, thread, full }: Revie
   const land = item.head && LAND_CALLS.has(decision.action) && item.state === "submitted"
     ? landBlock({ project: p.name, id: item.id, head: item.head, criteria: bindingOf(item).criteria, back: "task", act: d.pageAct ?? null, ...landState, error: fail("land") })
     : "";
+  // Answer, for an owner call of unblock that is not a fact block (t596): in the verdict block, in place of the bare Unblock form below. A fact block keeps Unblock.
+  const answerForm = item.state === "blocked" && item.blocked && !item.blocked.fact && d.pageAct
+    ? answerBlock({ project: p.name, id: item.id, head: item.head ?? "", criteria: bindingOf(item).criteria, back: "task", act: d.pageAct, ...(d.formError?.verb === "answer" && d.formError.note ? { kept: d.formError.note } : {}), error: fail("answer") })
+    : "";
   // A refused form the page no longer draws (an Accept refused as not ready,
   // an override the project now forbids) has its refusal said first among
   // the actions, so no refusal is lost, and the reason typed into it is shown
   // beside it, unrecorded, so it can be copied rather than typed again.
-  const unplaced = d.formError && ![approve, accept, override, reject, land].some((f) => f.includes(`id="error-${d.formError!.verb}"`))
+  const unplaced = d.formError && ![approve, accept, override, reject, land, answerForm].some((f) => f.includes(`id="error-${d.formError!.verb}"`))
     ? formErrorText(d.formError, d.formError.verb, reload) + (d.formError.note
       ? `<div class="kept-note"><p class="meta">The reason you typed, which was not recorded:</p><blockquote>${e(d.formError.note)}</blockquote></div>`
       : "")
@@ -2594,7 +2600,7 @@ export function reviewParts({ project: p, detail: d, diff, thread, full }: Revie
     ? `<div class="notice" role="status"><h3>Blocked by ${e(item.blocked.by)} ${when(item.blocked.at)}</h3>
         <p>${e(item.blocked.reason)}</p>${item.blocked.quote ? `<p class="meta">On ${e(directionText(item.blocked))}</p>` : ""}
         <p class="meta">It keeps its holder and workspace, is skipped by runners and stuck detection, and cannot be pushed or submitted. Unblocking returns it to ${e(stateLabel[item.blocked.from].toLowerCase())}.</p>
-        <form method="post" action="${action("unblock")}">${revision}<button class="primary">Unblock</button></form></div>`
+        ${answerForm ? "" : `<form method="post" action="${action("unblock")}">${revision}<button class="${item.blocked.fact ? "outline" : "primary"}">Unblock</button></form>`}</div>`
     : live || item.state === "open"
       ? `<details class="request-changes"><summary>Block this task</summary>
         <form class="stack" method="post" action="${action("block")}">${revision}
@@ -2648,7 +2654,7 @@ export function reviewParts({ project: p, detail: d, diff, thread, full }: Revie
   const common: ReviewParts = {
     status: { title: presentation.title, detail: presentation.detail, unknowns: presentation.unknowns, tone: decision.tone },
     text: taskText(item), notice: evidenceNotice, ownerState: ownerStateBlock(state), ownerRows: ownerStateBlock(state, false),
-    actions: `${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}`, secret: secretBox, askReview, merge, reaccept, land,
+    actions: `${unplaced}${approve}${accept}${override}${reject}${dispatchBox}${blockBox}`, secret: secretBox, askReview, merge, reaccept, land, answer: answerForm,
     revision: `<p class="meta revision">${item.head ? `Revision <code>${short(item.head)}</code>` : "No revision pushed yet"}${item.owner ? ` · ${e(item.owner)}` : ""}</p>`,
     origin: defectOrigin, framing, thread: "", brief: "", briefAsk: "", openScope, fastReady: fastReadyBlock(d), notices,
     diff: "", scope: "", protectedNote: "", checks: "", fast: "",
@@ -2786,7 +2792,9 @@ export function renderError(message: string, back = "/home", ownerName: string |
 // The Access refusals (401 with no assertion, 503 with broken settings) reach
 // a visitor who is not signed in, so they are drawn as a public page: no owner
 // bar, no project switcher, no Sign out, and no Go back (t559).
-export function renderAccessRefusal(message: string): string {
+// The 401 also offers a primary Sign in link to /login, which the Cloudflare
+// edge sends to the Access prompt (t625); the 503 has nothing to sign in to.
+export function renderAccessRefusal(message: string, signIn = false): string {
   return publicPage({
     title: "Action needs attention · Atelier",
     description: "Atelier, a Git platform for multiple coding agents, built on Cloudflare.",
@@ -2794,7 +2802,8 @@ export function renderAccessRefusal(message: string): string {
     nav: [["How it works", "/how"]],
     mainClass: "error-page-public",
     main: `<section class="page-width error-page">
-  <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
+  <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>${signIn ? `
+  <p><a class="button primary" href="/login">Sign in</a></p>` : ""}
 </section>`,
   });
 }

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import "../src/runtime/loader.mjs";
 import { Namespace } from "../src/runtime/namespace.mjs";
+import "./support/default-runner.ts";
 
 const dirs = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });

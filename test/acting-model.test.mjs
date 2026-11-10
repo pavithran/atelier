@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { promisify } from "node:util";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-runner.ts";
 import { ownerWriteRefusal } from "../src/models/judgement.ts";
 import { pushActors } from "../src/rules.ts";
 

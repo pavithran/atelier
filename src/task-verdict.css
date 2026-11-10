@@ -153,3 +153,18 @@
 .task-verdict .verdict-land .land-moved, .task-verdict .verdict-land .land-failed { color: var(--caution); flex-basis: 100%; }
 .task-verdict .verdict-land .form-error { flex-basis: 100%; margin: 0; }
 @media (prefers-reduced-motion: reduce) { .task-verdict .verdict-land .land-form button { transition: none; } }
+/* Answer in the verdict block, between the verdict sentence and the track (t596). Send answer fills with the theme's signal fill. */
+.task-verdict .verdict-answer { margin-top: 14px; }
+.task-verdict .verdict-answer .answer-form { margin: 0; display: grid; gap: 10px; max-width: 640px; }
+.task-verdict .verdict-answer .answer-field { display: grid; gap: 4px; font-weight: 600; }
+.task-verdict .verdict-answer .answer-field .meta { font-weight: 400; }
+.task-verdict .verdict-answer .answer-field textarea { width: 100%; box-sizing: border-box; min-height: 96px; }
+.task-verdict .verdict-answer .answer-note { margin: 0; font-size: 14px; color: var(--text-muted); }
+.task-verdict .verdict-answer .answer-form button { min-height: 44px; padding: 0 22px; justify-self: start; transition: transform .15s var(--ease, ease), opacity .15s; }
+.task-verdict .verdict-answer .answer-form button:active { transform: translateY(1px); }
+.task-verdict .verdict-answer .answer-form button:disabled { opacity: .6; cursor: progress; }
+.task-verdict .verdict-answer .answer-form button.send-answer { background: var(--signal-fill); border-color: var(--signal-fill); color: var(--on-signal-fill); }
+.task-verdict .verdict-answer .form-error { margin: 0; }
+/* A fact block's Unblock is an outline button: gold means a decision waits on the developer, and a fact waits on none. */
+.task-verdict button.outline { background: transparent; border-color: var(--line-bright); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .task-verdict .verdict-answer .answer-form button { transition: none; } }
