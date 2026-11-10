@@ -355,3 +355,46 @@ itBrowser("criterion 9: trains and lamps animate with no preference and do not u
     }
   }
 });
+
+// A claim names its runner before the runner prepares its workspace and reports progress (fix round for t608).
+// These run last: they add claimed tasks to the mini's track.
+// They use a runner of their own: earlier tests leave a train on the mini's other track.
+const EARLY = "home:mini-atelier-early";
+const miniTrack = (html: string) => block(html.slice(html.indexOf(`data-runner="${EARLY}"`) - 40), '<div class="ytrack ');
+async function claimed(title: string, runner: string | null) {
+  const l = L("atelier");
+  vi.setSystemTime(new Date(T - min(3)));
+  const item = await l.newItem(title, [], OWNER, {});
+  await l.claim(item.id, "claude-code/sonnet-5.5", runner ? { runner, kind: "home" } : undefined);
+  vi.setSystemTime(new Date(T));
+  return item;
+}
+
+it("claim before progress: a claimed task with a recorded runner and no progress record is a train at Claim on that track, and the lamp is busy", async () => {
+  await poll(EARLY, { agents: [{ agent: "claude-code", models: ["sonnet-5.5"] }] }, T - 20_000);
+  vi.setSystemTime(new Date(T));
+  const item = await claimed("Prepare the workspace", EARLY);
+  const mini = miniTrack(await drawn());
+  expect(mini).toContain(`data-lamp="busy"`);
+  expect(mini).toContain(`<div class="train" data-task="${item.id}" data-project="atelier" data-stage="Claim"`);
+  expect(mini).toMatch(/<span class="st here" style="--i:0"><em>Claim<\/em>/);
+  expect(text(mini)).toContain("Prepare the workspace atelier build · Claim · no progress reported yet");
+  made.early = { id: item.id, title: item.title };
+});
+
+it("claim before progress: after its first progress record the task is one train, at its stage", async () => {
+  const { id } = made.early;
+  vi.setSystemTime(new Date(T - 2000));
+  await L("atelier").recordProgress(EARLY, [{ task: id, actor: "claude-code/sonnet-5.5", startedAt: iso(T - min(2)), at: iso(T - min(2)), harness: null, telemetry: true, commands: { started: 1, completed: 0 }, commits: 0, changedFiles: 0, childAlive: true, log: "/var/atelier/runs/y/build.progress.jsonl", current: { name: "Bash", summary: "npm", since: iso(T - 5000) } }]);
+  vi.setSystemTime(new Date(T));
+  const mini = miniTrack(await drawn());
+  expect([...mini.matchAll(/<div class="train"/g)]).toHaveLength(1);
+  expect(mini).toContain(`data-task="${id}" data-project="atelier" data-stage="Branch"`);
+  expect(text(mini)).toContain("2 min on track");
+});
+
+it("claim before progress: a claimed task with no recorded runner draws no train", async () => {
+  const item = await claimed("Claimed by hand", null);
+  const html = await drawn();
+  expect(html).not.toContain(`data-task="${item.id}"`);
+});

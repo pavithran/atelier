@@ -89,17 +89,21 @@ function trainsOf(inputs: TodayInputs, at: Date): Map<string, RigTrain[]> {
   const by = new Map<string, RigTrain[]>();
   for (const p of inputs.projects) {
     const dispatches = new Map(p.now.items.map((i) => [i.id, i.dispatch?.job ?? null] as const));
+    const items = new Map(p.now.items.map((i) => [i.id, i] as const));
     for (const l of todayLanes(buildNow([p.now], at), { projects: [p], unread: [], owner: inputs.owner }, at) as TodayLane[]) {
-      const runner = l.run.runner;
+      // A claimed build with no unfinished progress record yet (the runner claims before it prepares its workspace
+      // and reports progress) stands at Claim, on the runner its claim records.
+      const item = items.get(l.id), early = !l.run.runner && l.run.stage === "Branch" && item?.state === "claimed" && !!item.runner;
+      const runner = early ? item!.runner : l.run.runner;
       // A task Today calls waiting still holds its runner while its progress record is unfinished (a pulse other than none).
-      if (!runner || (l.wait && l.run.pulse === "none")) continue;
-      const step = Math.max(0, TRACK.indexOf(l.run.stage as (typeof TRACK)[number]));
+      if (!runner || (!early && l.wait && l.run.pulse === "none")) continue;
+      const step = early ? 0 : Math.max(0, TRACK.indexOf(l.run.stage as (typeof TRACK)[number]));
       const hidden = isPrivateProject(l.project);
       const actor = l.run.actor ?? l.holder;
       const train: RigTrain = {
         id: l.id, title: l.title, project: l.project, model: l.run.model ?? actor, actor, family: l.family,
         stage: TRACK[step], step, at: 0.1 + 0.2 * step + 0.01,
-        job: dispatches.get(l.id) ?? (step === 3 ? "review" : "build"), onTrack: l.elapsed, attempt: l.run.attempt ?? 1,
+        job: dispatches.get(l.id) ?? (step === 3 ? "review" : "build"), onTrack: early ? "" : l.elapsed, attempt: early ? 0 : l.run.attempt ?? 1,
         hidden, href: l.href,
       };
       by.set(lower(runner), [...(by.get(lower(runner)) ?? []), train]);
@@ -206,7 +210,7 @@ function railHtml(t: RigTrack): string {
 
 function underHtml(x: RigTrain): string {
   if (x.hidden) return `<div class="under dim">${e(x.project)} · private project, details hidden</div>`;
-  return `<div class="under"><span class="tt"><a href="${e(x.href)}">${e(x.title)}</a></span><span class="mono dim"><span class="proj">${e(x.project)}</span> ${e(x.job)} · ${e(x.stage)} · ${e(x.onTrack)} on track · attempt ${x.attempt}</span></div>`;
+  return `<div class="under"><span class="tt"><a href="${e(x.href)}">${e(x.title)}</a></span><span class="mono dim"><span class="proj">${e(x.project)}</span> ${e(x.job)} · ${e(x.stage)} · ${x.attempt ? `${e(x.onTrack)} on track · attempt ${x.attempt}` : "no progress reported yet"}</span></div>`;
 }
 
 function trackHtml(t: RigTrack): string {
