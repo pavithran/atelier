@@ -1,7 +1,7 @@
 // Today (t562; PAVI chose redesign A on 2026-11-08): the one page at / that
 // answers what waits for the developer, what is running, what merged and
 // deployed today, and how each project is doing. It absorbs Home, Now and
-// Decisions, and is read-only: a needs-you card links to the task's page.
+// Decisions, and a needs-you card links to the task's page. Its one action is Land, on a card whose call is land or accept (t594).
 //
 // todayInputsOf reads each project's events once, back 14 days, and cuts them
 // into the 48-hour slice buildNow takes and the 14-day slice buildPulse takes;
@@ -21,7 +21,9 @@ import { STALL_MS, type ProgressRecord, type SituationFacts } from "./situation.
 import { splitActor } from "./floor.ts";
 import { vendorOf } from "./graph.ts";
 import { machineName, runnerNameOf } from "./runner-names.ts";
+import { criteriaOf } from "./criteria.ts";
 import { dayInZone } from "./time.ts";
+import { landBlock, landStateOf, LAND_CALLS } from "./page-actions.ts";
 import { escapeText as e, page, type Live } from "./ui";
 import todayCss from "./today.css";
 
@@ -40,7 +42,7 @@ export const QUIET_MS = 10 * 60_000;
 export interface TodayLedger {
   ownerRead(now: string, pool: unknown): Promise<{ items: Item[]; inbox: InboxEntry[] | null }>;
   events(id?: string, limit?: number, before?: number): Promise<LedgerEvent[]>;
-  situationFacts(tasks: string[]): Promise<Pick<SituationFacts, "items" | "stages" | "reviewRequests" | "landings"> & { progress?: NowProject["progress"] }>;
+  situationFacts(tasks: string[]): Promise<Pick<SituationFacts, "items" | "stages" | "reviewRequests" | "landings"> & Partial<Pick<SituationFacts, "landJobs">> & { progress?: NowProject["progress"] }>;
   postMergeRun(item: string): Promise<Pick<PostMergeRun, "state"> | null>;
 }
 
@@ -66,6 +68,9 @@ export interface TodayProjectInput {
   postMerge: Record<string, PostMergeRun["state"] | null>;
   // The 14-day read stopped short of the ledger's start: a deploy with no earlier shipped deploy in it may have carried older merges.
   cutShort?: boolean;
+  // The landings waiting in the queue (situationFacts), and the head and criteria binding of each task the owner is asked to land or accept: what a card's Land form carries (t594).
+  landJobs?: { item: string; at: string; head?: string | null }[];
+  heads?: Record<string, { head: string | null; criteria: string }>;
 }
 
 export interface TodayInputs {
@@ -137,6 +142,8 @@ async function readProject(src: TodaySource, p: TodaySource["projects"][number],
       reviewRequests: facts.reviewRequests, landings: facts.landings, progress: facts.progress ?? {}, events, deploys: ships,
     },
     pulseEvents, ships, postMerge, cutShort,
+    landJobs: facts.landJobs ?? [],
+    heads: Object.fromEntries(items.map((i) => [i.id, { head: i.head ?? null, criteria: criteriaOf(i) }])),
   };
 }
 
@@ -158,7 +165,11 @@ export interface TodayTile {
   // Said under the figure: what it counts, or what it leaves out.
   note: string;
 }
-export interface TodayCard { id: string; project: string; title: string; href: string; call: string; why: string; family: string; age: string }
+export interface TodayCard {
+  id: string; project: string; title: string; href: string; call: string; why: string; family: string; age: string;
+  // Set for an owner call of land or accept: the head and criteria the Land form binds to, and whether a landing already waits at that head (t594).
+  land?: { head: string; criteria: string; queuedAt: string | null; failedStep: string | null; movedFrom: string | null };
+}
 // What a Running row says of its run, from the task's progress record (or, for a review, its request). A field the
 // record does not hold is null and the page leaves it out.
 export interface TodayRun {
@@ -296,9 +307,16 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
   const needs = group("needs-you");
   const live = [...group("running"), ...group("waiting")];
   const landed = group("landed");
-  const cards: TodayCard[] = needs.map((r) => ({
-    id: r.id, project: r.project, title: r.title, href: r.href, call: r.waitingOn.replace(/^you: /, ""), why: r.next, family: familyOf(r), age: age(at.getTime() - Date.parse(r.since)),
-  }));
+  const cards: TodayCard[] = needs.map((r) => {
+    const p = inputs.projects.find((x) => x.now.name === r.project);
+    const call = p?.now.owner.find((t) => t.id === r.id)?.call;
+    const bound = p?.heads?.[r.id];
+    const job = p?.landJobs?.find((j) => j.item === r.id);
+    const land = call && LAND_CALLS.has(call) && bound?.head
+      ? { head: bound.head, criteria: bound.criteria, ...landStateOf({ head: bound.head, job: job ? { at: job.at, head: job.head ?? null } : null, landing: p?.now.landings[r.id] ?? null }) }
+      : undefined;
+    return { id: r.id, project: r.project, title: r.title, href: r.href, call: r.waitingOn.replace(/^you: /, ""), why: r.next, family: familyOf(r), age: age(at.getTime() - Date.parse(r.since)), ...(land ? { land } : {}) };
+  });
   const lanes: TodayLane[] = live.map((r) => {
     const run = runOf(r, inputs.projects.find((p) => p.now.name === r.project)!, holders.get(`${r.project}/${r.id}`) ?? null, inputs.owner, at);
     const waited = age(at.getTime() - Date.parse(r.since));
@@ -388,8 +406,9 @@ function headline(v: TodayView): string {
 const section = (id: string, title: string, count: string, body: string, more = "") =>
   `<section id="${id}" aria-labelledby="${id}-h"><div class="today-sh"><h2 id="${id}-h">${title}</h2><span class="today-c">${e(count)}</span>${more}</div>${body}</section>`;
 
-function cardHtml(c: TodayCard): string {
-  return `<div class="today-ask"><div class="today-t"><a class="today-title" href="${e(c.href)}">${e(c.title)}</a></div><div class="today-meta"><span class="mono">${e(c.project)} · ${e(c.id)}</span>${chip(c.call, "you")}<span>${famDot(c.family)}waiting ${e(c.age)}</span></div><div class="today-why">${e(c.why)}</div><a class="today-open" href="${e(c.href)}" aria-label="Open ${e(c.id)}">Open →</a></div>`;
+function cardHtml(c: TodayCard, act: TodayAct | undefined): string {
+  const land = c.land ? `<div class="today-land">${landBlock({ project: c.project, id: c.id, head: c.land.head, criteria: c.land.criteria, back: "today", act: act ?? null, queuedAt: c.land.queuedAt, failedStep: c.land.failedStep, movedFrom: c.land.movedFrom })}</div>` : "";
+  return `<div class="today-ask"><div class="today-t"><a class="today-title" href="${e(c.href)}">${e(c.title)}</a></div><div class="today-meta"><span class="mono">${e(c.project)} · ${e(c.id)}</span>${chip(c.call, "you")}<span>${famDot(c.family)}waiting ${e(c.age)}</span></div><div class="today-why">${e(c.why)}</div>${land}<a class="today-open" href="${e(c.href)}" aria-label="Open ${e(c.id)}">Open →</a></div>`;
 }
 
 // The machine glyphs of the chosen mockup (docs/design/today-running/a-running.html), by display name.
@@ -427,23 +446,26 @@ function projectHtml(p: TodayProjectCard): string {
   return `<a class="today-proj" href="/p/${encodeURIComponent(p.name)}" style="--fam:var(--m-${e(p.family)})"><h3>${e(p.title)}</h3><div class="today-k">${e(k)}</div><div class="today-bars" aria-hidden="true">${p.days.map((n) => `<i style="--h:${Math.round((n / max) * 100)}%"${n ? "" : ' class="none"'}></i>`).join("")}</div></a>`;
 }
 
-export function todayBody(v: TodayView): string {
+export function todayBody(v: TodayView, act?: TodayAct): string {
   const blind = v.projects.every((p) => p.unread);
   const empty = (line: string) => `<p class="today-empty">${blind ? "Not read." : line}</p>`;
   const merges = v.timeline.filter((ev) => ev.kind === "merge").length, ships = v.ships.filter((s) => s.shipped).length;
   const unread = v.unread.length ? `<p class="today-unread" role="alert">Not read: ${e(v.unread.join(", "))}. Their figures are not in the totals below.</p>` : "";
   const running = v.lanes.length ? `<div class="today-runlist">${v.lanes.map(laneHtml).join("")}</div>` + (v.lanesMore ? `<p class="meta">and ${v.lanesMore} more · <a href="/flow">Flow</a></p>` : "") : empty("No task is running.");
   return `<div class="today"><div class="today-date">${e(v.dateText)}</div>${headline(v)}${unread}${tiles(v)}`
-    + section("needs-you", "Needs you", String(v.cards.length), v.cards.length ? v.cards.map(cardHtml).join("") : empty("Nothing waits for you."))
+    + section("needs-you", "Needs you", String(v.cards.length), v.cards.length ? v.cards.map((c) => cardHtml(c, act)).join("") : empty("Nothing waits for you."))
     + section("running", "Running", String(v.tiles.running.value ?? 0), running, `<a href="/flow">Flow →</a>`)
     + section("merged", "Merged and deployed today", `${merges} · ${plural(ships, "deploy")}`, v.timeline.length ? `<div class="today-landed">${v.timeline.map(eventHtml).join("")}</div>` : empty("Nothing has merged or deployed today."), `<a href="/history">History →</a>`)
     + section("projects", "Projects", `${v.projects.length}`, v.projects.length ? `<div class="today-projects">${v.projects.map(projectHtml).join("")}</div>` : `<p class="today-empty">No project is registered.</p>`)
     + `<p class="meta today-zone">Times are Eastern.</p></div>`;
 }
 
+// The Land forms are drawn only when the entry's page-action guard lets the request act (src/page-actions.ts).
+export type TodayAct = { newId: () => string; nonce?: string };
+
 // Today follows the device's colour scheme, as Now does. The page draws no
-// form or button, so it is drawn without the owner menu's sign-out form
-// (page's signedIn = false): Today is read-only.
-export function renderToday(v: TodayView, ownerName: string | null = null, live?: Live): string {
-  return page("Today", todayBody(v), "Today", ownerName, 0, false, live, { css: todayCss });
+// form or button but Land, so it is drawn without the owner menu's sign-out form
+// (page's signedIn = false).
+export function renderToday(v: TodayView, ownerName: string | null = null, live?: Live, act?: TodayAct): string {
+  return page("Today", todayBody(v, act), "Today", ownerName, 0, false, live, { css: todayCss });
 }
