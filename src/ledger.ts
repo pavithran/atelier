@@ -8178,19 +8178,15 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The offers a review request is judged by (t591): those given, else the
-  // ones this ledger last read, or undefined when no runner has asked at all
-  // (offersJudge), so a ledger the index never fed refuses nothing.
-  private judgedOffers(given?: readonly SeenOffer[]): readonly SeenOffer[] | undefined {
-    if (given?.length) return given;
-    const held = this.heldOffers();
-    return held.length ? held : given;
+  // ones this ledger last read. Possibly none: then no reviewer is offered.
+  private judgedOffers(given?: readonly SeenOffer[]): readonly SeenOffer[] {
+    return given?.length ? given : this.heldOffers();
   }
 
   // Whether a live runner offers the actor for the review job by the offers
-  // this ledger last read (t591). True while no offer is on record to judge by.
+  // this ledger last read (t591). False while no offer is on record.
   private offeredNow(actor: string): boolean {
     const offers = this.judgedOffers();
-    if (!offersJudge(offers)) return true;
     try {
       const slash = actor.indexOf("/");
       const d = { ...this.standingDispatch({ to: "home", agent: actor.slice(0, slash), model: actor.slice(slash + 1) }, "review", ORCHESTRATOR, new Date().toISOString(), this.poolStanding()), job: "review" as const };
@@ -10487,7 +10483,8 @@ export class Ledger extends DurableObject<Env> {
   private askCriteriaReview(item: Item, by: string, reviewer: string | null, pool: readonly ModelEntry[], allowPaid: boolean, at: string, proved = false, given?: readonly SeenOffer[]): { requested: boolean; reason: string; rev: number; reviewer?: string; request?: number } {
     // Only a reviewer a live runner offers for the criteria-review job is
     // asked or named (t591); the offers read at this call decide.
-    const offers = this.judgedOffers(given);
+    // Scoped to this project, as the stored copy is (ownOffers).
+    const offers = this.ownOffers(this.judgedOffers(given));
     const status = this.criteriaReviewStatus(item.id, new Date(at));
     const rev = status.rev;
     if (status.approved) return { requested: false, reason: status.reason, rev };
@@ -10498,13 +10495,14 @@ export class Ledger extends DurableObject<Env> {
       throw new RuleError("no_criteria", `${item.id} has no acceptance criteria to review: give them with atelier edit ${item.id} --accept "TEXT"`, 409, `run atelier edit ${item.id} --accept "TEXT"`);
     }
     if (status.need === "owner") throw new RuleError("criteria_rejected", `${item.id}'s acceptance criteria are not reviewed again until the developer answers the findings: ${status.reason}`, 409, `only the developer can answer the findings: atelier criteria-finding ${item.id} --review N --index N --verdict confirmed|refuted|fixed`);
+    let replaced: { id: number; reviewer: string } | null = null;
     if (status.need === "wait") {
       // A named reviewer replaces an unclaimed request for another; a claimed
       // one, or no name, leaves the live request standing.
       const live = this.criteriaReviewsFor(item.id).find((r) => r.rev === rev && (r.state === "open" || r.state === "claimed"));
       if (!reviewer || !live || live.state !== "open" || sameActor(live.reviewer, reviewer)) return { requested: false, reason: status.reason, rev, reviewer: live?.reviewer, request: live?.id };
-      this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, `the developer named ${reviewer} instead`, at, live.id);
-      this.log(item.id, by, "criteria_review.withdrawn", { review: live.id, rev, reviewer: live.reviewer, reason: `the developer named ${reviewer} instead` }, at, proved);
+      // Withdrawn below, once the replacement has passed every refusal.
+      replaced = live;
     }
     const authors = authorsOf(this.criteriaRevisions(item.id));
     const policy = this.project().policy;
@@ -10543,6 +10541,10 @@ export class Ledger extends DurableObject<Env> {
     // owner's standing holds from reviewing is refused with the reason, and
     // the pick passed over any held model before choosing.
     const dispatch = { ...this.standingDispatch({ to: "home", agent: chosen.slice(0, slash), model: chosen.slice(slash + 1), note: `review the acceptance criteria of ${item.id}` }, "review", ORCHESTRATOR, at, standing), job: "criteria-review" as const };
+    if (replaced) {
+      this.sql.exec(`UPDATE criteria_reviews SET state = 'withdrawn', failure = ?, decidedAt = ? WHERE id = ?`, `the developer named ${reviewer} instead`, at, replaced.id);
+      this.log(item.id, by, "criteria_review.withdrawn", { review: replaced.id, rev, reviewer: replaced.reviewer, reason: `the developer named ${reviewer} instead` }, at, proved);
+    }
     const criteria = criteriaOf(item);
     const row = this.sql.exec(`INSERT INTO criteria_reviews (item, rev, criteria, authors, reviewer, dispatch, state, requestedAt) VALUES (?, ?, ?, ?, ?, ?, 'open', ?) RETURNING id`,
       item.id, rev, criteria, JSON.stringify(authors), chosen, JSON.stringify(dispatch), at).one();

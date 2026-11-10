@@ -10,12 +10,12 @@ import type { Candidate } from "../models/suggest.ts";
 
 export type ReviewJob = "review" | "criteria-review" | "prereview";
 
-// The offers judge a request only once some runner has asked the server for
-// work. With no offer on record at all, the offers were never read (a ledger
-// called without the index), so nothing is refused for want of one. Offers
-// that have all gone stale are a read: no live runner offers anything.
+// The offers judge every request. No recorded live runner means no reviewer
+// is offered: an empty list refuses a named reviewer and stops an automatic
+// request, it does not switch the check off (t591, fix round 1). Only a list
+// never read (undefined) is not judged, for callers that make no request.
 export function offersJudge(offers: readonly SeenOffer[] | null | undefined): offers is readonly SeenOffer[] {
-  return !!offers && offers.length > 0;
+  return Array.isArray(offers);
 }
 
 // The next eligible reviewer after `skipped`: the first candidate nothing

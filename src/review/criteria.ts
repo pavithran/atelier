@@ -314,8 +314,7 @@ export function criteriaReviewerCandidates(input: CriteriaPickInput): { actor: s
 }
 
 // Whether a live runner offers the criteria-review job for the model (t591).
-// Judged only once some runner's offer is on record; with none, the offers
-// were never read and nothing is refused for want of one.
+// With no offer on record, none is offered.
 export function criteriaOffered(agent: string, model: string, offers: readonly SeenOffer[] | undefined): boolean {
   if (!offersJudge(offers)) return true;
   const d = { to: "home", agent, model, job: "criteria-review" } as Dispatch;
