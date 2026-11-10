@@ -115,17 +115,13 @@ test('a second run changes nothing and installs nothing', () => {
 
 test('a rerun after an interruption completes the install', () => {
   const f = fixture('interrupted');
-  // Killed mid-install (a half staging folder, a stale .new copy, a lock of a dead run), and between the two moves (module only in .old).
+  // Killed mid-install (a half staging folder, a stale .new copy), and between the two moves (module only in .old).
   mkdirSync(join(f.root + '.staging', 'node_modules/half'), { recursive: true });
   mkdirSync(f.root + '.old/node_modules/playwright', { recursive: true });
   writeFileSync(join(f.root + '.old/node_modules/playwright/package.json'), '{"version":"0.0.1"}');
   writeFileSync(join(f.conf, 'build.json.setup-browsers.new'), 'garbage');
-  mkdirSync(f.root + '.lock');
-  const dead = spawnSync('/bin/sh', ['-c', 'echo $$'], { encoding: 'utf8' }).stdout.trim();
-  writeFileSync(join(f.root + '.lock', 'pid'), dead + '\n');
   const ran = f.run();
   assert.equal(ran.status, 0, ran.stderr);
-  assert.match(ran.stderr, new RegExp(`pid ${dead}, which is gone`));
   assert.ok(existsSync(join(f.root, 'browsers/chromium-1')));
   assert.ok(!existsSync(f.root + '.staging') && !existsSync(f.root + '.old') && !existsSync(f.root + '.lock'));
   assert.ok(!existsSync(join(f.conf, 'build.json.setup-browsers.new')));
@@ -194,19 +190,35 @@ test('files named *.new that the script did not make survive a run and a failed 
   assert.equal(readFileSync(join(g.conf, 'foo.new'), 'utf8'), 'mine');
 });
 
-test('a lock folder with a live pid is never removed, and a lock is never seen without its pid', () => {
+test('a lock folder holding a dead pid is not taken over: exit nonzero naming the pid and the command to clear it, nothing touched', () => {
+  const f = fixture('deadlock');
+  mkdirSync(join(f.root + '.staging', 'half'), { recursive: true });
+  mkdirSync(f.root + '.lock');
+  const dead = spawnSync('/bin/sh', ['-c', 'echo $$'], { encoding: 'utf8' }).stdout.trim();
+  writeFileSync(join(f.root + '.lock', 'pid'), dead + '\n');
+  const ran = f.run();
+  assert.notEqual(ran.status, 0);
+  assert.ok(ran.stderr.includes(`pid ${dead}`), ran.stderr);
+  assert.ok(ran.stderr.includes(`rm -rf ${f.root}.lock`), ran.stderr);
+  assert.equal(readFileSync(join(f.root + '.lock', 'pid'), 'utf8'), dead + '\n');
+  assert.ok(existsSync(join(f.root + '.staging', 'half')));
+  assert.equal(f.npmCalls(), 0);
+});
+
+test('a lock folder with a live pid is never removed', () => {
   const f = fixture('livelock');
   mkdirSync(f.root + '.lock');
   writeFileSync(join(f.root + '.lock', 'pid'), `${process.pid}\n`);
   assert.equal(f.run().status, 75);
   assert.ok(existsSync(join(f.root + '.lock', 'pid')));
-  // The script makes the lock by renaming a folder that already holds the pid.
-  assert.match(readFileSync(script, 'utf8'), /mv "\$LOCK\.\$\$" "\$LOCK"/);
-  // A lock folder with no pid is not ours to judge: it is not taken over.
+  // An empty lock (its maker has not written the pid yet) is reported and left alone.
   const g = fixture('nopid');
   mkdirSync(g.root + '.lock');
-  assert.equal(g.run().status, 75);
+  const ran = g.run();
+  assert.equal(ran.status, 75);
+  assert.ok(ran.stderr.includes('pid not yet written'), ran.stderr);
   assert.ok(existsSync(g.root + '.lock'));
+  assert.equal(g.npmCalls(), 0);
 });
 
 test('an existing-module launch check that hangs past the limit exits nonzero naming the step and changes nothing', () => {

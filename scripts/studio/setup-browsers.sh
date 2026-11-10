@@ -21,8 +21,8 @@
 # that is already the pinned version and launches is not reinstalled; a config
 # that already names the variables is not rewritten. A run killed between the
 # two moves leaves the old module in ROOT.old; the next run puts it back.
-# A second run while one is running exits 75 naming its pid; a lock left by a
-# run that died is taken over.
+# A run that finds the lock exits 75 naming the pid in it and the command that
+# clears a lock left by a killed run; it never removes a lock it did not make.
 #
 # Each step runs under a time limit, SETUP_BROWSERS_LIMIT seconds (default
 # 900). A step past it is killed and the script exits 124 naming the step;
@@ -68,33 +68,19 @@ if [ "$check_only" = 1 ]; then
   exit 0
 fi
 
-# The lock: a folder holding the owner's pid. It is made as a private folder
-# that already holds the pid and then renamed to LOCK, so LOCK never exists
-# without its pid. If LOCK already exists the rename would put our folder
-# inside it; that is detected and undone, and the existing lock is left alone.
+# The lock is one atomic mkdir. The run that makes it writes its pid inside and
+# removes it in its exit trap. A run that finds it exits at once and never
+# moves, replaces or removes it, whether its holder is alive or dead.
 mkdir -p "$(dirname "$ROOT")"
-acquire() {
-  mkdir "$LOCK.$$" || return 1
-  echo $$ > "$LOCK.$$/pid"
-  mv "$LOCK.$$" "$LOCK" 2>/dev/null || true
-  if [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ]; then return 0; fi
-  rm -rf "$LOCK.$$" "$LOCK/${LOCK##*/}.$$"
-  return 1
-}
-if ! acquire; then
+held=0
+if ! mkdir "$LOCK" 2>/dev/null; then
   holder=$(cat "$LOCK/pid" 2>/dev/null || true)
-  # A lock with no readable pid is not judged stale: only a dead pid is.
-  if [ -z "$holder" ] || kill -0 "$holder" 2>/dev/null; then die "another run holds $LOCK (pid ${holder:-unknown})" 75; fi
-  say "taking over $LOCK left by pid $holder, which is gone"
-  # Move it aside first, so a lock a third run made in the meantime is not deleted.
-  mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null || die "another run holds $LOCK" 75
-  if [ "$(cat "$LOCK.stale.$$/pid" 2>/dev/null)" != "$holder" ]; then
-    mv "$LOCK.stale.$$" "$LOCK" 2>/dev/null || true
-    die "another run holds $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null || echo unknown))" 75
-  fi
-  rm -rf "$LOCK.stale.$$"
-  acquire || die "another run holds $LOCK (pid $(cat "$LOCK/pid" 2>/dev/null || echo unknown))" 75
+  say "another run holds $LOCK (pid ${holder:-not yet written})"
+  say "if that run was killed, clear the lock by hand: rm -rf $LOCK"
+  exit 75
 fi
+held=1
+echo $$ > "$LOCK/pid"
 swapped=0 committed=0 DIRS=$*
 cleanup() {
   rc=$?
@@ -105,7 +91,7 @@ cleanup() {
   fi
   rm -rf "$STAGE"
   [ "$committed" = 1 ] || for d in $DIRS; do rm -f "$d"/*"$NEW"; done
-  [ "$(cat "$LOCK/pid" 2>/dev/null)" != "$$" ] || rm -rf "$LOCK"
+  [ "$held" = 0 ] || rm -rf "$LOCK"
   exit "$rc"
 }
 trap cleanup EXIT

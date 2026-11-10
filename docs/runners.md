@@ -82,8 +82,9 @@ in `~/playwright-runner.old`; the next run discards or restores these and
 finishes. A module that is the pinned version and launches is left alone, and
 a config that already names the variables is not rewritten. The lock is the
 folder `~/playwright-runner.lock` holding the pid of the run; a second run
-while it is held exits 75 and names that pid. A lock whose pid is gone is
-taken over.
+while it is held exits 75 and names that pid. It never removes a lock it did
+not make, even if that pid is gone; after a killed run, clear the lock by hand
+with `rm -rf ~/playwright-runner.lock`.
 
 Every step (install the module, install the browsers, launch check, prepare the
 configs) has a time limit, `SETUP_BROWSERS_LIMIT` seconds, 900 unless set. A step past it is killed and
