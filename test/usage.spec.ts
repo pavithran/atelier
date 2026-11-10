@@ -28,7 +28,7 @@ function call(method: string, path: string, actor: string, body?: unknown, heade
   }), { ...testEnv, ...over } as typeof env);
 }
 
-const codexBody = (weekly: number) => ({ windows: [{ name: "weekly", usedPercent: weekly, resetsAt: LATER, at: AT }, { name: "5-hour", usedPercent: 12, resetsAt: at(NOW + 3_600_000), at: AT }], models: [], balances: [], notes: [] });
+const codexBody = (weekly: number, read = AT) => ({ windows: [{ name: "weekly", usedPercent: weekly, resetsAt: LATER, at: read }, { name: "5-hour", usedPercent: 12, resetsAt: at(NOW + 3_600_000), at: read }], models: [], balances: [], notes: [] });
 // A report whose weekly window resets four days after the real clock, for a
 // route that judges alerts against the time it arrives.
 const liveCodexBody = (weekly: number) => {
@@ -58,7 +58,7 @@ it("a runner reports a tool under its name, as it reports a model's status, and 
   expect(answer.report).toMatchObject({ tool: "codex", runner: "home:routes", windows: [{ name: "weekly", usedPercent: 10, resetsAt: LATER }, { name: "5-hour", usedPercent: 12 }] });
   expect(answer.alerts).toEqual([]);
   // A second report from the same runner replaces the first; another runner's stands beside it.
-  await call("POST", "/usage/codex", "owner", codexBody(20), { "x-atelier-runner": "home:routes" });
+  await call("POST", "/usage/codex", "owner", codexBody(20, at(NOW + 60_000)), { "x-atelier-runner": "home:routes" });
   await call("POST", "/usage/codex", "owner", codexBody(30), { "x-atelier-runner": "home:other" });
   const read = await call("GET", "/usage", "codex/gpt-6-astra");
   expect(read.status).toBe(200);
@@ -263,4 +263,69 @@ it("the Usage page is served behind sign-in, with what the runner reported", asy
   const out = await worker.fetch(new Request("https://atelier.test/usage", { redirect: "manual" }), testEnv);
   expect(out.status).toBe(303);
   expect(out.headers.get("location")).toBe("https://atelier.test/login");
+});
+
+// Task t597: a report older than, or equal to, the stored one no longer
+// replaces it (a retry after a timeout, or a late arrival).
+const HOUR = 3_600_000;
+const nowIso = (offset = 0) => new Date(Date.now() + offset).toISOString();
+// One weekly window read at `read`, at the given percent; resets four days out.
+const weeklyAt = (read: string, percent: number, extra: object = {}) => ({
+  windows: [{ name: "weekly", usedPercent: percent, resetsAt: nowIso(4 * 24 * HOUR), at: read }], models: [], balances: [], notes: [], ...extra,
+});
+const post = (tool: string, runner: string, body: unknown) => call("POST", `/usage/${tool}`, "owner", body, { "x-atelier-runner": runner });
+const stored = async (tool: string, runner: string) =>
+  (((await (await call("GET", "/usage", "owner")).json()) as { reports: UsageReport[] }).reports).find((r) => r.tool === tool && r.runner === runner);
+const alertCount = async (title: string) => JSON.stringify(await (await call("GET", "/notices", "owner")).json()).split(title).length - 1;
+
+it("a report whose newest window is older than or equal to the stored one's leaves the row and records no event; a newer one replaces it", async () => {
+  const t0 = nowIso(-3 * HOUR), t1 = nowIso(-2 * HOUR), t2 = nowIso(-HOUR);
+  expect((await post("antigravity", "home:order", weeklyAt(t1, 10))).status).toBe(200);
+  // Older: kept, and its 95% crossing is not alerted.
+  const older = await post("antigravity", "home:order", weeklyAt(t0, 95));
+  expect(older.status).toBe(200);
+  expect(((await older.json()) as { alerts: string[] }).alerts).toEqual([]);
+  expect((await stored("antigravity", "home:order"))!.windows[0].usedPercent).toBe(10);
+  // Equal (a retry after a timeout): kept, nothing alerted.
+  const equal = await post("antigravity", "home:order", weeklyAt(t1, 96));
+  expect(((await equal.json()) as { alerts: string[] }).alerts).toEqual([]);
+  expect((await stored("antigravity", "home:order"))!.windows[0].usedPercent).toBe(10);
+  expect(await alertCount("antigravity: weekly window")).toBe(0);
+  // Newer: replaces it and alerts.
+  const newer = await post("antigravity", "home:order", weeklyAt(t2, 97));
+  expect(((await newer.json()) as { alerts: string[] }).alerts).toEqual(["antigravity: weekly window 97% used"]);
+  expect((await stored("antigravity", "home:order"))!.windows[0].usedPercent).toBe(97);
+  expect(await alertCount("antigravity: weekly window")).toBe(1);
+  // Another runner's row is its own: the older read stands beside the newer one.
+  await post("antigravity", "home:other-order", weeklyAt(t0, 5));
+  expect((await stored("antigravity", "home:other-order"))!.windows[0].usedPercent).toBe(5);
+});
+
+it("a report with no windows replaces a stored row that has none, or whose newest window is over 26 hours old, and not otherwise", async () => {
+  const withNote = (note: string) => ({ windows: [], models: [], balances: [], notes: [note] });
+  // The stored row has no windows: replaced.
+  await post("zai", "home:bare", withNote("first"));
+  await post("zai", "home:bare", withNote("second"));
+  expect((await stored("zai", "home:bare"))!.notes).toEqual(["second"]);
+  // The stored row's newest window is 25 hours old: it stays.
+  await post("zai", "home:fresh-window", weeklyAt(nowIso(-25 * HOUR), 10));
+  await post("zai", "home:fresh-window", withNote("no windows"));
+  const kept = (await stored("zai", "home:fresh-window"))!;
+  expect(kept.windows[0].usedPercent).toBe(10);
+  expect(kept.notes).toEqual([]);
+  // The stored row's newest window is 27 hours old: replaced.
+  await post("zai", "home:old-window", weeklyAt(nowIso(-27 * HOUR), 10));
+  await post("zai", "home:old-window", withNote("no windows"));
+  const replaced = (await stored("zai", "home:old-window"))!;
+  expect(replaced.windows).toEqual([]);
+  expect(replaced.notes).toEqual(["no windows"]);
+});
+
+it("an older and a newer report sent at once keep the newer, in either order", async () => {
+  for (const [runner, order] of [["home:race-a", [0, 1]], ["home:race-b", [1, 0]]] as const) {
+    const bodies = [weeklyAt(nowIso(-2 * HOUR), 20), weeklyAt(nowIso(-HOUR), 60)];
+    const answers = await Promise.all(order.map((i) => post("claude-code", runner, bodies[i])));
+    expect(answers.map((a) => a.status)).toEqual([200, 200]);
+    expect((await stored("claude-code", runner))!.windows[0].usedPercent).toBe(60);
+  }
 });
