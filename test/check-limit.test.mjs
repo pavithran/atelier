@@ -165,14 +165,13 @@ test("the clock starts when the slot is held: a run queued past its limit still 
   assert.equal(done.stopped, undefined);
 
   // The same wait counted from the spawn is past the limit: the 800 ms clock
-  // stops the run while the holder, released 1500 ms after the run is seen
-  // waiting, still has the slot.
+  // stops the run while the holder still has the slot. The run is not waited
+  // on as a waiter: its 800 ms limit may end it before the test looks. The
+  // test awaits the run's own result, then releases the holder.
   const second = await hold();
-  const fromSpawn = runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "sleep 0.2"], { env, timeoutMs: 800, silenceMs: 5000 });
-  await queuedAsWaiter("the run clocked from its spawn");
-  await pause(1500);
+  const fromSpawn = await runGroup([process.execPath, wrapper, "--", "/bin/sh", "-c", "sleep 0.2"], { env, timeoutMs: 800, silenceMs: 5000 });
+  assert.deepEqual(fromSpawn.stopped, { kind: "timeout", ms: 800 });
   await second.release();
-  assert.deepEqual((await fromSpawn).stopped, { kind: "timeout", ms: 800 });
 
   // A run that never gets its slot is stopped at the slot-wait limit, as a wait.
   const third = await hold();
