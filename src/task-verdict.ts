@@ -201,7 +201,7 @@ export function renderTaskVerdict(d: Detail, diff: ItemDiff | "unavailable" | nu
     ${v.kind === "ready" ? "" : `<p class="review-description">${e(parts.status.detail)}</p>`}
     ${parts.status.unknowns.map((u) => `<p class="meta">${e(u)}</p>`).join("")}
   </header>
-  <div class="verdict" id="verdict"><p class="verdict-line">${e(v.line)}</p><p class="verdict-ask">${e(v.ask)}</p>${parts.land ? `<div class="verdict-land">${parts.land}</div>` : ""}</div>
+  <div class="verdict" id="verdict"><p class="verdict-line">${e(v.line)}</p><p class="verdict-ask">${e(v.ask)}</p>${parts.land ? `<div class="verdict-land">${parts.land}</div>` : ""}${parts.answer ? `<div class="verdict-answer">${parts.answer}</div>` : ""}</div>
   ${trackOf(d, ctx, v.kind)}
 </article>`;
 

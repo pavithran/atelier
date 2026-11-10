@@ -131,3 +131,16 @@ a.today-proj:hover, a.today-proj:focus-visible { border-color: var(--line-bright
 .today-land .land-state { margin: 0; font-size: 13.5px; color: var(--text-muted); }
 .today-land .land-queued { color: var(--ok); font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { .today-land .land-form button { transition: none; } }
+/* Answer and Override on a needs-you card (t596): the open form under the reason. Send answer fills with the theme's signal fill, as Land does in the chosen mockup. */
+.today-answer { margin-top: 10px; }
+.today-answer .answer-form { margin: 0; display: grid; gap: 8px; max-width: 640px; }
+.today-answer .answer-field { display: grid; gap: 4px; font-size: 13.5px; font-weight: 600; }
+.today-answer .answer-field .meta { font-weight: 400; }
+.today-answer .answer-field textarea { width: 100%; box-sizing: border-box; min-height: 84px; }
+.today-answer .answer-note { margin: 0; font-size: 13px; color: var(--text-muted); }
+.today-answer .answer-form button { min-height: 44px; padding: 0 22px; justify-self: start; transition: transform .15s var(--ease), opacity .15s; }
+.today-answer .answer-form button:active { transform: translateY(1px); }
+.today-answer .answer-form button:disabled { opacity: .6; cursor: progress; }
+.today-answer .answer-form button.send-answer { background: var(--signal-fill); border-color: var(--signal-fill); color: var(--on-signal-fill); }
+.today-answer .answer-form button.outline { background: transparent; border-color: var(--fault); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .today-answer .answer-form button { transition: none; } }

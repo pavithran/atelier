@@ -4,12 +4,12 @@ import { validateIndex } from "./index-transfer.ts";
 import { reportLimits, stuckReport, type ReportLimits, type Snapshot } from "./stuck/report.ts";
 import { parsePostMerge, currentStep, redactedOutput } from "./post-merge.ts";
 import { readRetention } from "./retention.ts";
-import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, VALIDATION_BLOCKED, type OwnerDirection } from "./rules.ts";
+import { AREAS_REMOVED, AREAS_REMOVED_MESSAGE, assertNotTerminal, assertCriteriaAllowed, assertReviewAllowed, ownerDirection, pageDirection, VALIDATION_BLOCKED, type OwnerDirection } from "./rules.ts";
 import { agentRoute, runnerRoute, runnerDenied, inScope, sha256, tokenActive, tokenFromBytes, tokenOptions, type AgentToken } from "./tokens.ts";
 import { definingOf } from "./brief";
 import { changedPaths, itemDiff, landingOf, measureWorkspace, mergeBase, mergedDiff, pairReader, renderDiffText, repoReader, type ItemDiff } from "./diff";
 import { scanCommit, type SecretHit } from "./secret-scan.ts";
-import { criteriaOf } from "./criteria.ts";
+import { criteriaOf, sha256Hex } from "./criteria.ts";
 import { previewAgainstMain, mergeability } from "./preview/merge";
 import { setTimeZone, timeZone } from "./time";
 import { assertNameFree, assertProjectRemovable, Ledger, mergeProject, type LedgerEvent, type ProjectInit, type ProjectRecord, type ProjectRef, type PushAuthor, type PushLineage, type ReviewClaim, type ReviewerAvailability } from "./ledger.ts";
@@ -167,6 +167,12 @@ function ownerFactorIn(env: Env, c: Ctx, form: FormData, project: string, id: st
     throw new RuleError(code, `${what} needs the confirmation secret, which was ${given ? "not this server's" : "not given"}: ${hint}`, 403, `only the developer can: ${hint}`);
   }
   throw new RuleError(code, `${what} needs the developer's confirmation, which ${factor === null ? "this server cannot take" : "this request does not carry"}: ${hint}`, 403, `only the developer can: ${hint}`);
+}
+
+// The hash of the owner's Access email, which an Answer records beside the
+// factor (t596): from the server's own settings, never from the request.
+function ownerEmailHash(env: Env): string {
+  return sha256Hex((accessSettings(env as unknown as Record<string, string | undefined>)?.email ?? "").trim().toLowerCase());
 }
 
 function thresholds(env: Env): Thresholds {
@@ -4263,7 +4269,7 @@ async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: s
 }
 
 // The task page's forms whose refusal is drawn beside them (t457).
-const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "allow-override", "land"] satisfies FormError["verb"][]);
+const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "allow-override", "land", "answer"] satisfies FormError["verb"][]);
 
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
@@ -4290,7 +4296,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);
     // A page action runs the owner's guard first (src/page-actions.ts): a
     // session on a server with Access, never the developer token alone.
-    if (parts[3] === "land") ownerPageAct(c);
+    if (parts[3] === "land" || parts[3] === "answer") ownerPageAct(c);
     const form = await req.formData();
     const [, named, id, verb] = parts; // /ui/<project>/<id>/<verb>
     // A form posted from a page opened before a rename still acts; its
@@ -4336,7 +4342,13 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     // with the task's page, drawn again from the record, the refusal beside
     // the form it came from and the reason typed kept; never the
     // confirmation secret (t457). Any other failure goes to the error page.
+    // Land, Answer and Override pressed on Today return there; every other form to the task's page.
+    const done = () => Response.redirect(new URL(["land", "answer", "override"].includes(verb) && form.get("back") === "today" ? "/" : `/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
     try {
+      // A used request id of an Answer or Override answers as its first click did, whatever the task has become since (t596).
+      // A task page opened before the Override form carried an id still posts without one, and acts as it did.
+      const requested = verb === "answer" || (verb === "override" && form.has("request"));
+      if (requested && await L.pageRequestUsed(id, form.get("request"), verb as "answer" | "override")) return done();
       const before = await L.item(id);
       const expected = String(form.get("head") ?? "");
       // Land checks the head and criteria it showed inside the Ledger call, after a used request id is looked up (a replay answers as the first press did).
@@ -4386,7 +4398,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       else if (verb === "accept") await L.accept(id, owner, expected, undefined, undefined, undefined, undefined, String(shownCriteria));
       // The page's override form: accept with the owner's override of a missing
       // independent review, its reason in the note.
-      else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor, await reviewerAvailability(env, L, id), String(shownCriteria));
+      else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor, await reviewerAvailability(env, L, id), String(shownCriteria), null, undefined, requested ? String(form.get("request")) : undefined);
+      // The page's Answer: the developer's words under the Access factor, the criteria it showed and its one-use request id (t596).
+      else if (verb === "answer") await L.unblock(id, owner, false, pageDirection(form.get("note"), ownerEmailHash(env)), { criteria: String(shownCriteria), requestId: String(form.get("request") ?? "") });
       // The page's permission for an override from the command line (t371).
       else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!, String(shownCriteria));
       // The page's Land: the head it showed and its one-use request id go to the Ledger, which checks the head and keeps the id in the call that queues the landing (t594).
@@ -4400,13 +4414,11 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       else if (verb === "approve" || verb === "reject") {
         await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
       } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
-      // Land pressed on Today returns to Today; every other form to the task's page.
-      if (verb === "land" && form.get("back") === "today") return Response.redirect(new URL("/", c.url).toString(), 303);
-      return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
+      return done();
     } catch (err) {
       const rule = parseRuleError(err);
       if (!rule || !TASK_FORMS.has(verb)) throw err;
-      const kept = verb === "override" || verb === "reject" ? note : "";
+      const kept = verb === "override" || verb === "reject" || verb === "answer" ? note : "";
       const formError: FormError = { verb: verb as FormError["verb"], message: rule.detail, ...(kept ? { note: kept } : {}) };
       return html(await taskPage(env, L, id, formError, undefined, pageActsFor(c) ? { nonce } : null), rule.status, nonce);
     }
@@ -4790,7 +4802,7 @@ async function taskPage(env: Env, L: ReturnType<typeof ledger>, id: string, form
   // The page's override forms ask for the factor this server takes (t371).
   const read: Detail = await L.detail(id);
   // Land is drawn only for a request the page-action guard would let act (pageActsFor), with a request id new to this drawing.
-  const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env), ...(formError ? { formError } : {}), ...(acts ? { pageAct: { newId: () => crypto.randomUUID(), nonce: acts.nonce } } : {}) };
+  const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env), requestId: () => crypto.randomUUID(), ...(formError ? { formError } : {}), ...(acts ? { pageAct: { newId: () => crypto.randomUUID(), nonce: acts.nonce } } : {}) };
   detail.runs = await index(env).runsForItem(p.name, id);
   return renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, definingOf(detail)), live);
 }

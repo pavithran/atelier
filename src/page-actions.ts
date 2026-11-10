@@ -8,7 +8,7 @@
 // the Origin check every owner form makes, and the session cookie's
 // SameSite=Strict. What a page draws is derived from this guard's answer
 // (pageActsFor), never from a field the caller sent.
-import { RuleError } from "./rules.ts";
+import { DIRECTION_QUOTE_MAX, OVERRIDE_REASON_MAX, RuleError } from "./rules.ts";
 import { EASTERN } from "./now.ts";
 
 export function pageActsFor(c: { signedIn?: boolean; access?: boolean }): boolean {
@@ -46,6 +46,56 @@ export function landStateOf(f: LandFacts): { queuedAt: string | null; failedStep
   const moved = f.job && f.job.head !== null && f.job.head !== f.head ? f.job.head : null;
   const dropped = !f.job && f.stopped?.reason === "stale_head" && f.stopped.current === f.head ? String(f.stopped.shown) : null;
   return { queuedAt: here && !failedStep ? f.job!.at : null, failedStep, movedFrom: moved ?? dropped };
+}
+
+export const answerAction = (project: string, id: string) => `/ui/${encodeURIComponent(project)}/${encodeURIComponent(id)}/answer`;
+export const overrideAction = (project: string, id: string) => `/ui/${encodeURIComponent(project)}/${encodeURIComponent(id)}/override`;
+
+// The limits the forms show are the rules' own (src/rules.ts).
+const ANSWER_MAX = DIRECTION_QUOTE_MAX;
+
+export interface AnswerView {
+  project: string;
+  id: string;
+  head: string;
+  criteria: string;
+  back: "today" | "task";
+  // The guard's answer for this request; without it nothing is drawn.
+  act: { newId: () => string; nonce?: string } | null;
+  // The words typed into a refused attempt, kept; the refusal (already escaped).
+  kept?: string;
+  error?: string;
+}
+
+// The Answer form of an owner call of unblock that is not a fact (t596): the
+// developer's words, 1 to 2,000 characters, with the head, criteria and the
+// one-use request id the page was drawn with. It stands where the bare
+// Unblock form stood.
+export function answerBlock(v: AnswerView): string {
+  if (!v.act) return "";
+  return `<form class="answer-form" method="post" action="${e(answerAction(v.project, v.id))}" data-once><input type="hidden" name="head" value="${e(v.head)}"><input type="hidden" name="criteria" value="${e(v.criteria)}"><input type="hidden" name="request" value="${e(v.act.newId())}"><input type="hidden" name="back" value="${v.back}">`
+    + `<label class="answer-field"><span>Your answer</span><span class="meta">1 to ${ANSWER_MAX.toLocaleString("en-US")} characters</span><textarea name="note" required rows="4" maxlength="${ANSWER_MAX}"${v.error ? ' aria-describedby="error-answer"' : ""}>${e(v.kept ?? "")}</textarea></label>`
+    + `<p class="meta answer-note">Your words go into the builder's brief as the developer's words until it next submits.</p>`
+    + `<button class="send-answer">Send answer</button>${v.error ?? ""}</form>${landOnceScript(v.act.nonce)}`;
+}
+
+export interface OverrideView {
+  project: string;
+  id: string;
+  head: string;
+  criteria: string;
+  act: { newId: () => string; nonce?: string } | null;
+}
+
+// Today's Override: the existing override verb, its reason 1 to 500 characters
+// kept as the note, and the request id. Drawn only for an owner call of
+// override where the project allows overrides and Access is the factor.
+export function overrideBlock(v: OverrideView): string {
+  if (!v.act) return "";
+  return `<form class="answer-form override-form" method="post" action="${e(overrideAction(v.project, v.id))}" data-once><input type="hidden" name="head" value="${e(v.head)}"><input type="hidden" name="criteria" value="${e(v.criteria)}"><input type="hidden" name="request" value="${e(v.act.newId())}"><input type="hidden" name="back" value="today">`
+    + `<label class="answer-field"><span>Why are you overriding the independent review?</span><span class="meta">1 to ${OVERRIDE_REASON_MAX} characters</span><textarea name="note" required rows="3" maxlength="${OVERRIDE_REASON_MAX}"></textarea></label>`
+    + `<p class="meta answer-note">This records your override and its reason, and accepts the revision. Your Cloudflare Access sign-in is the confirmation.</p>`
+    + `<button class="outline fault">Override the review and accept</button></form>${landOnceScript(v.act.nonce)}`;
 }
 
 export const landAction = (project: string, id: string) => `/ui/${encodeURIComponent(project)}/${encodeURIComponent(id)}/land`;
