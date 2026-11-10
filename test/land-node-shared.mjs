@@ -149,3 +149,16 @@ export async function landingWorld(t) {
 
 // The events of `kind` a task's detail lists, oldest first.
 export const eventsOf = (d, kind) => (d.events ?? []).filter((e) => e.kind === kind).sort((a, b) => a.seq - b.seq);
+
+// Wait for an event rather than a delay: poll `ready` until it returns
+// something truthy (and returns that), or fail naming what was awaited once
+// the deadline passes. The deadline is a bound on a broken run, not a pace.
+export async function waitFor(what, ready, { deadlineMs = 15_000, everyMs = 25 } = {}) {
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
+    const found = await ready();
+    if (found) return found;
+    assert.ok(Date.now() < deadline, `timed out after ${deadlineMs} ms waiting for ${what}`);
+    await new Promise((ok) => setTimeout(ok, everyMs));
+  }
+}

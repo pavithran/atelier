@@ -8,7 +8,7 @@
 // Each test drives the real Node server and its hook (test/land-node-shared.mjs).
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { eventsOf, landingWorld } from "./land-node-shared.mjs";
+import { eventsOf, landingWorld, waitFor } from "./land-node-shared.mjs";
 
 const offer = { runner: "home:studio", jobs: ["land"], checkouts: ["demo"] };
 const offered = async (w) => (await w.L().landJobs(offer, ["demo"])).map((i) => i.id);
@@ -103,8 +103,8 @@ test("a cancel while the landing merges is refused, naming the step, and the lan
   const main = await w.tip();
   let finished;
   const landing = w.cli(["land", id]).then((r) => (finished = r));
-  for (let i = 0; i < 600 && !finished && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
-  assert.ok(existsSync(entered), `the check on the merged tree started: ${finished?.output ?? "still running"}`);
+  await waitFor("the check on the merged tree to start", () => finished || existsSync(entered));
+  assert.ok(existsSync(entered), `the check on the merged tree started: ${finished?.output ?? "ended first"}`);
   const refused = await w.cli(["land", id, "--queue", "--cancel"]);
   assert.notEqual(refused.status, 0, refused.output);
   assert.match(refused.output, /landing_past_merge: t\d+'s landing \(attempt 1\) is at its merge-main step, past the merge, so it is not cancelled or interrupted/);
@@ -123,11 +123,13 @@ test("a landing cancelled while it waits stops before its merge, merging nothing
   assert.equal((await w.api("POST", "/projects/demo/landing-lease", { item: other })).status, 200);
   const main = await w.tip();
   const landing = w.cli(["land", id], { env: { ATELIER_LAND_WAIT_TIMEOUT: "60000" } });
-  // Once it waits for the lease, the developer cancels it and frees the lease.
-  for (let i = 0; i < 200 && (await w.detail(id)).landing?.step !== "review" && (await w.detail(id)).landing?.step !== "start"; i++) await new Promise((ok) => setTimeout(ok, 50));
-  await new Promise((ok) => setTimeout(ok, 300));
-  assert.equal((await w.cli(["land", id, "--queue", "--cancel"])).status, 0);
-  await w.api("POST", "/projects/demo/landing-lease", { cancel: true, item: other });
+  // Once its land request is recorded (after the review step, before the
+  // lease), the developer cancels it and frees the lease.
+  await waitFor(`${id}'s land request to be recorded (detail.landJob)`, async () => (await w.detail(id)).landJob, { deadlineMs: 30_000 });
+  const cancelled = await w.cli(["land", id, "--queue", "--cancel"]);
+  assert.equal(cancelled.status, 0, cancelled.output);
+  assert.match(cancelled.stdout, /queued landing is cancelled/);
+  assert.equal((await w.api("POST", "/projects/demo/landing-lease", { cancel: true, item: other })).status, 200);
   const r = await landing;
   assert.notEqual(r.status, 0, r.output);
   assert.match(r.output, /queued landing was cancelled .* before its merge began/);
@@ -196,7 +198,7 @@ test("SIGTERM during the merged-tree checks is recorded as the step the landing 
   const { id } = await w.task({ files: { "task.txt": "task\n" } });
   const main = await w.tip();
   const landing = w.spawnCli(["land", id]);
-  for (let i = 0; i < 600 && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
+  await waitFor("the check on the merged tree to start", () => existsSync(entered));
   assert.ok(existsSync(entered), "the check on the merged tree started");
   const attempt = (await w.detail(id)).landing.attempt;
   landing.child.kill("SIGTERM");
@@ -218,7 +220,7 @@ test("a merge that fails after another landing started a new attempt fails nothi
   const { id } = await w.task({ files: { "task.txt": "task\n" } });
   const main = await w.tip();
   const landing = w.cli(["land", id]);
-  for (let i = 0; i < 600 && !existsSync(entered); i++) await new Promise((ok) => setTimeout(ok, 100));
+  await waitFor("the check on the merged tree to start", () => existsSync(entered));
   assert.ok(existsSync(entered), "the check on the merged tree started");
   const old = (await w.detail(id)).landing.attempt;
   // Another landing of the task starts a new attempt meanwhile.
