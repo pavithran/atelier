@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ROLE_PROMPTS, ROLE_PROMPT_MAX } from "../src/usage.ts";
 
 // The Night palette (PAVI, d24; t367): near-black ground, white text, a
 // muted grey that still reads, gold for links, primary actions and the
@@ -375,4 +376,53 @@ test("every custom property the page styles use is one the sheets define or the 
   for (const [file, sheet] of [["src/layout.css", layout], ["src/how.css", how]] as const)
     for (const name of names(css(sheet))) if (!defined.has(name) && !(name in INLINE_SET)) undefinedUses.push(`${file}: var(${name})`);
   assert.deepEqual(undefinedUses, [], "a page style uses a custom property nothing defines");
+});
+
+// t621: build machines have no ai-projects-design checkout. A missing or
+// unreadable source stops the sync before it writes anything.
+for (const how of ["missing", "unreadable"] as const) {
+  test(`bin/sync-theme with a ${how} source exits nonzero, writes nothing and says why`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "sync-theme-"));
+    const source = join(dir, "themes.css");
+    try {
+      mkdirSync(join(dir, "bin"));
+      mkdirSync(join(dir, "src"));
+      copyFileSync("bin/sync-theme", join(dir, "bin/sync-theme"));
+      writeFileSync(join(dir, "src/theme.css"), "old theme\n");
+      if (how === "unreadable") { writeFileSync(source, "x"); chmodSync(source, 0o000); }
+      const run = spawnSync("sh", [join(dir, "bin/sync-theme"), source], { encoding: "utf8" });
+      // A superuser reads mode 000, so the unreadable case cannot fail there.
+      if (how === "unreadable" && process.getuid?.() === 0) return;
+      assert.notEqual(run.status, 0);
+      assert.equal(readFileSync(join(dir, "src/theme.css"), "utf8"), "old theme\n");
+      assert.deepEqual(readdirSync(join(dir, "src")), ["theme.css"], "a stray .new file");
+      assert.ok(run.stderr.includes(source), run.stderr);
+      assert.match(run.stderr, /this machine has no ai-projects-design checkout/);
+      assert.match(run.stderr, /src\/theme\.css must be synced where one exists/);
+    } finally { if (how === "unreadable") chmodSync(source, 0o600); rmSync(dir, { recursive: true, force: true }); }
+  });
+}
+
+test("a leftover theme.css.new is replaced by a rerun", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sync-theme-"));
+  try {
+    mkdirSync(join(dir, "bin"));
+    mkdirSync(join(dir, "src"));
+    copyFileSync("bin/sync-theme", join(dir, "bin/sync-theme"));
+    writeFileSync(join(dir, "themes.css"), theme.split("\n").slice(1).join("\n"));
+    writeFileSync(join(dir, "src/theme.css.new"), "half written");
+    execFileSync("sh", [join(dir, "bin/sync-theme"), join(dir, "themes.css")], { stdio: "ignore" });
+    assert.equal(readFileSync(join(dir, "src/theme.css"), "utf8"), theme);
+    assert.deepEqual(readdirSync(join(dir, "src")), ["theme.css"]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("the orchestrate guide routes theme syncs to a machine with the design checkout; the build guide is silent", () => {
+  const flat = ROLE_PROMPTS.orchestrate.replace(/\s+/g, " ");
+  assert.match(flat, /needs a theme sync/);
+  assert.match(flat, /synced src\/theme\.css committed into its branch before dispatch/);
+  assert.match(flat, /machine with the ai-projects-design checkout/);
+  assert.match(flat, /no builder is told to run bin\/sync-theme/i);
+  assert.ok(!ROLE_PROMPTS.build.includes("sync-theme"));
+  assert.ok(ROLE_PROMPTS.build.length <= ROLE_PROMPT_MAX);
 });
