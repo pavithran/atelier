@@ -203,7 +203,7 @@ const terminalStart = { step: "deploy", command: "node scripts/ship-studio.mjs d
 test("a start with the terminal records terminal and givesUpAt on action.started", () => {
   const m = memory();
   startActionRun(m.store, "owner", terminalStart);
-  assert.deepEqual(m.events, [{ kind: "action.started", data: { ship: "s-1", step: "deploy", command: terminalStart.command, commit: H1, terminal: true, attempt: 0, givesUpAt: GIVES_UP } }]);
+  assert.deepEqual(m.events, [{ kind: "action.started", data: { ship: "s-1", step: "deploy", command: terminalStart.command, commit: H1, terminal: true, attempt: 0, run: 0, givesUpAt: GIVES_UP } }]);
 });
 
 test("a start without terminal is recorded as before and carries no wait", () => {
@@ -242,4 +242,14 @@ test("the same ship, step and attempt reposted with another givesUpAt, or after 
   startActionRun(m.store, "owner", { ...terminalStart, attempt: 1 });
   assert.equal(m.events.length, 62);
   refused(() => startActionRun(m.store, "owner", { ...terminalStart, attempt: -1 }), "bad_run");
+});
+
+test("a second command of one ship and step posts its own start; a repeat of it records nothing", () => {
+  const m = memory();
+  startActionRun(m.store, "owner", terminalStart);
+  startActionRun(m.store, "owner", { ...terminalStart, run: 1, givesUpAt: later(60 * 60_000) });
+  startActionRun(m.store, "owner", { ...terminalStart, run: 1, givesUpAt: later(70 * 60_000) });
+  startActionRun(m.store, "owner", { ...terminalStart, run: 0 });
+  assert.deepEqual(m.events.map((e) => e.data.run), [0, 1]);
+  refused(() => startActionRun(m.store, "owner", { ...terminalStart, run: -1 }), "bad_run");
 });

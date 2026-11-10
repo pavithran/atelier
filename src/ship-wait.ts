@@ -6,8 +6,9 @@
 //
 // The event a pulse reads through `atelier events`:
 //   kind  action.started
-//   data  { ship, step, command, commit, terminal: true, givesUpAt }
-//   (`attempt` is 0 for the first run of the step, 1 for its first retry.)
+//   data  { ship, step, command, commit, terminal: true, givesUpAt, run, attempt }
+//   (`run` is the command's index in the step, 0 for the first; `attempt` is
+//   0 for the first try of it, 1 for its first retry.)
 // The wait ends with the `action.ran` event for the same ship and step. Once
 // givesUpAt has passed with none, the ship gave up, and that stands until a
 // later ship of the project starts a step.
@@ -15,7 +16,7 @@
 // readShipWait reads the project's newest terminal start straight from the
 // event log, bounded by neither a count nor an age, so a wait or gave-up line
 // outlasts any number of later events. Each attempt posts its own start, so
-// the newest is the highest attempt of the ship's latest terminal step.
+// the one shown is the highest (run, attempt) of the ship's latest terminal step.
 
 import { EASTERN } from "./now.ts";
 
@@ -39,12 +40,20 @@ export function readShipWait(sql: SqlStorage): ShipWaitRecord | null {
   if (!row) return null;
   const d = JSON.parse(row.data as string) as Record<string, unknown>;
   const ship = text(d.ship), step = text(d.step);
+  // A step's commands each count attempts from 0: the highest run, then the
+  // highest attempt, is the one waiting, whichever was posted last.
+  const top = sql.exec(
+    `SELECT seq, at, data FROM events WHERE kind = 'action.started' AND json_extract(data, '$.terminal') = 1 AND json_extract(data, '$.ship') = ? AND json_extract(data, '$.step') = ?
+     ORDER BY COALESCE(json_extract(data, '$.run'), 0) DESC, COALESCE(json_extract(data, '$.attempt'), 0) DESC, seq DESC LIMIT 1`,
+    ship, step,
+  ).toArray()[0] ?? row;
+  const t = JSON.parse(top.data as string) as Record<string, unknown>;
   const ended = sql.exec(
     `SELECT 1 FROM events WHERE seq > ? AND ((kind = 'action.ran' AND json_extract(data, '$.ship') = ? AND json_extract(data, '$.step') = ?) OR (kind = 'action.started' AND json_extract(data, '$.ship') != ?)) LIMIT 1`,
     row.seq as number, ship, step, ship,
   ).toArray().length > 0;
-  const givesUpAt = typeof d.givesUpAt === "string" && Number.isFinite(Date.parse(d.givesUpAt)) ? d.givesUpAt : null;
-  return { ship, step, commit: text(d.commit), attempt: typeof d.attempt === "number" ? d.attempt : 0, since: row.at as string, givesUpAt, resolved: ended };
+  const givesUpAt = typeof t.givesUpAt === "string" && Number.isFinite(Date.parse(t.givesUpAt)) ? t.givesUpAt : null;
+  return { ship, step, commit: text(t.commit), attempt: typeof t.attempt === "number" ? t.attempt : 0, since: top.at as string, givesUpAt, resolved: ended };
 }
 
 // The wait at `now`; none once resolved.

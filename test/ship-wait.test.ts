@@ -88,3 +88,15 @@ test("during a retry the newest attempt's wait and deadline are shown, not the f
   assert.deepEqual(today(events, at("05:45")).shipWaits, [`demo: ${line}`]);
   assert.doesNotMatch(statusText(events, at("05:45")), /gave up waiting/);
 });
+
+test("a step's second terminal command shows its own wait, though the first command's deadline has passed", () => {
+  const first = start(1, "05:16", { run: 0, attempt: 0 });
+  const second = start(2, "05:40", { run: 1, attempt: 0, givesUpAt: at("06:00").toISOString() });
+  const line = "ship of 763e3ca9 waits on the developer's password since 00:40, gives up at 01:00";
+  assert.match(statusText([first, second], at("05:45")), new RegExp(line));
+  assert.deepEqual(today([first, second], at("05:45")).shipWaits, [`demo: ${line}`]);
+  // The highest (run, attempt) shows, not the newest post: run 1 stands over a later run 0 retry.
+  const retry0 = start(3, "05:50", { run: 0, attempt: 1, givesUpAt: at("06:10").toISOString() });
+  assert.match(statusText([first, second, retry0], at("05:55")), new RegExp(line));
+  assert.deepEqual(today([first, second], at("06:01")).shipWaits, ["demo: ship of 763e3ca9 gave up waiting at 01:00"]);
+});

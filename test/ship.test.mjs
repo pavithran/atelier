@@ -1122,6 +1122,14 @@ test("a terminal step's retry posts its own start with attempt 1", async (t) => 
   assert.deepEqual(startsOf(f, "deploy").map((b) => b.attempt), [0, 1]);
 });
 
+test("a step's second terminal command posts its own start with run 1", async (t) => {
+  const ship = (url) => ({ ...TERMINAL_SHIP(url), deploy: [{ run: ["sh", "bin/ok.sh"], terminal: true, timeout_seconds: 90 }, { run: ["sh", "bin/ok.sh"], terminal: true, timeout_seconds: 60 }] });
+  const f = await fixture(t, { approve: ["deploy"], ship, extra: STEPS_FILES });
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(startsOf(f, "deploy").map((b) => [b.run, b.attempt]), [[0, 0], [1, 0]]);
+});
+
 test("a step without the terminal posts a plain start, as an older CLI does", async (t) => {
   const f = await fixture(t, { approve: ["deploy"] });
   const r = await f.run(["ship"]);

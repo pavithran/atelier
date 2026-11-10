@@ -622,10 +622,10 @@ export async function ship(ctx) {
   // Today can show the ship waiting at a password prompt (src/ship-wait.ts).
   // That post is a courtesy: when it fails or times out, a warning is printed
   // and the step runs. A repeat of it for this ship and step is recorded once.
-  const starting = async (step, command, terminalFor = null, attempt = 0) => {
+  const starting = async (step, command, terminalFor = null, attempt = 0, runIndex = 0) => {
     if (startsUnavailable) return;
     const body = { ship: id, step, command: ctx.redact(command, ctx.secrets), commit };
-    if (terminalFor) Object.assign(body, { terminal: true, attempt, givesUpAt: new Date(Date.now() + terminalFor.timeoutMs).toISOString() });
+    if (terminalFor) Object.assign(body, { terminal: true, run: runIndex, attempt, givesUpAt: new Date(Date.now() + terminalFor.timeoutMs).toISOString() });
     try {
       if (terminalFor) {
         // A response lost on the way is asked again once, with the same body,
@@ -683,7 +683,7 @@ export async function ship(ctx) {
       const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.status === 0 && !holds ? `\n[atelier] ${target.remote} does not show ${short(now)} on ${target.branch} after the push` : ""}`;
       results.push({ command: label, status: r.status, signal: r.signal ?? null, durationMs: Date.now() - started, passed: r.status === 0 && holds, output, kind: null, approval: null, note: `pushed ${short(now)}` });
     } else {
-      for (const run of s.runs) {
+      for (const [runIndex, run] of s.runs.entries()) {
         const command = run.argv ? run.argv.map(quote).join(" ") : run.label;
         if (run.skip) {
           print(`${s.step}: skipping ${command}: ${run.skip}`);
@@ -693,7 +693,7 @@ export async function ship(ctx) {
         // A retry is the same run: it uses the approval already taken.
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
-          await starting(s.step, command, run.terminal && run.argv ? run : null, attempt);
+          await starting(s.step, command, run.terminal && run.argv ? run : null, attempt, runIndex);
           const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run, head);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });
