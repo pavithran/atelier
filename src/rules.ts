@@ -263,6 +263,17 @@ export function ownerDirection(quote: unknown, acting: string | null | undefined
   return { quote: words, acting };
 }
 
+// The developer's words typed into a page form (t596): no model acts, so the
+// direction rests on the Access identity the page action's guard vouched for,
+// recorded as the hash of the owner's email, never the address.
+export interface PageDirection { quote: string; factor: "access"; emailHash: string }
+export function pageDirection(quote: unknown, emailHash: string): PageDirection {
+  const words = typeof quote === "string" ? quote.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
+  if (!words) throw new RuleError("bad_quote", "the answer needs the developer's words: type what the builder should do", 400);
+  if (words.length > DIRECTION_QUOTE_MAX) throw new RuleError("too_long", `the developer's words are at most ${DIRECTION_QUOTE_MAX} characters`, 400);
+  return { quote: words, factor: "access", emailHash };
+}
+
 // What every refusal for want of a confirmation adds: the direction is the
 // other way, from the command line itself.
 const DIRECTION_HINT = `or run it again with --quote "the developer's words" and --as H/M naming the model acting on them`;

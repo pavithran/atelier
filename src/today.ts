@@ -24,7 +24,7 @@ import { machineName, runnerNameOf } from "./runner-names.ts";
 import { criteriaOf } from "./criteria.ts";
 import { dayInZone } from "./time.ts";
 import { shipWaitLines, type ShipWaitRecord } from "./ship-wait.ts";
-import { landBlock, landStateOf, LAND_CALLS } from "./page-actions.ts";
+import { answerBlock, landBlock, landStateOf, LAND_CALLS, overrideBlock } from "./page-actions.ts";
 import { escapeText as e, page, type Live } from "./ui";
 import todayCss from "./today.css";
 
@@ -75,7 +75,7 @@ export interface TodayProjectInput {
   cutShort?: boolean;
   // The landings waiting in the queue (situationFacts), and the head and criteria binding of each task the owner is asked to land or accept: what a card's Land form carries (t594).
   landJobs?: { item: string; at: string; head?: string | null }[];
-  heads?: Record<string, { head: string | null; criteria: string }>;
+  heads?: Record<string, { head: string | null; criteria: string; fact?: boolean }>;
 }
 
 export interface TodayInputs {
@@ -148,7 +148,7 @@ async function readProject(src: TodaySource, p: TodaySource["projects"][number],
     },
     pulseEvents, ships, postMerge, cutShort, shipWait: (await ledger.shipWait?.()) ?? null,
     landJobs: facts.landJobs ?? [],
-    heads: Object.fromEntries(items.map((i) => [i.id, { head: i.head ?? null, criteria: criteriaOf(i) }])),
+    heads: Object.fromEntries(items.map((i) => [i.id, { head: i.head ?? null, criteria: criteriaOf(i), fact: !!i.blocked?.fact }])),
   };
 }
 
@@ -174,6 +174,9 @@ export interface TodayCard {
   id: string; project: string; title: string; href: string; call: string; why: string; family: string; age: string;
   // Set for an owner call of land or accept: the head and criteria the Land form binds to, and whether a landing already waits at that head (t594).
   land?: { head: string; criteria: string; queuedAt: string | null; failedStep: string | null; movedFrom: string | null };
+  // Set for an owner call of unblock that is not a fact (Answer), or of override where the project allows it (Override): the head and criteria the form binds to (t596).
+  answer?: { head: string; criteria: string };
+  override?: { head: string; criteria: string };
 }
 // What a Running row says of its run, from the task's progress record (or, for a review, its request). A field the
 // record does not hold is null and the page leaves it out.
@@ -316,13 +319,17 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
   const landed = group("landed");
   const cards: TodayCard[] = needs.map((r) => {
     const p = inputs.projects.find((x) => x.now.name === r.project);
-    const call = p?.now.owner.find((t) => t.id === r.id)?.call;
+    const owned = p?.now.owner.find((t) => t.id === r.id);
+    const call = owned?.call;
     const bound = p?.heads?.[r.id];
+    // Answer takes the place of Unblock unless the block is a fact; Override is offered only where the project allows overrides (attention.ts words the forbidding case).
+    const answer = call === "unblock" && bound && !bound.fact ? { head: bound.head ?? "", criteria: bound.criteria } : undefined;
+    const override = call === "override" && bound?.head && !/forbids overrides/.test(owned?.why ?? "") ? { head: bound.head, criteria: bound.criteria } : undefined;
     const job = p?.landJobs?.find((j) => j.item === r.id);
     const land = call && LAND_CALLS.has(call) && bound?.head
       ? { head: bound.head, criteria: bound.criteria, ...landStateOf({ head: bound.head, job: job ? { at: job.at, head: job.head ?? null } : null, landing: p?.now.landings[r.id] ?? null }) }
       : undefined;
-    return { id: r.id, project: r.project, title: r.title, href: r.href, call: r.waitingOn.replace(/^you: /, ""), why: r.next, family: familyOf(r), age: age(at.getTime() - Date.parse(r.since)), ...(land ? { land } : {}) };
+    return { id: r.id, project: r.project, title: r.title, href: r.href, call: r.waitingOn.replace(/^you: /, ""), why: r.next, family: familyOf(r), age: age(at.getTime() - Date.parse(r.since)), ...(land ? { land } : {}), ...(answer ? { answer } : {}), ...(override ? { override } : {}) };
   });
   const lanes: TodayLane[] = live.map((r) => {
     const run = runOf(r, inputs.projects.find((p) => p.now.name === r.project)!, holders.get(`${r.project}/${r.id}`) ?? null, inputs.owner, at);
@@ -417,7 +424,9 @@ const section = (id: string, title: string, count: string, body: string, more = 
 
 function cardHtml(c: TodayCard, act: TodayAct | undefined): string {
   const land = c.land ? `<div class="today-land">${landBlock({ project: c.project, id: c.id, head: c.land.head, criteria: c.land.criteria, back: "today", act: act ?? null, queuedAt: c.land.queuedAt, failedStep: c.land.failedStep, movedFrom: c.land.movedFrom })}</div>` : "";
-  return `<div class="today-ask"><div class="today-t"><a class="today-title" href="${e(c.href)}">${e(c.title)}</a></div><div class="today-meta"><span class="mono">${e(c.project)} · ${e(c.id)}</span>${chip(c.call, "you")}<span>${famDot(c.family)}waiting ${e(c.age)}</span></div><div class="today-why">${e(c.why)}</div>${land}<a class="today-open" href="${e(c.href)}" aria-label="Open ${e(c.id)}">Open →</a></div>`;
+  const answer = c.answer && act ? `<div class="today-answer">${answerBlock({ project: c.project, id: c.id, ...c.answer, back: "today", act })}</div>` : "";
+  const override = c.override && act ? `<div class="today-answer">${overrideBlock({ project: c.project, id: c.id, ...c.override, act })}</div>` : "";
+  return `<div class="today-ask"><div class="today-t"><a class="today-title" href="${e(c.href)}">${e(c.title)}</a></div><div class="today-meta"><span class="mono">${e(c.project)} · ${e(c.id)}</span>${chip(c.call, "you")}<span>${famDot(c.family)}waiting ${e(c.age)}</span></div><div class="today-why">${e(c.why)}</div>${land}${answer}${override}<a class="today-open" href="${e(c.href)}" aria-label="Open ${e(c.id)}">Open →</a></div>`;
 }
 
 // The machine glyphs of the chosen mockup (docs/design/today-running/a-running.html), by display name.
@@ -470,11 +479,11 @@ export function todayBody(v: TodayView, act?: TodayAct): string {
     + `<p class="meta today-zone">Times are Eastern.</p></div>`;
 }
 
-// The Land forms are drawn only when the entry's page-action guard lets the request act (src/page-actions.ts).
+// The Land, Answer and Override forms are drawn only when the entry's page-action guard lets the request act (src/page-actions.ts).
 export type TodayAct = { newId: () => string; nonce?: string };
 
 // Today follows the device's colour scheme, as Now does. The page draws no
-// form or button but Land, so it is drawn without the owner menu's sign-out form
+// form or button but Land, Answer and Override, so it is drawn without the owner menu's sign-out form
 // (page's signedIn = false).
 export function renderToday(v: TodayView, ownerName: string | null = null, live?: Live, act?: TodayAct): string {
   return page("Today", todayBody(v, act), "Today", ownerName, 0, false, live, { css: todayCss });
