@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { killTree, runGroup, treeGroups } from "./group.mjs";
+import { MARK_VARIABLE, sweepJournal } from "./sweep.mjs";
 import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
 import { HOST_POOL, SLOT_WRAPPER, slotStatus } from "./load.mjs";
 import { pairedProjectCommit } from "./fresh.mjs";
@@ -4871,6 +4872,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
     await rescueWork(cwd, git, (text) => io.log(text));
     for (const args of [["reset", "--hard", target], ["clean", "-ffd"]]) await git(args);
   };
+  // Cleanup lines name processes and workspace paths, so they go to this
+  // machine's log (line) and never to the server (io.log feeds runnerLogs).
+  // The workspaces of runs not yet swept, kept so a runner that dies part-way
+  // leaves the rest to its next start (recover, before the first claim).
+  const sweeps = sweepJournal({ name: args.name.toLowerCase(), dir: join((taskIO.env ?? process.env).ATELIER_CACHE ?? join(homedir(), "Library", "Caches", "ai-projects", "cloudflare-git"), "run-sweeps"), log: (text) => line(text) });
   const io = {
     progress,
     // A rejection's hook (t521): the builder's dispatch as the developer.
@@ -4935,7 +4941,14 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       await resetTo(cwd, `refs/remotes/origin/${branch}`);
     },
     // `env` is the harness's whole environment (harnessEnv); `io.env` is the runner's.
-    harness: (argv, cwd, env, options = {}) => startHarness(argv, cwd, env, { ...options, signal: controller.signal, timeoutMs: options.timeoutMs ?? config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, originalExecuteChild),
+    // Whatever the harness left running in its workspace ends with it, however
+    // the run ends (cli/sweep.mjs).
+    harness: async (argv, cwd, env, options = {}) => {
+      const run = sweeps.begin(cwd);
+      const onSpawn = (pid) => { run.spawned(pid); options.onSpawn?.(pid); };
+      try { return await startHarness(argv, cwd, { ...env, [MARK_VARIABLE]: run.marker }, { ...options, onSpawn, signal: controller.signal, timeoutMs: options.timeoutMs ?? config.taskTimeoutMs ?? DEFAULT_TASK_TIMEOUT_MS }, originalExecuteChild); }
+      finally { await run.end(); }
+    },
     identityRefusals: async (cwd, env, project) => identityRefusals(cwd, env, project),
     prepareReview: (cwd, source) => prepareReviewDependencies(cwd, source, { executeChild, signal: controller.signal }),
     // The clean-clone run holds no token (checkEnv), so it runs outside executeChild.
@@ -5316,6 +5329,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
     legacyHandoffReady();
+    await sweeps.recover();
     // A runner none of whose harnesses can run a job has nothing to offer.
     await checkReady();
     if (!controller.signal.aborted && (config.agents ?? []).length && config.agents.every((a) => unready.has(a.agent))) {

@@ -221,6 +221,8 @@ export async function landFixture(t, { mainChange = null, taskChange = "task\n",
       const had = box.landJobs[item];
       if (!had) box.landJobs[item] = { item, by: "owner", at: new Date().toISOString(), ...(body.quote ? { quote: body.quote } : {}) };
       answer = { ...box.landJobs[item], queued: !had };
+      // A test that follows the job acts once the request is recorded.
+      box.onLandJob?.(item);
     }
     else if (url.endsWith("/review-request")) {
       const rv = item !== "t1" && box.reviewOf?.[item] ? box.reviewOf[item] : box.review;

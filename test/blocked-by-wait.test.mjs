@@ -6,6 +6,8 @@
 // restart among them. Every credential here is a dummy.
 import { strict as assert } from "node:assert";
 import { execFile, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,20 +46,61 @@ const cliEnv = (extra = {}) => {
   for (const k of ["ATELIER_PROJECT", "ATELIER_ACTOR", "ATELIER_JSON"]) if (!(k in extra)) delete env[k];
   return env;
 };
-async function cli(argv, extra = {}) {
-  try { const { stdout, stderr } = await run(process.execPath, ["cli/atelier.mjs", ...argv], { env: cliEnv(extra), timeout: 60_000 }); return { code: 0, stdout, stderr }; }
-  catch (error) { return { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
+// `label` says what a call waits for; if the subprocess deadline `ms` expires,
+// the call fails naming that label and the deadline.
+async function cli(argv, extra = {}, { label = `atelier ${argv.join(" ")}`, ms = 60_000, nodeArgs } = {}) {
+  try { const { stdout, stderr } = await run(process.execPath, nodeArgs ?? ["cli/atelier.mjs", ...argv], { env: cliEnv(extra), timeout: ms }); return { code: 0, stdout, stderr }; }
+  catch (error) {
+    if (error.killed && error.signal) throw new Error(`${label} did not return within ${ms / 1000} s`);
+    return { code: error.code, stdout: error.stdout, stderr: error.stderr };
+  }
 }
 // A wait started in the background, so the test makes the transitions it
 // waits for; resolves to its exit code and output, and when it ended.
-function waiting(argv) {
-  const child = spawn(process.execPath, ["cli/atelier.mjs", "wait", ...argv, "--project", "demo", "--interval", "0.1"], { env: cliEnv() });
+function waiting(argv, extra = {}) {
+  const child = spawn(process.execPath, ["cli/atelier.mjs", "wait", ...argv, "--project", "demo", "--interval", "0.1"], { env: cliEnv(extra) });
   let out = "";
   child.stdout.on("data", (s) => out += s); child.stderr.on("data", (s) => out += s);
   const done = new Promise((ok) => child.on("close", (code) => ok({ code, out: out.trim(), at: Date.now() })));
   return { child, done, ended: () => child.exitCode !== null };
 }
 const pause = (ms) => new Promise((ok) => setTimeout(ok, ms));
+// A stand-in for a slow or loaded server: every request waits `delayMs`
+// before it reaches the real one, and each answer sent is counted, so a test
+// waits for the CLI's reads rather than for a fixed time.
+async function slowServer(delayMs) {
+  const events = new EventEmitter();
+  const proxy = { answered: 0, url: "" };
+  const http = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    await pause(delayMs);
+    try {
+      const { host, connection, "content-length": _length, ...headers } = req.headers;
+      const upstream = await fetch(`http://127.0.0.1:${port}${req.url}`, { method: req.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
+      res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+      res.end(Buffer.from(await upstream.arrayBuffer()));
+    } catch { res.destroy(); }
+    proxy.answered++; events.emit("answered");
+  });
+  await new Promise((ok) => http.listen(0, "127.0.0.1", ok));
+  proxy.url = `http://127.0.0.1:${http.address().port}`;
+  // Resolves once `n` more answers are sent; fails naming `what` at the deadline.
+  proxy.reads = (n, what, ms = 60_000) => new Promise((ok, fail) => {
+    let left = n;
+    const timer = setTimeout(() => { events.off("answered", onAnswer); fail(new Error(`timed out after ${ms} ms waiting for ${what}`)); }, ms);
+    const onAnswer = () => { if (--left > 0) return; clearTimeout(timer); events.off("answered", onAnswer); ok(); };
+    events.on("answered", onAnswer);
+  });
+  proxy.close = () => new Promise((ok) => { http.close(ok); http.closeAllConnections(); });
+  return proxy;
+}
+// A promise that must settle within `ms`, or the test fails naming what it waited for.
+const within = (promise, what, ms = 60_000) => {
+  let timer;
+  const late = new Promise((_, fail) => { timer = setTimeout(() => fail(new Error(`timed out after ${ms} ms waiting for ${what}`)), ms); });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+};
 async function task(title) {
   const r = await api("POST", "/projects/demo/items", { title });
   assert.equal(r.status, 201, JSON.stringify(r.body));
@@ -188,26 +231,41 @@ test("a cycle is refused at edit time, through any chain, and nothing changes", 
 });
 
 test("wait --all returns 0 once every task merges, at once when they already have, and 3 at its timeout", async () => {
-  const a = await task("Wait A"), b = await task("Wait B");
-  const w = waiting(["--all", `${a},${b}`, "--for", "merged"]);
-  await pause(400);
-  assert.equal(w.ended(), false);
-  await merge(a);
-  await pause(400);
-  assert.equal(w.ended(), false, "one of two is not all");
-  await merge(b);
-  const done = await w.done;
-  assert.equal(done.code, 0, done.out);
-  assert.equal(done.out, `${a}, ${b} merged`);
-  // Already met: at once.
-  const t0 = Date.now();
-  const again = await cli(["wait", "--all", `${a},${b}`, "--project", "demo"]);
-  assert.equal(again.code, 0, again.stderr);
-  assert.ok(Date.now() - t0 < 10_000);
-  const c = await task("Never merges");
-  const slow = await cli(["wait", "--any", c, "--for", "merged", "--timeout", "0.5", "--interval", "0.1", "--project", "demo"]);
-  assert.equal(slow.code, 3, slow.stdout + slow.stderr);
-  assert.match(slow.stdout, new RegExp(`${c} is open \\(filed\\); gave up waiting`));
+  // Every CLI read takes two seconds longer than the server needs.
+  const slow = await slowServer(2000);
+  const viaSlow = { ATELIER_SERVER: slow.url };
+  try {
+    const a = await task("Wait A"), b = await task("Wait B");
+    const w = waiting(["--all", `${a},${b}`, "--for", "merged"], viaSlow);
+    try {
+      await slow.reads(1, "the waiter's first read of the tasks");
+      assert.equal(w.ended(), false);
+      await merge(a);
+      // A read begun before the merge may still be in flight; the second answer is one that saw it.
+      await slow.reads(2, "a read of the tasks after the first merge");
+      assert.equal(w.ended(), false, "one of two is not all");
+      await merge(b);
+      const done = await within(w.done, "the waiter to end once both tasks merged");
+      assert.equal(done.code, 0, done.out);
+      assert.equal(done.out, `${a}, ${b} merged`);
+    } finally { w.child.kill(); }
+    // Already met: at once.
+    const t0 = Date.now();
+    const again = await cli(["wait", "--all", `${a},${b}`, "--project", "demo"], viaSlow, { label: "wait --all on already merged tasks" });
+    assert.equal(again.code, 0, again.stderr);
+    assert.ok(Date.now() - t0 < 10_000);
+    // The timeout falls inside the nap after the first read, so a slow read is never the last thing the CLI saw.
+    const c = await task("Never merges");
+    const gaveUp = await cli(["wait", "--any", c, "--for", "merged", "--timeout", "6", "--interval", "10", "--project", "demo"], viaSlow, { label: "wait --any on a never-merged task to give up at its 6 s timeout" });
+    assert.equal(gaveUp.code, 3, gaveUp.stdout + gaveUp.stderr);
+    assert.match(gaveUp.stdout, new RegExp(`${c} is open \\(filed\\); gave up waiting`));
+  } finally { await slow.close(); }
+});
+
+test("cli() fails naming what it waited for when its subprocess deadline expires", async () => {
+  await assert.rejects(
+    cli([], {}, { label: "a child that sleeps", ms: 1000, nodeArgs: ["-e", "setTimeout(() => {}, 30000)"] }),
+    { message: "a child that sleeps did not return within 1 s" });
 });
 
 test("wait --any returns when one task reaches a stage; a stage target reads the recorded stage", async () => {
