@@ -45,3 +45,4 @@ src/stage-tick.ts:findStageOverrun exported and tested, no production caller on 
 src/time.ts:zoneName exported and tested, no production caller on 2026-11-08; wire it in or delete it
 src/token-expiry.ts:warns exported and tested, no production caller on 2026-11-08; wire it in or delete it
 src/tokens.ts:callParts exported and tested, no production caller on 2026-11-08; wire it in or delete it
+src/runners/machine.ts:machineReadings built in t607 and tested; its production caller is the rigs display, t607 task 2 (t607 criterion 9 keeps src/index.ts to wiring parseMachine); delete this line when it lands
