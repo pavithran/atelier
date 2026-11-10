@@ -49,6 +49,17 @@ The orchestrator requires the fix report's covering tests, commands and output
 before requesting that re-review. Existing review and escalation rules still
 apply.
 
+## No load on shared machines
+
+Criteria and briefs never ask for load on the machine (busy loops, stress
+tools). On 9 November 2026 two builders started one busy loop per core on the
+shared build machine because their criteria asked for it: 109 loops, load 160
+on 36 cores, other tasks' checks failed and review approvals were refused. A
+load-sensitive test is reproduced with concurrent copies of the test under a
+timeout, and nothing may outlive the command. Every build brief tells the
+builder: start no process that loads the machine or outlives your command;
+simulate load inside the test only.
+
 ## The standing rules
 
 `atelier guide --role orchestrate` prints these for any agent that runs a
