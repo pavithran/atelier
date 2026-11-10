@@ -203,7 +203,7 @@ const terminalStart = { step: "deploy", command: "node scripts/ship-studio.mjs d
 test("a start with the terminal records terminal and givesUpAt on action.started", () => {
   const m = memory();
   startActionRun(m.store, "owner", terminalStart);
-  assert.deepEqual(m.events, [{ kind: "action.started", data: { ship: "s-1", step: "deploy", command: terminalStart.command, commit: H1, terminal: true, givesUpAt: GIVES_UP } }]);
+  assert.deepEqual(m.events, [{ kind: "action.started", data: { ship: "s-1", step: "deploy", command: terminalStart.command, commit: H1, terminal: true, attempt: 0, givesUpAt: GIVES_UP } }]);
 });
 
 test("a start without terminal is recorded as before and carries no wait", () => {
@@ -230,4 +230,16 @@ test("a start's terminal and givesUpAt are checked, and only the owner may post 
   refused(() => startActionRun(m.store, "owner", { ...terminalStart, terminal: false }), "bad_run");
   refused(() => startActionRun(m.store, "owner", { ...terminalStart, givesUpAt: "soon" }), "bad_run");
   assert.deepEqual(m.events, []);
+});
+
+test("the same ship, step and attempt reposted with another givesUpAt, or after 60 other starts, records nothing; a retry is its own event", () => {
+  const m = memory();
+  startActionRun(m.store, "owner", terminalStart);
+  startActionRun(m.store, "owner", { ...terminalStart, givesUpAt: later(99 * 60_000) });
+  for (let i = 0; i < 60; i++) startActionRun(m.store, "owner", { ...terminalStart, ship: `other-${i}` });
+  startActionRun(m.store, "owner", { ...terminalStart, attempt: 0, givesUpAt: later(5 * 60_000) });
+  assert.equal(m.events.length, 61);
+  startActionRun(m.store, "owner", { ...terminalStart, attempt: 1 });
+  assert.equal(m.events.length, 62);
+  refused(() => startActionRun(m.store, "owner", { ...terminalStart, attempt: -1 }), "bad_run");
 });

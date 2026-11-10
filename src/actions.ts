@@ -219,9 +219,10 @@ export function consumeAction(store: ActionStore, actor: string, body: Record<st
 
 // A start is an observation, with no completion or approval claim. A step
 // that has the terminal (`terminal: true`) says when its timeout will kill it
-// (`givesUpAt`), so status and Today can show a ship waiting at a password
-// prompt (src/ship-wait.ts). The same terminal start posted again, as a client
-// does when it never saw the answer, is recorded once.
+// (`givesUpAt`) and which attempt it is (`attempt`, 0 for the first run), so status and Today can show a ship waiting at a password
+// prompt (src/ship-wait.ts). The same terminal start posted again for one ship,
+// step and attempt, as a client does when it never saw the answer, is
+// recorded once.
 export function startActionRun(store: ActionStore, actor: string, body: Record<string, unknown>): void {
   ownerOnly(store, actor, "records a ship step start");
   const run = cleanRun({ ...body, durationMs: 0, passed: false });
@@ -230,10 +231,15 @@ export function startActionRun(store: ActionStore, actor: string, body: Record<s
   if (body.terminal === true) {
     const at = typeof body.givesUpAt === "string" ? Date.parse(body.givesUpAt) : NaN;
     if (body.givesUpAt !== undefined && !Number.isFinite(at)) throw new RuleError("bad_run", "a start's givesUpAt must be a time", 400);
+    const attempt = body.attempt === undefined ? 0 : body.attempt;
+    if (typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 0) throw new RuleError("bad_run", "a start's attempt must be a whole number from 0", 400);
     data.terminal = true;
+    data.attempt = attempt;
     if (Number.isFinite(at)) data.givesUpAt = new Date(at).toISOString();
-    const same = store.sql.exec(`SELECT data FROM events WHERE kind = 'action.started' ORDER BY seq DESC LIMIT 50`).toArray()
-      .some((r) => { const d = JSON.parse(r.data as string) as Record<string, unknown>; return d.terminal === true && d.ship === data.ship && d.step === data.step && d.givesUpAt === data.givesUpAt; });
+    // One event per ship, step and attempt, whatever its givesUpAt and
+    // however many starts lie between; a start with no attempt is attempt 0.
+    const same = store.sql.exec(`SELECT data FROM events WHERE kind = 'action.started' AND json_extract(data, '$.ship') = ?`, data.ship).toArray()
+      .some((r) => { const d = JSON.parse(r.data as string) as Record<string, unknown>; return d.terminal === true && d.ship === data.ship && d.step === data.step && (d.attempt ?? 0) === attempt; });
     if (same) return;
   }
   store.log("action.started", data);

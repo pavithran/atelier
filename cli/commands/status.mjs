@@ -12,7 +12,7 @@ import { serverFetch } from "../server-fetch.mjs";
 import { bookmarkKey, formatNew, newSince, parseSince, readBookmark, writeBookmark, FIRST_RUN_MS } from "../new-since.mjs";
 import { readInstructions } from "../review-notice.mjs";
 import { reviewDisagreements } from "../../src/review-notice.ts";
-import { shipEventsOf, shipWaitLines, shipWaits } from "../../src/ship-wait.ts";
+import { shipWaitLines, shipWaitOf } from "../../src/ship-wait.ts";
 import { deployGateLines, packageScripts } from "../deploy-gate.mjs";
 import { nowText } from "../../src/now.ts";
 import { noticeLines } from "../../src/notify.ts";
@@ -80,7 +80,7 @@ export default async function statusCommand() {
     const modeRead = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
     const criteria = { mode: modeRead?.mode === "fast" ? modeRead.line : null, policy: record?.project?.policy ?? null, criteriaDeadlocks: Array.isArray(modeRead?.criteriaDeadlocks) ? modeRead.criteriaDeadlocks : [] };
     const criteriaText = criteriaLines(criteria).join("\n");
-    if (args.json) return console.log(JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), project: standing, developerDecisions: developerDecisionLines(record?.events), ...(shipWaits(record?.events, new Date()).length ? { shipWaits: shipWaits(record?.events, new Date()) } : {}), stuck, ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+    if (args.json) return console.log(JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), project: standing, developerDecisions: developerDecisionLines(record?.events), ...(shipWaitOf(record?.shipWait, new Date()) ? { shipWait: shipWaitOf(record?.shipWait, new Date()) } : {}), stuck, ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
     const offers = await request("GET", "/runners", undefined, as).catch(() => null);
     const runners = Array.isArray(offers) ? "\n\n" + formatRunners(offers, Date.now(), args["all-runners"]).join("\n") : "";
     // The project's tasks, for expired blocks and the clean-up count.
@@ -95,7 +95,7 @@ export default async function statusCommand() {
     // warning's init names the checkout to run it in, for status runs from
     // anywhere and init reads the project from the checkout alone.
     const gate = deployGateLines(record?.project?.policy, packageScripts(path), path);
-    console.log(withOverdueTick(withNotices(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (shipWaitLines(record?.events, new Date()).length ? "\n\n" + shipWaitLines(record?.events, new Date()).join("\n") : "") + (criteriaText ? "\n\n" + criteriaText : "") + (gate.length ? "\n\n" + gate.join("\n") : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), mine ? await noticesText(as) : ""), overdueTick(stuck)));
+    console.log(withOverdueTick(withNotices(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (shipWaitLines(record?.shipWait, new Date()).length ? "\n\n" + shipWaitLines(record?.shipWait, new Date()).join("\n") : "") + (criteriaText ? "\n\n" + criteriaText : "") + (gate.length ? "\n\n" + gate.join("\n") : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), mine ? await noticesText(as) : ""), overdueTick(stuck)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
@@ -135,7 +135,7 @@ export default async function statusCommand() {
     // beside the instructions read above.
     const items = Array.isArray(read?.items) ? read.items : null;
     const stuck = await readStuck((path) => request("GET", path, undefined, OWNER).catch(() => null), P(p.name), p.name, items);
-    return { developerDecisions: developerDecisionLines(read?.events), shipEvents: shipEventsOf(read?.events), stuck, wayBack: read?.wayBack ?? null, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, scripts: packageScripts(path), checkout: path, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
+    return { developerDecisions: developerDecisionLines(read?.events), shipWait: read?.shipWait ?? null, stuck, wayBack: read?.wayBack ?? null, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, scripts: packageScripts(path), checkout: path, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null).map(view => ({ ...view, ...(mainSuite ? { mainSuite } : {}) })), null, 2));
   const strays = formatStrays(localStrays());

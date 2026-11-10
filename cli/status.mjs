@@ -32,7 +32,7 @@ import { daySpend } from "../src/usage/report.ts";
 import { jobsLine } from "./runner.mjs";
 import { readinessLines } from "../src/runners/readiness.ts";
 import { deployGateLines } from "./deploy-gate.mjs";
-import { shipWaits, shipWaitLines } from "../src/ship-wait.ts";
+import { shipWaitOf, shipWaitLines } from "../src/ship-wait.ts";
 
 // A task's stage is stageOf's (src/rules.ts) and nothing here decides one.
 // `ready` is the fast-build reports the project's mode route lists
@@ -126,7 +126,7 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
       name: v.name,
       ...(submissionWaits(v.items, v.name).length ? { orchestratorWaits: submissionWaits(v.items, v.name) } : {}),
       ...(v.developerDecisions?.length ? { developerDecisions: v.developerDecisions } : {}),
-      ...(shipWaits(v.shipEvents ?? [], now).length ? { shipWaits: shipWaits(v.shipEvents ?? [], now) } : {}),
+      ...(shipWaitOf(v.shipWait, now) ? { shipWait: shipWaitOf(v.shipWait, now) } : {}),
       ...(v.wayBack ? { wayBack: v.wayBack } : {}),
       ...(v.title ? { title: v.title } : {}),
       ...(v.policy?.familyMode?.single ? { singleFamily: v.policy.familyMode.single } : {}),
@@ -417,7 +417,7 @@ export function formatStatus(views, waiting = {}) {
     if (v.wayBack) lines.push(oneLine(v.wayBack));
     lines.push(v.title ? `${v.title} (${v.name})` : v.name);
     lines.push(...tickLines(v.stuck, "  "));
-    lines.push(...shipWaitLines(v.shipEvents, now).map((l) => `  ${l}`));
+    lines.push(...shipWaitLines(v.shipWait, now).map((l) => `  ${l}`));
     if (v.policy?.familyMode?.single) lines.push(`  ${singleFamilyLine(v.policy.familyMode.single)}`);
     // t293: a command the deploy gate runs that no required check runs, with
     // the init that adds it, run in the checkout the local config names. A

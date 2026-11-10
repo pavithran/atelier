@@ -23,7 +23,7 @@ import { vendorOf } from "./graph.ts";
 import { machineName, runnerNameOf } from "./runner-names.ts";
 import { criteriaOf } from "./criteria.ts";
 import { dayInZone } from "./time.ts";
-import { shipWaitLines } from "./ship-wait.ts";
+import { shipWaitLines, type ShipWaitRecord } from "./ship-wait.ts";
 import { landBlock, landStateOf, LAND_CALLS } from "./page-actions.ts";
 import { escapeText as e, page, type Live } from "./ui";
 import todayCss from "./today.css";
@@ -45,6 +45,8 @@ export interface TodayLedger {
   events(id?: string, limit?: number, before?: number): Promise<LedgerEvent[]>;
   situationFacts(tasks: string[]): Promise<Pick<SituationFacts, "items" | "stages" | "reviewRequests" | "landings"> & Partial<Pick<SituationFacts, "landJobs">> & { progress?: NowProject["progress"] }>;
   postMergeRun(item: string): Promise<Pick<PostMergeRun, "state"> | null>;
+  // The newest terminal ship step start (src/ship-wait.ts); a stub without it shows no wait.
+  shipWait?(): Promise<ShipWaitRecord | null> | ShipWaitRecord | null;
 }
 
 export interface TodaySource {
@@ -63,6 +65,8 @@ export interface TodayProjectInput {
   now: NowProject;
   // For buildPulse and the day's merges and deploys: the events of the last 14 days.
   pulseEvents: LedgerEvent[];
+  // The project's newest terminal ship start, read whole rather than from the 14 days.
+  shipWait?: ShipWaitRecord | null;
   // Every ship.recorded of those 14 days.
   ships: DeployRecord[];
   // The post-merge run state of each task a deploy of today shipped; null: no run recorded.
@@ -142,7 +146,7 @@ async function readProject(src: TodaySource, p: TodaySource["projects"][number],
       name: p.name, title: p.title, items: facts.items, stages: facts.stages, owner: attentionFor(p.name, items, inbox, src.offers, now).owner,
       reviewRequests: facts.reviewRequests, landings: facts.landings, progress: facts.progress ?? {}, events, deploys: ships,
     },
-    pulseEvents, ships, postMerge, cutShort,
+    pulseEvents, ships, postMerge, cutShort, shipWait: (await ledger.shipWait?.()) ?? null,
     landJobs: facts.landJobs ?? [],
     heads: Object.fromEntries(items.map((i) => [i.id, { head: i.head ?? null, criteria: criteriaOf(i) }])),
   };
@@ -380,7 +384,7 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
     dots: { need: cards.map(() => "owner"), running: lanes.map((l) => l.family) },
     hours, ships: deploys.map((d) => ({ shipped: d.s.result === "shipped" })),
     cards, lanes: lanes.slice(0, LANES_SHOWN), lanesMore: Math.max(0, lanes.length - LANES_SHOWN), timeline, projects, unread: inputs.unread,
-    shipWaits: inputs.projects.flatMap((p) => shipWaitLines(p.pulseEvents, at).map((line) => `${p.now.name}: ${line}`)),
+    shipWaits: inputs.projects.flatMap((p) => shipWaitLines(p.shipWait, at).map((line) => `${p.now.name}: ${line}`)),
     now: view,
   };
 }

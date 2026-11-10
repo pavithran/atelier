@@ -1107,10 +1107,19 @@ test("a terminal step posts terminal and givesUpAt, its timeout from now, before
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const [deploy] = startsOf(f, "deploy");
   assert.equal(deploy.terminal, true);
+  assert.equal(deploy.attempt, 0);
   assert.ok(Date.parse(deploy.givesUpAt) >= before + 90_000 && Date.parse(deploy.givesUpAt) <= after + 90_000, deploy.givesUpAt);
   for (const other of ["verify-delivery", "wrap"]) assert.ok(startsOf(f, other).every((b) => b.terminal === undefined && b.givesUpAt === undefined), other);
   const at = (kind) => f.state.requests.findIndex((q) => q.path.endsWith(`/actions/${kind}`) && q.body.step === "deploy");
   assert.ok(at("starts") >= 0 && at("starts") < at("runs"), "the start is posted before the step's run is recorded");
+});
+
+test("a terminal step's retry posts its own start with attempt 1", async (t) => {
+  const ship = (url) => ({ ...TERMINAL_SHIP(url), deploy: { run: ["sh", "bin/flaky.sh"], terminal: true, timeout_seconds: 90, retries: 1 } });
+  const f = await fixture(t, { approve: ["deploy"], ship, extra: STEPS_FILES });
+  const r = await f.run(["ship"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(startsOf(f, "deploy").map((b) => b.attempt), [0, 1]);
 });
 
 test("a step without the terminal posts a plain start, as an older CLI does", async (t) => {

@@ -622,10 +622,10 @@ export async function ship(ctx) {
   // Today can show the ship waiting at a password prompt (src/ship-wait.ts).
   // That post is a courtesy: when it fails or times out, a warning is printed
   // and the step runs. A repeat of it for this ship and step is recorded once.
-  const starting = async (step, command, terminalFor = null) => {
+  const starting = async (step, command, terminalFor = null, attempt = 0) => {
     if (startsUnavailable) return;
     const body = { ship: id, step, command: ctx.redact(command, ctx.secrets), commit };
-    if (terminalFor) Object.assign(body, { terminal: true, givesUpAt: new Date(Date.now() + terminalFor.timeoutMs).toISOString() });
+    if (terminalFor) Object.assign(body, { terminal: true, attempt, givesUpAt: new Date(Date.now() + terminalFor.timeoutMs).toISOString() });
     try {
       if (terminalFor) {
         // A response lost on the way is asked again once, with the same body,
@@ -693,7 +693,7 @@ export async function ship(ctx) {
         // A retry is the same run: it uses the approval already taken.
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
-          await starting(s.step, command, run.terminal && run.argv ? run : null);
+          await starting(s.step, command, run.terminal && run.argv ? run : null, attempt);
           const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run, head);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });
