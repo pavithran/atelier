@@ -3,6 +3,10 @@ import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import type { PlanView } from "../src/plans/show.ts";
 import { signIn } from "./signin.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide which runners offer the review job, or that none does: no default runner joins them.
+withoutDefaultRunner();
 
 // The plan routes driven through the Worker's own fetch handler, with the
 // t43 allowlist and the owner checks in front of the Ledger (docs/orchestrator.md,

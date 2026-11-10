@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Answer form</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<main>
+<p class="mockbar"><strong>Mockup, invented data.</strong> State A: a task the builder blocked with a question, the Answer form open (task d2).</p>
+<section class="state">
+  <article class="card hero is-ask">
+    <header class="hero-top">
+      <div class="crumbs mono">atelier<span>/</span>t612</div>
+      <span class="pill pill-ask"><span class="pill-dot"></span>Blocked, waits on you</span>
+    </header>
+    <h1>Today's cards keep their order when a task moves between projects</h1>
+    <div class="verdict has-form">
+      <p>claude-code/sonnet-5.5 stopped at 2:14 pm with a question the brief does not answer. The task goes on when you answer.</p>
+    </div>
+
+    <form class="decide is-ask" method="post" action="/ui/atelier/t612/answer" aria-labelledby="answer-h">
+      <div class="decide-h"><h2 id="answer-h">Answer the builder</h2><span class="meta">Blocked 2:14 pm · round 1</span></div>
+      <blockquote class="question">
+        <p>Today could order the cards by when each task began to wait, or by project and then by age. The brief names neither, and the two differ once a task moves. Which should Today use?</p>
+        <footer>claude-code/sonnet-5.5 (Anthropic), in its own words</footer>
+      </blockquote>
+      <label class="field"><span class="field-row"><span>Your answer</span><span class="hint">1 to 2,000 characters</span></span>
+        <textarea name="quote" required maxlength="2000" rows="4">By when it began to wait, oldest first. The project is only a label on the card; moving a task keeps its place.</textarea>
+      </label>
+      <p class="goes"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r=".9" fill="currentColor"/></svg><span>Your words go into the builder's brief as <strong>the developer's words</strong>, with the time, until it next submits. Sending unblocks the task; it returns to Working with claude-code/sonnet-5.5.</span></p>
+      <div class="form-actions">
+        <button class="btn btn-ask" type="submit"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h11M11 5.5L15.5 10 11 14.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Send answer</span></button>
+      </div>
+    </form>
+
+    <ol class="track" aria-label="Stages" style="--done:2"><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Claim</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Branch</span></li><li class="st st-now"><span class="node"></span><span class="st-name">Prove</span><span class="st-note">blocked · waits on you</span></li><li class="st st-next"><span class="node"></span><span class="st-name">Review</span></li><li class="st st-next"><span class="node"></span><span class="st-name">Land</span></li></ol>
+  </article>
+
+  <div class="block">
+    <h3>Evidence</h3>
+    <div class="card list">
+      <div class="group-h"><span>Required checks</span><span class="count">0 of 3 run</span></div>
+      <ul class="rows">
+        <li class="row"><span class="mark mark-wait"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="11" cy="8" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span class="mono">npm run typecheck</span></div><div class="row-meta">not run<span class="sep">·</span>blocked before submit</div></li>
+        <li class="row"><span class="mark mark-wait"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="11" cy="8" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span class="mono">npm run test:static</span></div><div class="row-meta">not run<span class="sep">·</span>blocked before submit</div></li>
+        <li class="row"><span class="mark mark-wait"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="11" cy="8" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span class="mono">npm test</span></div><div class="row-meta">not run<span class="sep">·</span>blocked before submit</div></li>
+      </ul>
+      <div class="group-h"><span>Review</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-wait"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="11" cy="8" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span>Not reviewed yet</span><span class="row-sub">Nothing has been submitted</span></div></li></ul>
+      <div class="group-h"><span>Scope</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span>3 files changed so far, all inside the declared scope</span></div><div class="row-meta">3 of 3 inside</div></li></ul>
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>What the builder says <span class="tag tag-unv">Not verified</span></h3>
+    <blockquote class="said"><p>No summary yet: the task has not been submitted. Its question is above.</p><footer>Shown once claude-code/sonnet-5.5 submits</footer></blockquote>
+  </div>
+
+  <div class="folds">
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Brief and criteria</span></summary><p class="row-sub">Folded, as task c decides.</p></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Thread of events</span><span class="n">3</span></summary><ol class="thread"><li><span class="t-at">1:02 pm</span><span class="t-dot"></span><span>Dispatched to claude-code/sonnet-5.5</span></li><li><span class="t-at">1:03 pm</span><span class="t-dot"></span><span>Claimed</span></li><li><span class="t-at">2:14 pm</span><span class="t-dot"></span><span>Blocked by claude-code/sonnet-5.5: a question for you</span></li></ol></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Technical details</span></summary><dl class="tech"><dt>Task</dt><dd><span class="mono">atelier / t612</span></dd><dt>Head commit</dt><dd><span class="mono">4e1c09ab</span></dd><dt>Builder</dt><dd>claude-code/sonnet-5.5 (Anthropic)</dd><dt>Blocked from</dt><dd>Working</dd></dl></details>
+  </div>
+</section>
+</main>
+</body>
+</html>

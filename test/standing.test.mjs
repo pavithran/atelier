@@ -236,7 +236,7 @@ test("status --project prints where it stands and says the checkout is in step, 
   // The fast builds that ended ready (t210) are read before the usage warnings (t727).
   // The three stuck reads are made together, so their order is not pinned.
   const sortStuck = (seen) => [...seen.slice(0, 4), ...seen.slice(4, 7).sort(), ...seen.slice(7)];
-  assert.deepEqual(sortStuck(r.seen), ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/branches", "GET /api/projects/demo/stuck", "GET /api/projects/demo/stuck/episodes", "GET /api/projects/demo/stuck/tick", "GET /api/projects/demo/mode", "GET /api/runners", "GET /api/usage", "GET /api/notices"]);
+  assert.deepEqual(sortStuck(r.seen), ["GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/branches", "GET /api/projects/demo/stuck", "GET /api/projects/demo/stuck/episodes", "GET /api/projects/demo/stuck/tick", "GET /api/projects/demo/mode", "GET /api/projects/demo/designs", "GET /api/runners", "GET /api/usage", "GET /api/notices"]);
   assert.match(r.output, /\n  Developer branches: not read/);
 });
 
@@ -250,7 +250,7 @@ test("status --project with an agent token reads the baseline's head through a r
   assert.equal(agentRoute("GET", ["runners"]), false);
   assert.doesNotMatch(r.output, /Runners:|No live runners|idle runner|owner_token_required/);
   // The usage warnings (t727) are still read; a refusal leaves the text as it was.
-  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/mode", "GET /api/runners", "GET /api/usage"]);
+  assert.deepEqual(r.seen, ["GET /api/config", "GET /api/projects/demo/standing", "GET /api/projects/demo/baseline-head", "GET /api/projects/demo", "GET /api/projects/demo/mode", "GET /api/projects/demo/designs", "GET /api/runners", "GET /api/usage"]);
   assert.doesNotMatch(r.output, /Developer branches/);
 });
 

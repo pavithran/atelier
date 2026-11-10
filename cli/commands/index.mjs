@@ -23,6 +23,7 @@ import command_criteria_verdict from "./criteria-verdict.mjs";
 import command_decide from "./decide.mjs";
 import command_decisions from "./decisions.mjs";
 import command_defect from "./defect.mjs";
+import command_design from "./design.mjs";
 import command_diff from "./diff.mjs";
 import command_dispatch from "./dispatch.mjs";
 import command_done from "./done.mjs";
@@ -129,6 +130,7 @@ export const HANDLER_MODULES = [
   { path: "cli/commands/decide.mjs", run: command_decide },
   { path: "cli/commands/decisions.mjs", run: command_decisions },
   { path: "cli/commands/defect.mjs", run: command_defect },
+  { path: "cli/commands/design.mjs", run: command_design },
   { path: "cli/commands/diff.mjs", run: command_diff },
   { path: "cli/commands/dispatch.mjs", run: command_dispatch },
   { path: "cli/commands/done.mjs", run: command_done },

@@ -6,14 +6,14 @@ import { excludeScratch } from "./scratch.mjs";
 import { stageBrief } from "./prose-stage.mjs";
 import { accessSync, constants, appendFileSync, existsSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync, lstatSync, statSync, readdirSync, realpathSync, renameSync, symlinkSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir, hostname, tmpdir } from "node:os";
+import { cpus, freemem, homedir, hostname, loadavg, tmpdir, totalmem } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { checkEnv } from "./check-env.mjs";
 import { killTree, runGroup, treeGroups } from "./group.mjs";
 import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
-import { SLOT_WRAPPER } from "./load.mjs";
+import { HOST_POOL, SLOT_WRAPPER, slotStatus } from "./load.mjs";
 import { pairedProjectCommit } from "./fresh.mjs";
 import { runLandJob } from "./land-queue.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS, runKeyOf, runResultHolds } from "./runner-failure.mjs";
@@ -46,6 +46,7 @@ import { runTaskRefresh } from "./task-refresh.mjs";
 import { lowSpeedEnv, talksToRemote } from "./timeouts.mjs";
 import { SLOT_HELD_FD, watchRun } from "./check-clock.mjs";
 import { progressTracker } from "./progress.mjs";
+import { harnessTailOf, lineRing, logTextOf } from "./run-log-text.mjs";
 import { automaticNote } from "../src/run-facts.ts";
 import { checkLimits, limitMs, stopLine, stopOf } from "../src/check-limit.ts";
 import { DETECTOR_ENV, RENAME_THRESHOLD, describeFinding, detectMovedEditsAsync, normalize, parseRawZ, showPath } from "../src/moved-code.ts";
@@ -510,6 +511,7 @@ export function execute(argv, { cwd, signal, raw = false, capture = false, captu
     // The harness's pid goes to the progress tracker (G21), which reads the
     // processes below it.
     if (pid) onSpawn?.(pid);
+    const rings = { stdout: lineRing(), stderr: lineRing() };
     let output = "", stderr = "", error, timedOut = false, stopped, closed, ending = false, ended = !pid;
     // A signal to every process in the group; false once none is left.
     const send = (sig) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
@@ -519,7 +521,7 @@ export function execute(argv, { cwd, signal, raw = false, capture = false, captu
       watch.end();
       signal?.removeEventListener("abort", end);
       if (error) reject(error);
-      else resolve({ ...closed, output: raw ? output : output.trim(), stderr: stderr.trim(), timedOut, ...(stopped ? { stopped } : {}) });
+      else resolve({ ...closed, output: raw ? output : output.trim(), stderr: stderr.trim(), timedOut, tails: { stdout: rings.stdout.lines(), stderr: rings.stderr.lines() }, ...(stopped ? { stopped } : {}) });
     };
     const end = () => {
       if (ending || ended) return;
@@ -544,8 +546,8 @@ export function execute(argv, { cwd, signal, raw = false, capture = false, captu
       onStop: (stop) => { if (closed || ending) return; stopped = stop; timedOut = true; end(); },
     });
     signal?.addEventListener("abort", end, { once: true });
-    child.stdout?.on("data", (chunk) => { watch.output(); output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
-    child.stderr?.on("data", (chunk) => { watch.output(); stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
+    child.stdout?.on("data", (chunk) => { watch.output(); rings.stdout.write(String(chunk)); output = (output + chunk).slice(-captureLimit); if (stream) process.stdout.write(chunk); });
+    child.stderr?.on("data", (chunk) => { watch.output(); rings.stderr.write(String(chunk)); stderr = (stderr + chunk).slice(-Math.min(captureLimit, STDERR_KEEP)); if (streamError) process.stderr.write(chunk); });
     child.on("error", (e) => { error = e; });
     // Once the child has exited, a deadline not yet passed no longer applies, and what it left in its group goes.
     child.on("exit", () => { clearTimeout(deadline); end(); });
@@ -1820,7 +1822,7 @@ export async function runTask(assignment, config, name, io) {
   // The recovery obligation (t363): a harness run failed in this workspace and
   // none has since succeeded. `failedRun` is what the run found at its start;
   // the rest is what this run did to it.
-  let failedNow = false, savedOnce = false, markHead = null, markFrom = null, harnessExit = null, headUnreadable = false;
+  let failedNow = false, savedOnce = false, markHead = null, markFrom = null, harnessExit = null, harnessTail = null, commandTrail = null, headUnreadable = false;
   const obligationKey = () => unsavedKey(workspace, item.id);
   // Records the obligation. The first call comes the moment a harness (or the
   // resolver) run fails, before HEAD is read or a reason made; later calls add
@@ -1937,6 +1939,7 @@ export async function runTask(assignment, config, name, io) {
         let failure = null;
         if (!limit && (result.timedOut || result.code !== 0)) {
           harnessExit = failedExitOf(result);
+          harnessTail = harnessTailOf(result);
           const started = state.head ?? before;
           await markFailure();
           markHead = await io.head(workspace).catch(() => null);
@@ -1977,6 +1980,7 @@ export async function runTask(assignment, config, name, io) {
         const result = await io.harness(commandFor(entry, { model, briefFile: repair.file, workspace }), workspace, harnessRunEnv(env, dataHome, item.id, "build", name, project, actor), { capture: true, stream: true, timeoutMs: harnessCeilingMs() });
         if (result.timedOut || result.code !== 0) {
           harnessExit = failedExitOf(result);
+          harnessTail = harnessTailOf(result);
           await markFailure();
           throw new Error(result.timedOut ? "check repair harness timed out; claim preserved" : `check repair harness exited ${result.code}; claim preserved`);
         }
@@ -2239,7 +2243,7 @@ export async function runTask(assignment, config, name, io) {
             io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog, harness: agent });
           }
           try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, timeoutMs: harnessCeilingMs(), ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
-          finally { io.progress?.end(); }
+          finally { io.progress?.end(); commandTrail = io.progress?.trail() ?? null; }
         } finally {
           if (dataHome) {
             try { await io.removeDataHome(dataHome); }
@@ -2253,6 +2257,7 @@ export async function runTask(assignment, config, name, io) {
     // or a reason made, and how the run ended is kept as a structured fact.
     if (result && (result.timedOut || result.code !== 0) && !limit) {
       harnessExit = harnessExitOf(result);
+      harnessTail = harnessTailOf(result);
       await markFailure();
     }
     if (limit) throw Object.assign(new Error(`${agent} usage limit: ${limit.reason}`), { providerLimit: { ...limit, harness: agent } });
@@ -2374,7 +2379,7 @@ export async function runTask(assignment, config, name, io) {
       const named = `files the harness left uncommitted after its commits and one follow-up turn: ${leftovers.map((f) => f.path).join(", ")}`;
       state = { ...state, leftovers: leftovers.map((f) => f.path), detail: `${state.reason}; ${named}`.slice(0, 2000), reason: `${state.reason}; ${named}` };
     }
-    state = { ...state, claimedTask: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
+    state = { ...state, claimedTask: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(harnessExit && harnessTail ? { harnessTail, commandTrail } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
     // The final record adds the head, the start and the reason as information.
     if (failedNow && claimed && !error.providerLimit) {
       await markFailure({ reason: state.reason });
@@ -2542,7 +2547,7 @@ export function unfinishedReport(task, state, gaveUp = null, facts = null) {
 let runLogs = 0;
 export const HARNESS_PROGRAMS = { "claude-code": "claude", codex: "codex", opencode: "opencode", antigravity: "agy" };
 export function runFacts(task, state, { dir = null, now = Date.now, host = hostname() } = {}) {
-  const text = [state.reason ?? "", state.detail ?? "", state.harnessExit?.stderr ?? "", state.output ?? ""].filter(Boolean).join("\n");
+  const text = logTextOf(state);
   // Beside the task workspaces, or, where that folder cannot be made, in this
   // machine's temporary folder; mode 700 and 600 either way.
   let log = null;
@@ -4616,7 +4621,28 @@ export async function withHistory({ git, log }, context, head) {
   return { ...context, text: [context.text, section.text].filter(Boolean).join("\n\n"), historyHash: section.hash };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
+// The machine this runner runs on, sent with every poll beside the memory
+// (t607): host, cores, load averages, free memory and the host test pool's
+// use, which is null on a host without the pool file. A pool in use past its
+// capacity (draining after a cut) is reported as full, the most the server
+// accepts. A pool that cannot be read is reported as none rather than
+// holding the poll.
+export async function machineReading({ os = { hostname, cpus, loadavg, freemem, totalmem }, pool = HOST_POOL, status = slotStatus } = {}) {
+  let testSlots = null;
+  try {
+    if (existsSync(pool)) {
+      const { capacity, usage } = await status({ path: pool });
+      testSlots = { capacity, inUse: Math.min(usage, capacity) };
+    }
+  } catch { testSlots = null; }
+  const total = os.totalmem();
+  return {
+    host: os.hostname(), cpus: os.cpus().length, loadavg: os.loadavg(),
+    memFreePercent: total > 0 ? Math.round((os.freemem() / total) * 10000) / 100 : 0, testSlots,
+  };
+}
+
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, machine = machineReading, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -4659,6 +4685,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   // What the runner remembers of the tasks it passes by goes with every poll
   // and heartbeat, and is read back at start (runnerMemory, G5).
   const memoryReport = () => ({ memory: runnerMemory({ refused, gaveUpTasks, failures, infrastructureFailures, skipHeads, backoff, pauses: limits.pauses }) });
+  // The machine's load goes with every poll and heartbeat (t607): a heartbeat is
+  // recorded as a poll is, so one without it would drop the reading mid-job.
+  const machineReport = async () => { try { return { machine: await machine() }; } catch { return {}; } };
   // The running build's progress line (G21, cli/progress.mjs) goes with every
   // poll and heartbeat while a build runs, and once more when it has ended.
   const runnerLogs = runnerLogBuffer([credential].filter(v => typeof v === "string"));
@@ -5294,7 +5323,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         let tasks;
         await checkReady();
         if (controller.signal.aborted) break;
-        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() };
+        pollOffer = { ...unpausedOffer(offer, { ...limits.pauses, ...Object.fromEntries(unready) }), ...readinessReport(), ...(integrating ? {} : memoryReport()), ...await machineReport(), ...progressReport() };
         try { tasks = await queue(pollOffer, controller.signal); if (pollOffer.progress) progress.sent(); }
         catch (error) {
           if (controller.signal.aborted || !transientQueueError(error)) throw error;
@@ -5379,13 +5408,13 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
                     ? runRefresh(task, config, offer.runner, io)
                     : task.item.dispatch?.job === "task-refresh" || task.item.dispatch?.job === "task-resolve"
                       ? runTaskRefresh(task, config, offer.runner, io)
-                    : runTask(task, config, offer.runner, io), async () => { runnerLogs.line(`running ${task.item.dispatch?.job ?? "build"}`); await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
+                    : runTask(task, config, offer.runner, io), async () => { runnerLogs.line(`running ${task.item.dispatch?.job ?? "build"}`); await checkReady(); if (heartbeat) await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...await machineReport(), ...progressReport() }, controller.signal); }, { intervalMs: heartbeatMs, log: line, stopped: () => controller.signal.aborted });
           // The ended build's last progress (its cost among it) is sent at once,
           // so the server keeps the run's final line even under --once.
           runnerLogs.line(`run ended: ${state.phase}${state.reason ? `: ${state.reason}` : ""}`);
           runnerLogs.end();
           if (heartbeat) {
-            try { await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...progressReport() }, controller.signal); progress.sent(); }
+            try { await heartbeat({ ...offer, ...readinessReport(), ...(integrating ? {} : memoryReport()), ...await machineReport(), ...progressReport() }, controller.signal); progress.sent(); }
             catch (error) { if (!controller.signal.aborted) line(`the build's last progress was not sent: ${error.message}`); }
           }
           if (controller.signal.aborted) break;

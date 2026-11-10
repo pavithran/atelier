@@ -15,6 +15,7 @@ import { after, test } from "node:test";
 import { promisify } from "node:util";
 import { Namespace } from "../src/runtime/namespace.mjs";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-runner.ts";
 import { OFFER_REFRESH_MS, RUNNER_GONE_MS } from "../src/dispatch/rules.ts";
 import { parseMemory } from "../src/runners/memory.ts";
 import { stopAfter, stopped } from "../src/review/stopped.ts";

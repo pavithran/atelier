@@ -35,6 +35,8 @@
 // format lets its CRITERION line say deferred (replyFormat in
 // src/review/verdict.ts), and nobody rejects the task for it.
 
+import { assign, liveOffers, type Dispatch, type SeenOffer } from "../dispatch/rules.ts";
+import { offersJudge } from "./offered.ts";
 import { standingRefusal, type ModelEntry, type PoolFamily } from "../models/pool.ts";
 import type { Choice } from "../plans/route.ts";
 import type { PlanPart } from "../plans/schema.ts";
@@ -217,6 +219,7 @@ export interface CriteriaPickInput {
   allowPaid?: boolean;                                  // paid-per-token models qualify; false unless given
   previous?: string | null;                             // the reviewer of the last rejected round, asked first
   avoid?: readonly { actor: string; reason: string }[]; // reviewers to pass over, such as one whose claim lapsed
+  offers?: readonly SeenOffer[];                        // the runners' offers: judged once any is on record (t591)
 }
 
 export interface CriteriaReviewerPick {
@@ -304,9 +307,18 @@ export function criteriaReviewerCandidates(input: CriteriaPickInput): { actor: s
     if (standing) failed.push(standing);
     if (entry.status?.state === "refused") failed.push(`status refused, reported by ${entry.status.by}`);
     if (PAID.has(entry.provider) && !input.allowPaid) failed.push(`paid per token (${entry.provider})`);
+    if (!criteriaOffered(entry.harness, entry.id, input.offers)) failed.push(`no live runner offers the criteria-review job for ${actor}`);
     const previous = input.previous && namesOf(entry).includes(input.previous.toLowerCase()) ? "reviewed the previous round of these criteria; " : "";
     return { actor, where: entry.where, line: `${previous}family ${actorFamily(actor)}; ${entry.status ? `status ${entry.status.state}` : "status not checked yet"}`, refusal: failed.length ? failed.join("; ") : null };
   });
+}
+
+// Whether a live runner offers the criteria-review job for the model (t591).
+// With no offer on record, none is offered.
+export function criteriaOffered(agent: string, model: string, offers: readonly SeenOffer[] | undefined): boolean {
+  if (!offersJudge(offers)) return true;
+  const d = { to: "home", agent, model, job: "criteria-review" } as Dispatch;
+  return liveOffers(offers).some((offer) => assign(d, offer) !== null);
 }
 
 function eligibility(actor: string, policy: ProjectPolicy, owner: string): string | null {

@@ -2234,3 +2234,17 @@ test("the review request uses the same requirement as the gate for unprotected c
     assert.equal(need.needed, true, path);
   }
 });
+
+// t596: the words of an Answer pressed on the page. No model acts, so the
+// direction carries the Access factor and the hash of the owner's email.
+import { pageDirection } from "../src/rules.ts";
+
+test("pageDirection: words are normalised like ownerDirection's; blank is bad_quote, over 2,000 is too_long, exactly 2,000 passes", () => {
+  const hash = "a".repeat(64);
+  assert.deepEqual(pageDirection("  use the\r\n second flow \t", hash), { quote: "use the second flow", factor: "access", emailHash: hash });
+  for (const bad of ["", "   ", "\n\t \r\n", undefined, null, 42]) assert.throws(() => pageDirection(bad, hash), (e: RuleError) => e.code === "bad_quote" && e.status === 400, String(bad));
+  assert.throws(() => pageDirection("x".repeat(DIRECTION_QUOTE_MAX + 1), hash), (e: RuleError) => e.code === "too_long" && e.status === 400);
+  assert.equal(pageDirection("x".repeat(DIRECTION_QUOTE_MAX), hash).quote.length, DIRECTION_QUOTE_MAX);
+  // Whitespace folds before the count, as ownerDirection's does.
+  assert.equal(pageDirection(`${"x ".repeat(DIRECTION_QUOTE_MAX / 2)}   `, hash).quote.length, DIRECTION_QUOTE_MAX - 1);
+});

@@ -2,6 +2,10 @@ import { env } from "./support/workers.ts";
 import { beforeAll, expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry, type ModelNote } from "../src/models/pool.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide which runners are live, or that none is: no default runner joins them.
+withoutDefaultRunner();
 
 // The owner keeps dated notes under a pool model (t406): the route stores
 // them, the pool read carries them oldest first, and the builder candidates a
