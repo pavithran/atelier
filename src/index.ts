@@ -23,6 +23,7 @@ import { PROSE_STANDARD_MAX, PROSE_TEXT_MAX } from "./prose-standard.ts";
 import { checkSilenceArg, limitArg, stoppedArg } from "./check-limit.ts";
 import { getLarge, largeKey, LARGE_SHA, putLarge } from "./large.ts";
 import { assertLength, CLAIM_MAX, DIFF_INLINE_MAX, FAILURE_LINES_CHARS, OUTPUT_MAX, OWNER_TEXT_MAX, REVIEW_BAR_MAX, TEXT_CONTROLS } from "./text.ts";
+import { ownerPageAct, pageActsFor } from "./page-actions.ts";
 import { cleanTitle, titleOf, renderNow, renderRevert, renderModels, renderFlow, renderInbox, renderItem, renderLogin, renderProject, renderProjectTasks, renderProjectFlow, renderProjectProcess, renderProjectPlans, renderProjectShip, renderProjectSettings, renderProjectShowcase, renderHome, renderHistory, renderError, renderAccessRefusal, renderSignInContinue, renderStudio, isStateWord, stateWords, fillShell, hasShell, projectPageAt, type Shell, type Detail, type ReviewContext, type ProjectView, type HomeView, type FormError, type Live, type Standing } from "./ui";
 import { firstTaskAt, IMPORTED_FORMAT, readImported, type ImportedHistory, type LogSource } from "./import/history";
 import { buildFloor, type FloorView } from "./floor";
@@ -4262,7 +4263,7 @@ async function assertPlanMergeable(env: Env, L: ReturnType<typeof ledger>, id: s
 }
 
 // The task page's forms whose refusal is drawn beside them (t457).
-const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "allow-override"] satisfies FormError["verb"][]);
+const TASK_FORMS = new Set<string>(["approve", "reject", "accept", "override", "allow-override", "land"] satisfies FormError["verb"][]);
 
 async function verifyRevision(env: Env, key: string, id: string, expected: string) {
   const item = await ledger(env,key).item(id);
@@ -4287,6 +4288,9 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
   if (req.method === "POST" && parts[0] === "ui") {
     const origin = req.headers.get("origin");
     if (origin !== c.url.origin) return html("Cross-origin form refused.", 403);
+    // A page action runs the owner's guard first (src/page-actions.ts): a
+    // session on a server with Access, never the developer token alone.
+    if (parts[3] === "land") ownerPageAct(c);
     const form = await req.formData();
     const [, named, id, verb] = parts; // /ui/<project>/<id>/<verb>
     // A form posted from a page opened before a rename still acts; its
@@ -4335,14 +4339,15 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     try {
       const before = await L.item(id);
       const expected = String(form.get("head") ?? "");
-      if (before.head) assertRevision(before, expected);
+      // Land checks the head and criteria it showed inside the Ledger call, after a used request id is looked up (a replay answers as the first press did).
+      if (before.head && verb !== "land") assertRevision(before, expected);
       if (["accept", "override", "allow-override", "approve", "reject"].includes(verb)) await verifyRevision(env, ref.key, id, expected);
       // Every form of the page carries the criteria it showed beside the
       // head: the decision forms must name them, and any form that does is
       // refused once they changed, so an override or a permission is never
       // made from a page showing other criteria than the task's (t457).
       const shownCriteria = form.get("criteria");
-      if ((TASK_FORMS.has(verb) || shownCriteria !== null) && shownCriteria !== criteriaOf(before)) {
+      if (verb !== "land" && (TASK_FORMS.has(verb) || shownCriteria !== null) && shownCriteria !== criteriaOf(before)) {
         throw new RuleError("stale_criteria", `${id}'s acceptance criteria changed since you opened this page; reload it and read them again`, 409, "reload the task page, read the criteria, then decide again");
       }
       // An override sent from a page drawn before the task was accepted (an
@@ -4384,6 +4389,8 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       else if (verb === "override") await L.accept(id, owner, expected, note, undefined, factor, await reviewerAvailability(env, L, id), String(shownCriteria));
       // The page's permission for an override from the command line (t371).
       else if (verb === "allow-override") await L.confirmOverride(id, owner, expected, factor!, String(shownCriteria));
+      // The page's Land: the head it showed and its one-use request id go to the Ledger, which checks the head and keeps the id in the call that queues the landing (t594).
+      else if (verb === "land") await L.requestLand(id, owner, undefined, { head: expected, criteria: String(shownCriteria ?? ""), requestId: String(form.get("request") ?? "") });
       else if (verb === "abandon") await L.abandon(id, owner, note, oldToken);
       else if (verb === "block") await L.block(id, owner, note);
       else if (verb === "unblock") await L.unblock(id, owner);
@@ -4393,13 +4400,15 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
       else if (verb === "approve" || verb === "reject") {
         await L.addReview({ itemId: id, by: owner, head: expected, criteria: String(form.get("criteria") ?? ""), approve: verb === "approve", note, at: new Date().toISOString() }, c.url.origin, false, "page");
       } else return html(renderError("Unknown action.", "/home", ownerName(env)), 400);
+      // Land pressed on Today returns to Today; every other form to the task's page.
+      if (verb === "land" && form.get("back") === "today") return Response.redirect(new URL("/", c.url).toString(), 303);
       return Response.redirect(new URL(`/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`, c.url).toString(), 303);
     } catch (err) {
       const rule = parseRuleError(err);
       if (!rule || !TASK_FORMS.has(verb)) throw err;
       const kept = verb === "override" || verb === "reject" ? note : "";
       const formError: FormError = { verb: verb as FormError["verb"], message: rule.detail, ...(kept ? { note: kept } : {}) };
-      return html(await taskPage(env, L, id, formError), rule.status);
+      return html(await taskPage(env, L, id, formError, undefined, pageActsFor(c) ? { nonce } : null), rule.status, nonce);
     }
   }
   if (req.method !== "GET") return html("Not found.", 404);
@@ -4417,7 +4426,7 @@ async function ui(c: Ctx, parts: string[]): Promise<Response> {
     const now = new Date();
     const projects = await index(env).projects();
     const inputs = await todayInputsOf({ projects: projects.map((p) => ({ name: p.name, title: titleOf(p), ledger: ledgerOf(env, p) as unknown as TodayLedger })), pool: await poolOf(env), offers: await offersOf(env), owner: ownerActor(env) }, now);
-    return html(renderToday(buildToday(inputs, now), ownerName(env), live), 200, live.nonce);
+    return html(renderToday(buildToday(inputs, now), ownerName(env), live, pageActsFor(c) ? { newId: () => crypto.randomUUID(), nonce: live.nonce } : undefined), 200, live.nonce);
   }
   if ((parts[0] === "home" || parts[0] === "now") && parts.length === 1) return sentTo("/");
   if (parts[0] === "history") return await historyPage(c);
@@ -4767,7 +4776,7 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
   }
   const res = await browse(env, c.url, ref, parts.slice(2));
   if (res) return res;
-  if (parts.length === 3) return html(await taskPage(env, L, parts[2], undefined, live), 200, nonce);
+  if (parts.length === 3) return html(await taskPage(env, L, parts[2], undefined, live, pageActsFor(c) ? { nonce } : null), 200, nonce);
   return html("Not found.", 404);
 }
 
@@ -4775,12 +4784,13 @@ async function projectArea(c: Ctx, parts: string[], live: { nonce: string; refre
 // (t457): `formError` draws the refusal beside the form it came from, on a
 // page read from the record after the refusal, so it claims nothing the
 // record does not hold. Not live: a refresh would drop the reason kept.
-async function taskPage(env: Env, L: ReturnType<typeof ledger>, id: string, formError?: FormError, live?: Live): Promise<string> {
+async function taskPage(env: Env, L: ReturnType<typeof ledger>, id: string, formError?: FormError, live?: Live, acts: { nonce: string } | null = null): Promise<string> {
   const p = await L.project();
   const item = await L.item(id);
   // The page's override forms ask for the factor this server takes (t371).
   const read: Detail = await L.detail(id);
-  const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env), ...(formError ? { formError } : {}) };
+  // Land is drawn only for a request the page-action guard would let act (pageActsFor), with a request id new to this drawing.
+  const detail: Detail = { ...read, ownerFactor: ownerFactorOf(env), ...(formError ? { formError } : {}), ...(acts ? { pageAct: { newId: () => crypto.randomUUID(), nonce: acts.nonce } } : {}) };
   detail.runs = await index(env).runsForItem(p.name, id);
   return renderItem(p, detail, ownerName(env), await diffFor(env, L, p.repo, item, definingOf(detail)), live);
 }
