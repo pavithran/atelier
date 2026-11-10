@@ -5,6 +5,10 @@ import worker from "../src/index.ts";
 import { RUN_REPORTS } from "../src/ledger.ts";
 import { RUNNER_IDLE_MS } from "../src/dispatch/rules.ts";
 import { parseRuleError } from "../src/rules.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide which runners are live, or that none is: no default runner joins them.
+withoutDefaultRunner();
 
 // t420: an idle runner hears why dispatches wait through its own poll, asked
 // with `why`, since a runner token may not GET the owner's listing; and a

@@ -4,6 +4,7 @@
 
 import type { Item } from "../rules.ts";
 import type { LedgerEvent } from "../ledger.ts";
+import { unfiled, unfiledLine, type DesignView } from "../designs.ts";
 
 export interface StuckLimits {
   noPushHours?: number;       // claimed without a push for longer than this
@@ -36,6 +37,14 @@ export function pushObservedAt(item: Item, events: LedgerEvent[]): string | null
   const pushes = events.filter((e) => e.itemId === item.id && e.kind === "push.observed");
   const latest = pushes.sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq).pop();
   return latest ? latest.at : item.lastPushAt;
+}
+
+// Kind unfiled-plan (t601): a design that fewer tasks name than its latest
+// design.planned plans, from the moment that record is made. It clears when the
+// count of tasks reaches the plan or the plan is lowered with the developer's words.
+export interface UnfiledPlan { name: string; reason: string; since: string; missing: number }
+export function unfiledPlans(designs: readonly DesignView[]): UnfiledPlan[] {
+  return unfiled(designs).map((d) => ({ name: d.name, reason: unfiledLine(d), since: d.at, missing: d.planned - d.filed }));
 }
 
 export function detectStuck(items: Item[], events: LedgerEvent[], now: Date, limits: StuckLimits = {}): StuckFinding[] {

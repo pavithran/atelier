@@ -51,6 +51,7 @@ import { LOG_PAGES, codeHref, renderBlob, renderCommit, renderHistory as renderB
 import { addTally, buildStory, emptyTally, VENDOR_NAMES, type ShowcaseCounts } from "./graph";
 import { projectShowcase, PULSE_DAYS } from "./pulse";
 import { parseMemory } from "./runners/memory";
+import { parseMachine } from "./runners/machine";
 import { parseReadiness } from "./runners/readiness";
 import { diskOf, lastRunOf, situationOf } from "./situation.ts";
 import { automaticNote, isFacts, isFactsOutcome } from "./run-facts.ts";
@@ -2561,6 +2562,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     });
     return json({ project: ref.name, source, ...(await L.importTasks(source, entries, actor, c.acting ?? null)) });
   }
+  // How many tasks each design plans (t601, src/designs.ts). GET lists the
+  // designs a record names, with the tasks filed under each; POST records a
+  // count, on the developer token alone with the developer's words.
+  if (parts[2] === "designs" && parts.length === 3) {
+    if (m === "GET") return json({ designs: await L.designs() });
+    if (m === "POST") {
+      // An agent token reaches no route agentRoute (src/tokens.ts) leaves out.
+      requireOwner(env, actor);
+      return json(await L.recordDesignPlanned(body, actor, c.acting ?? null), 201);
+    }
+    throw new RuleError("not_found", "no such route", 404);
+  }
   if (parts[2] === "decisions") {
     if (parts.length === 3 && m === "GET") return json({ decisions: await L.decisions() });
     requireOwner(env, actor);
@@ -3539,7 +3552,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     case "criteria-review-request": {
       requireOwner(env, actor);
       const reviewer = body.reviewer === undefined || body.reviewer === null || body.reviewer === "" ? null : String(body.reviewer);
-      return json(await L.requestCriteriaReview(id, actor, reviewer, await index(env).models(), !!c.token));
+      return json(await L.requestCriteriaReview(id, actor, reviewer, await index(env).models(), !!c.token, await index(env).runnerOffers()));
     }
     // The reviewer's runner claims the open criteria review and gets the
     // brief, the revision and binding its verdict must name, and the review's id.
@@ -4109,10 +4122,12 @@ function runnerOffer(body: Record<string, unknown>): RunnerOffer {
   const readiness = parseReadiness(body.readiness);
   // What the runner remembers of the tasks it passes by (G5).
   const memory = parseMemory(body.memory);
+  // The machine's load, kept with the offer; a bad reading is dropped whole (t607).
+  const machine = parseMachine(body.machine);
   // The commit the runner's checkout runs (G4), which situation compares with the server's.
   const commit = typeof body.commit === "string" && /^[0-9a-f]{40,64}$/.test(body.commit) ? body.commit : null;
   return {
-    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}), ...(commit ? { commit } : {}),
+    runner: r.runner, kind: r.kind, jobs, ...(started ? { started } : {}), ...(readiness ? { readiness } : {}), ...(memory ? { memory } : {}), ...(machine ? { machine } : {}), ...(commit ? { commit } : {}),
     ...(Array.isArray(body.projects) ? { projects: body.projects.filter((x): x is string => typeof x === "string") } : {}),
     ...(Array.isArray(body.checkouts) ? { checkouts: body.checkouts.filter((x): x is string => typeof x === "string") } : {}),
     agents: agents.flatMap((a) => {

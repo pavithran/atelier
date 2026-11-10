@@ -18,6 +18,8 @@ import { ACTION_KINDS, KIND, approvalStatus } from "../src/actions.ts";
 import { directionText, matchesAny } from "../src/rules.ts";
 import { runGroup } from "./group.mjs";
 import { pushCheckoutRemote } from "./checkout-push.mjs";
+import { failedStepReport } from "./ship-log.mjs";
+import { liveRedactor } from "./ship-live.mjs";
 
 export const SHIP_FILE = "docs/atelier/ship.json";
 
@@ -372,11 +374,16 @@ export function stepEnv(env, head, internal = false) {
 // (runGroup in cli/group.mjs), which is SIGKILLed whole when it exits and
 // when `timeoutMs` passes, so a smoke check's server or test process does
 // not outlive it (t419).
-export async function runCommand(argv, { cwd, env, timeoutMs, out = process.stdout, err = process.stderr }) {
+export async function runCommand(argv, { cwd, env, timeoutMs, out = process.stdout, err = process.stderr, secrets = [] }) {
   const started = Date.now();
   let output = "";
-  const onData = (key, s) => { (key === "stdout" ? out : err).write(s); output = (output + s).slice(-KEEP); };
-  const r = await runGroup(argv, { cwd, env, timeoutMs, onData });
+  // The live copy is cut of `secrets` (t620); the kept output is not, ship
+  // redacts it where it is recorded or saved.
+  const live = { stdout: liveRedactor((s) => out.write(s), secrets), stderr: liveRedactor((s) => err.write(s), secrets) };
+  const onData = (key, s) => { live[key].write(s); output = (output + s).slice(-KEEP); };
+  let r;
+  try { r = await runGroup(argv, { cwd, env, timeoutMs, onData }); }
+  finally { live.stdout.end(); live.stderr.end(); }
   const durationMs = Date.now() - started;
   const why = r.timedOut ? `ended by SIGKILL with its process group after its ${Math.round(timeoutMs / 1000)}s timeout`
     : r.signal ? `ended by ${r.signal}`
@@ -694,7 +701,7 @@ export async function ship(ctx) {
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
           await starting(s.step, command, run.terminal && run.argv ? run : null, attempt, runIndex);
-          const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs }) : await runRequest(run, head);
+          const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs, secrets: ctx.secrets }) : await runRequest(run, head);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });
           if (!run.argv) print(`${s.step}: ${r.output}`);
@@ -702,6 +709,13 @@ export async function ship(ctx) {
         }
         if (!results.at(-1).passed) break;
       }
+    }
+    // A failed step's log is saved and named before the fallible record calls,
+    // so a server failure does not lose it.
+    const lost = results.at(-1)?.passed === false ? results.at(-1) : null;
+    if (lost) {
+      const ended = lost.signal ? `ended by ${lost.signal}` : lost.status !== null && lost.status !== undefined ? `exited ${lost.status}` : "failed";
+      print(failedStepReport({ dir: ctx.logDir, ship: id, step: s.step, output: lost.output, ended, secrets: ctx.secrets, redact: ctx.redact, io: ctx.logIo }));
     }
     for (const r of results) {
       await record(s.step, r, r.note);

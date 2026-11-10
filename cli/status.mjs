@@ -33,6 +33,11 @@ import { jobsLine } from "./runner.mjs";
 import { readinessLines } from "../src/runners/readiness.ts";
 import { deployGateLines } from "./deploy-gate.mjs";
 import { shipWaitOf, shipWaitLines } from "../src/ship-wait.ts";
+import { unfiled, unfiledLine } from "../src/designs.ts";
+
+// The designs that fewer tasks name than they plan (t601), one line each, from
+// the project's designs route; a server without the route says nothing.
+export const designLines = (designs) => unfiled(Array.isArray(designs) ? designs : []).map(unfiledLine);
 
 // A task's stage is stageOf's (src/rules.ts) and nothing here decides one.
 // `ready` is the fast-build reports the project's mode route lists

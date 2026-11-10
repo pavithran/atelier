@@ -14,6 +14,7 @@ import { after } from "node:test";
 import { startServer } from "../../src/runtime/server.mjs";
 import worker from "../../src/index.ts";
 import { installDefaultProof } from "./proof.ts";
+import "./default-runner.ts";
 
 installDefaultProof();
 
