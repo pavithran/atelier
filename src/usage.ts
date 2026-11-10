@@ -369,6 +369,9 @@ The flow
    Criteria and briefs never ask for load on the machine (busy loops, stress
    tools). A load-sensitive test is reproduced with concurrent copies of the
    test under a timeout; nothing may outlive the command.
+   A task that needs a theme sync has the synced src/theme.css committed into
+   its branch before dispatch, made on a machine with the ai-projects-design
+   checkout. No builder is told to run bin/sync-theme.
 2. Criteria review only for large or risky tasks:
    \`atelier criteria-review ID --reviewer H/M\`. Choose an independent model.
    Respect any stricter policy the project already enforces.
