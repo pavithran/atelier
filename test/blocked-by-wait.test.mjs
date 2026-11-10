@@ -13,6 +13,7 @@ import { after, before, test } from "node:test";
 import { promisify } from "node:util";
 import { execFileSync } from "node:child_process";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-runner.ts";
 import "./support/default-proof.ts";
 import { claimRefusedLine, lostToHold } from "../cli/runner.mjs";
 import { ROLE_PROMPTS } from "../src/usage.ts";

@@ -7,6 +7,10 @@ import type { RunReport } from "../src/models/reliability.ts";
 import { suggestionRecords } from "../src/models/suggestion-records.ts";
 import { liveOffersFor } from "./helpers/live-offers.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide which runners are live, or that none is: no default runner joins them.
+withoutDefaultRunner();
 
 // Atelier lists the builder and reviewer candidates (t370, G17): atelier
 // dispatch with no --agent, and the review request of a landing that names no
