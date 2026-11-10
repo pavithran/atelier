@@ -1,5 +1,6 @@
 import { env } from "./support/workers.ts";
 import { runInDurableObject } from "./support/workers.ts";
+import { withoutDefaultRunnerDuring } from "./support/default-runner.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -461,15 +462,18 @@ it("asking again for a review every runner that offers the reviewer has skipped 
   const ask = async () => (await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${b}/review-request`, {
     method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
   }), token)).json() as Promise<{ requested: boolean; request: number; reason: string }>;
-  const asked = await ask();
-  expect(asked).toMatchObject({ requested: true });
-  expect(await ask()).toMatchObject({ requested: false, request: asked.request });
-  await L.recordReviewSkip(b, asked.request, headB, "home:studio", "owner", "no agent token");
-  const renewed = await ask();
-  expect(renewed).toMatchObject({ requested: true });
-  expect(renewed.request).toBeGreaterThan(asked.request);
-  expect(renewed.reason).toMatch(/every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
-  expect((await L.reviewWaiting()).map((w) => [w.id, w.request])).toEqual([[b, renewed.request]]);
+  // The default review runner also offers the reviewer and has skipped nothing, so this step runs without it.
+  await withoutDefaultRunnerDuring(async () => {
+    const asked = await ask();
+    expect(asked).toMatchObject({ requested: true });
+    expect(await ask()).toMatchObject({ requested: false, request: asked.request });
+    await L.recordReviewSkip(b, asked.request, headB, "home:studio", "owner", "no agent token");
+    const renewed = await ask();
+    expect(renewed).toMatchObject({ requested: true });
+    expect(renewed.request).toBeGreaterThan(asked.request);
+    expect(renewed.reason).toMatch(/every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
+    expect((await L.reviewWaiting()).map((w) => [w.id, w.request])).toEqual([[b, renewed.request]]);
+  });
 });
 
 it("a wanted review is requested for the named reviewer though the gate needs none, and the gate's own refusals stand", async () => {

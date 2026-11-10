@@ -3,6 +3,10 @@ import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { ProjectPolicy } from "../src/rules.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide what each runner offers: no default runner joins them.
+withoutDefaultRunner();
 
 // t225: the reviewer chosen with no --reviewer (atelier land, the gate's
 // suggestion) is one a live runner offers for the review job, by the family

@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-runner.ts";
 import { failingTestOf, revertBrief } from "../src/post-merge.ts";
 import { world } from "./helpers/auto-revert-world.mjs";
 // No test reads this Mac's own iCloud folder (t645).

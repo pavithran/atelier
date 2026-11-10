@@ -4,6 +4,10 @@ import worker from "../src/index.ts";
 import type { Ledger, ReviewClaim } from "../src/ledger.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide what each runner offers: no default runner joins them.
+withoutDefaultRunner();
 
 // t591: a review is requested only of a reviewer a live runner offers for the
 // job. On 2026-11-09 tapestries t182 and t183 were requested of a model no
@@ -205,7 +209,8 @@ async function released(name: string) {
   const both = [seen(name, ["sonnet-5.5", "fable-5.1"])];
   await asIndex(both);
   const id = await built(L, { reviewer: OPUS, land: true });
-  // The dispatch's reviewer is asked at submit, before any offer is on record.
+  // The dispatch's reviewer is asked at submit, while a runner offers it.
+  await keep(L, [seen(name, ["opus-5.5", "sonnet-5.5", "fable-5.1"])]);
   await runInDurableObject(L, (instance: Ledger) => instance.submit(id, BUILDER));
   await L.withdrawReviewRequest(id, "owner", "asked fable by hand instead");
   await keep(L, both);

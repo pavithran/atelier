@@ -4,6 +4,10 @@ import worker from "../src/index.ts";
 import type { Ledger } from "../src/ledger.ts";
 import type { SeenOffer } from "../src/dispatch/rules.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
+import { withoutDefaultRunner } from "./support/default-runner.ts";
+
+// These tests decide what each runner offers: no default runner joins them.
+withoutDefaultRunner();
 
 // t591, fix round 1. An empty offer list is not "no enforcement": with no
 // live runner on record no reviewer is offered, so an explicit request is
