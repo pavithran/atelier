@@ -167,10 +167,10 @@ test("the core files hold a building dispatch whose scope overlaps a live item's
   assert.equal(coreHold(waiting({ scope: [] }), [live], core)?.core, "src/ledger.ts");
   // Without a live landing lease, only claimed items hold core files.
   for (const state of ["submitted", "accepted", "merged", "abandoned", "open", "integrated"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"] }), [{ ...live, state }], core), null, state);
-  // The owner's override, and the jobs that build nothing, are never held; merge-main is.
+  // The owner's override, and the jobs that build nothing, are never held, merge-main included (t634).
   assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: makeDispatch({ overlapOk: true }, "pavi", T) }), [live], core), null);
   for (const job of ["plan", "integrate", "refresh", "review"]) assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job } }), [live], core), null, job);
-  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job: "merge-main", head: "a".repeat(40), task: true } }), [live], core)?.id, "t1");
+  assert.equal(coreHold(waiting({ scope: ["src/ledger.ts"], dispatch: { ...d, job: "merge-main", head: "a".repeat(40), task: true } }), [live], core), null);
   // Items of one plan never hold each other; a part is held by work outside its plan.
   const sibling = item({ id: "t5", scope: ["src/**"], state: "claimed", owner: "x/y", kind: "part", plan: "t4" });
   const queuedPart = waiting({ scope: ["src/ledger.ts"], kind: "part", plan: "t4" });

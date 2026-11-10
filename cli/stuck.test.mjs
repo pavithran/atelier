@@ -212,8 +212,11 @@ test('each task rule preserves its suggestion without dispatching or releasing t
   assert.match(report(s).entries[0].recovery, /hand off:.*handoff t1 --to H\/M/);
   assert.doesNotMatch(report(s).entries[0].recovery, /dispatch|release/);
 });
-test('core-hold override preserves routing, literal notes and merge-main context', () => {
-  for (const job of [undefined, 'merge-main']) {
+test('core-hold override preserves routing and literal notes; a merge-main dispatch is never held', () => {
+  const mm = { to: 'cloud', agent: 'codex', model: 'gpt-6-astra', note: '', by: 'owner', at: at(99999999), job: 'merge-main', head: 'b'.repeat(40) };
+  const held = snapshot({ items: [item({ state: 'submitted' }), item({ id: 't2', state: 'open', owner: null, dispatch: mm })], events: [event(1, 'item.claimed', 1800001)], lease: { item: 't1', holder: 'owner', at: at(1000) } });
+  assert.deepEqual(report(held).entries.filter((e) => e.kind === 'core-hold'), []);
+  for (const job of [undefined]) {
     const dispatch = { to: 'cloud', agent: 'codex', model: 'gpt-6-astra', note: 'Owner\'s "note": $HOME `literal`\nnext line', by: 'owner', at: at(99999999), ...(job ? { job, head: 'b'.repeat(40) } : {}) };
     const waiting = item({ id: 't2', state: 'open', owner: null, dispatch });
     const s = snapshot({ items: [item({ state: 'submitted' }), waiting], events: [event(1, 'item.claimed', 1800001)], lease: { item: 't1', holder: 'owner', at: at(1000) } });
