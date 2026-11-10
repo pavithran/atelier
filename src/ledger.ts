@@ -6835,6 +6835,11 @@ export class Ledger extends DurableObject<Env> {
     return { builder, ownerAction: null };
   }
 
+  // Whether a blocking pre-review fences the task's landing (t623).
+  hasPrereviewFence(id: string): boolean {
+    return this.prereviewFence(id) !== null;
+  }
+
   private prereviewFence(id: string): PrereviewFence | null {
     return this.runnerMeta<PrereviewFence>(`prereview-fence:${id}`);
   }

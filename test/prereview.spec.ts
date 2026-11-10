@@ -240,6 +240,30 @@ it("a fresh blocking verdict takes the waiter out at once, fences CLI and Workfl
   expect(await queueIds(L)).toEqual([t3, t4, t2]);
 });
 
+// The command line's unblock goes through the route, and a fenced task has no
+// block record: with the developer's words, and with none from the builder
+// holding it on its own token (the developer's token without words is stopped
+// while a model acts, as on main), the fence clears.
+for (const label of ["with a quote", "with no quote"]) {
+  it(`a fenced task is unblocked through the route ${label}, and the fence clears`, async () => {
+    const project = `pre-route-${label.replace(/\W/g, "")}`;
+    const { L, t2 } = await landing(project);
+    await verdict(L, t2, await claim(L, t2), false, [BLOCKING]);
+    expect(((await L.detail(t2)) as unknown as { prereviewFence: unknown }).prereviewFence).not.toBeNull();
+    expect((await L.item(t2)).blocked ?? null).toBeNull();
+    const quoted = label === "with a quote";
+    const bearer = quoted ? TOKEN : ((await (await worker.fetch(new Request("https://atelier.test/api/tokens", {
+      method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "x-atelier-acting": ACTING, "content-type": "application/json" }, body: JSON.stringify({ actor: OPUS, projects: [project] }),
+    }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env)).json()) as { token: string }).token;
+    const res = await worker.fetch(new Request(`https://atelier.test/api/projects/${project}/items/${t2}/unblock`, {
+      method: "POST", headers: { authorization: `Bearer ${bearer}`, "x-atelier-actor": quoted ? "owner" : OPUS, ...(quoted ? { "x-atelier-acting": ACTING } : {}), "content-type": "application/json" }, body: JSON.stringify(quoted ? { quote: "yes, retry it" } : {}),
+    }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+    expect(res.status).toBe(200);
+    expect(((await L.detail(t2)) as unknown as { prereviewFence: unknown }).prereviewFence).toBeNull();
+    expect((await events(L, t2)).some((e) => e.kind === "prereview.retried")).toBe(true);
+  });
+}
+
 // Gate review of t524 at 247d6987: a gate rejection at the same head took
 // the rework brief, and the pre-review findings that fenced the task were
 // read only when there was none.

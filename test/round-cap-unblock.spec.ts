@@ -179,3 +179,35 @@ it("the command line's call, which names the model as the actor on the developer
   expect((await unblock("rc-cli", id, {}, OPUS)).status).toBe(200);
   expect((await events(L, id)).find((e) => e.kind === "item.unblocked")).toMatchObject({ actor: "owner", data: { via: "criteria-review", acting: OPUS } });
 });
+
+// A fact block (a run stopped at its check limit) keeps the route as it was
+// when words are given: they are checked and recorded, and an agent's own
+// token cannot carry them.
+async function factBlocked(name: string) {
+  const L = await setup(name);
+  const id = (await L.newItem("Fact", [], "owner", { accept: ["Works"] })).id;
+  await L.claim(id, OPUS, RUNNER);
+  await L.release(id, OPUS, "validation_blocked: timed out after 45 minutes, counted from its held test slot");
+  expect((await L.item(id)).blocked).toMatchObject({ fact: expect.anything() });
+  return { L, id };
+}
+
+it("a fact block unblocked with a quote records the quote and the confirmation", async () => {
+  const { L, id } = await factBlocked("rc-fact-quote");
+  expect((await unblock("rc-fact-quote", id, { quote: QUOTE })).status).toBe(200);
+  const e = (await events(L, id)).filter((x) => x.kind === "item.unblocked")[0];
+  expect(e).toMatchObject({ data: { confirmed: "direction", quote: QUOTE, acting: OPUS } });
+});
+
+it("an agent's token sending a quote on a fact block is refused owner_token_required", async () => {
+  const { L, id } = await factBlocked("rc-fact-agent");
+  const made = await worker.fetch(new Request("https://atelier.test/api/tokens", {
+    method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", ...acting, "content-type": "application/json" }, body: JSON.stringify({ actor: GPT, projects: ["rc-fact-agent"] }),
+  }), testEnv);
+  const agent = (await made.json() as { token: string }).token;
+  const res = await worker.fetch(new Request(`https://atelier.test/api/projects/rc-fact-agent/items/${id}/unblock`, {
+    method: "POST", headers: { authorization: `Bearer ${agent}`, "x-atelier-actor": GPT, "content-type": "application/json" }, body: JSON.stringify({ quote: QUOTE }),
+  }), testEnv);
+  expect([res.status, ((await res.json()) as { error: string }).error]).toEqual([403, "owner_token_required"]);
+  expect((await L.item(id)).state).toBe("blocked");
+});
