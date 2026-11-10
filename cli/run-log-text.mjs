@@ -5,38 +5,52 @@
 
 export const HARNESS_LOG_LINES = 200;
 
+export const LINE_MAX = 64 * 1024;
+const HALF = LINE_MAX / 2;
+
+// A line of at most LINE_MAX characters is kept whole. A longer one keeps its
+// first HALF and last HALF characters around a marker giving the count left out,
+// so an error at its start and the text at its end both survive.
 const lastLines = (text, count) =>
-  String(text ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-count);
+  String(text ?? "").replace(/\r/g, "").split("\n").filter((l) => l.trim()).slice(-count).map(kept);
 
-const LINE_MAX = 64 * 1024;
-
-// A line longer than LINE_MAX keeps its last LINE_MAX characters, after a
-// marker that says how many were dropped: the end of a line is where an error is.
-const kept = (text, cut) => {
-  const over = Math.max(0, text.length - LINE_MAX);
-  const dropped = cut + over;
-  return dropped ? `[cut ${dropped} characters] ${over ? text.slice(-LINE_MAX) : text}` : text;
-};
+const joined = (head, tail, cut) => (cut ? `${head} [cut ${cut} characters] ${tail}` : head + tail);
+const kept = (text) =>
+  text.length <= LINE_MAX ? text : joined(text.slice(0, HALF), text.slice(-HALF), text.length - LINE_MAX);
 
 // A ring of the last 200 non-empty lines of one stream, fed chunks as they
-// arrive, apart from the byte buffer the executor keeps. A line is whole when
-// its newline arrives, or at `lines()` for the one the stream ended on.
+// arrive, apart from the byte buffer the executor keeps. The unfinished line
+// is held as its first HALF characters (`head`), the last HALF seen after
+// them (`tail`) and the count dropped between (`cut`), never whole.
 export function lineRing(count = HARNESS_LOG_LINES) {
   const ring = [];
-  let open = "";
-  let openCut = 0;
-  const push = (line, cut) => { const text = line.replace(/\r/g, ""); if (text.trim()) { ring.push(kept(text, cut)); if (ring.length > count) ring.shift(); } };
+  let head = "";
+  let tail = "";
+  let cut = 0;
+  const add = (text) => {
+    const room = HALF - head.length;
+    if (room > 0) { head += text.slice(0, room); text = text.slice(room); }
+    tail += text;
+    if (tail.length > HALF) { cut += tail.length - HALF; tail = tail.slice(-HALF); }
+  };
+  const finish = () => {
+    const text = joined(head, tail, cut);
+    head = ""; tail = ""; cut = 0;
+    return text;
+  };
+  const push = (line) => { if (line.trim()) { ring.push(line); if (ring.length > count) ring.shift(); } };
   return {
     write(chunk) {
-      const parts = (open + chunk).split("\n");
+      const parts = String(chunk).replace(/\r/g, "").split("\n");
       const last = parts.pop();
-      let cut = openCut;
-      for (const part of parts) { push(part, cut); cut = 0; }
-      // Only the last LINE_MAX characters of the unfinished line are held.
-      openCut = cut + Math.max(0, last.length - LINE_MAX);
-      open = last.slice(-LINE_MAX);
+      for (const part of parts) { add(part); push(finish()); }
+      add(last);
     },
-    lines() { const out = [...ring]; const text = open.replace(/\r/g, ""); if (text.trim()) out.push(kept(text, openCut)); return out.slice(-count); },
+    lines() {
+      const out = [...ring];
+      if ((head + tail).trim()) out.push(joined(head, tail, cut));
+      return out.slice(-count);
+    },
   };
 }
 

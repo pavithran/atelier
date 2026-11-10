@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTask, runFacts, startHarness } from "../cli/runner.mjs";
 import { progressTracker, newStream, foldStream } from "../cli/progress.mjs";
-import { logTextOf } from "../cli/run-log-text.mjs";
+import { logTextOf, lineRing, LINE_MAX } from "../cli/run-log-text.mjs";
 import { fixture } from "./runner-shared.mjs";
 
 const entry = { agent: "claude-code", models: ["sonnet-5.5"], command: ["claude", "{model}", "{brief_file}", "{workspace}"] };
@@ -93,32 +93,59 @@ test("200 stderr lines of 2 KiB each are intact in the log after exit 1", async 
   intact(logOf(facts));
 });
 
-const longEnd = `process.stdout.write("x".repeat(70000) + "ERROR: the real cause`;
+const longLine = `process.stdout.write("ERROR first" + "x".repeat(70000 - 19) + "last END`;
 const longChecked = (text) => {
-  const line = text.split("\n").find((l) => l.endsWith("ERROR: the real cause"));
+  const line = text.split("\n").find((l) => l.endsWith("last END"));
   assert.ok(line, "the end of the long line is in the log");
-  assert.match(line, /^\[cut \d+ characters\] x+ERROR: the real cause$/);
-  assert.equal(Number(/^\[cut (\d+) /.exec(line)[1]), 70021 - 65536);
+  assert.ok(line.startsWith("ERROR first"), "the start of the long line is in the log");
+  assert.match(line, /^ERROR first.* \[cut 4464 characters\] .*last END$/);
+  assert.equal(line.length, 65536 + " [cut 4464 characters] ".length);
 };
 
-test("a 70,000-character stdout line keeps its ending and a cut marker after a timeout", async () => {
-  const { facts } = await runWith(stub("long-hang", `${longEnd}\\n"); setInterval(() => {}, 1000);`));
+test("a 70,000-character stdout line keeps its start, end and a cut marker after a timeout", async () => {
+  const { facts } = await runWith(stub("long-hang", `${longLine}\\n"); setInterval(() => {}, 1000);`));
   longChecked(logOf(facts));
 });
 
-test("a 70,000-character stdout line keeps its ending and a cut marker after exit 1", async () => {
-  const { facts } = await runWith(stub("long-fail", `${longEnd}\\n"); process.exitCode = 1;`));
+test("a 70,000-character stdout line keeps its start, end and a cut marker after exit 1", async () => {
+  const { facts } = await runWith(stub("long-fail", `${longLine}\\n"); process.exitCode = 1;`));
   longChecked(logOf(facts));
 });
 
-test("a pending 70,000-character stdout line with no newline keeps its ending and a cut marker after a timeout", async () => {
-  const { facts } = await runWith(stub("pending-hang", `${longEnd}"); setInterval(() => {}, 1000);`));
+test("a pending 70,000-character stdout line with no newline keeps its start and end after a timeout", async () => {
+  const { facts } = await runWith(stub("pending-hang", `${longLine}"); setInterval(() => {}, 1000);`));
   longChecked(logOf(facts));
 });
 
-test("a pending 70,000-character stdout line with no newline keeps its ending and a cut marker after exit 1", async () => {
-  const { facts } = await runWith(stub("pending-fail", `${longEnd}"); process.exitCode = 1;`));
+test("a pending 70,000-character stdout line with no newline keeps its start and end after exit 1", async () => {
+  const { facts } = await runWith(stub("pending-fail", `${longLine}"); process.exitCode = 1;`));
   longChecked(logOf(facts));
+});
+
+const longText = "ERROR first" + "x".repeat(70000 - 19) + "last END";
+test("lineRing gives the same lines for one write and for 1,000-character chunks", () => {
+  const whole = lineRing();
+  whole.write(longText);
+  const chunked = lineRing();
+  for (let i = 0; i < longText.length; i += 1000) chunked.write(longText.slice(i, i + 1000));
+  assert.deepEqual(chunked.lines(), whole.lines());
+  assert.equal(whole.lines().length, 1);
+  assert.match(whole.lines()[0], / \[cut 4464 characters\] /);
+  const done = lineRing();
+  done.write(longText + "\n");
+  assert.deepEqual(done.lines(), whole.lines());
+});
+
+test("a line of LINE_MAX characters is whole and one more is cut by exactly 1", () => {
+  for (const tail of ["", "\n"]) {
+    const exact = lineRing();
+    exact.write("a" + "b".repeat(LINE_MAX - 2) + "z" + tail);
+    assert.equal(exact.lines()[0], "a" + "b".repeat(LINE_MAX - 2) + "z");
+    const over = lineRing();
+    over.write("a" + "b".repeat(LINE_MAX - 1) + "z" + tail);
+    const [line] = over.lines();
+    assert.equal(line, "a" + "b".repeat(LINE_MAX / 2 - 1) + " [cut 1 characters] " + "b".repeat(LINE_MAX / 2 - 1) + "z");
+  }
 });
 
 test("a harness that ends normally keeps the log content it had", () => {
