@@ -54,9 +54,13 @@ export function summaryOf(name, input = {}) {
   return null;
 }
 
+// The trail the run log lists keeps every command that started, none dropped;
+// each is cut to this many characters.
+const TRAIL_COMMAND_MAX = 200;
+
 // A fresh reading of one run's log.
 export function newStream() {
-  return { offset: 0, partial: "", started: 0, completed: 0, pending: new Map(), last: null, tokens: 0, parts: null, costUsd: null, result: null };
+  return { offset: 0, partial: "", started: 0, completed: 0, pending: new Map(), last: null, trail: [], tokens: 0, parts: null, costUsd: null, result: null };
 }
 
 // Folds the text of stream-json lines into the reading; a line cut at the
@@ -81,6 +85,7 @@ export function foldStream(state, text, at) {
       for (const c of content) {
         if (c?.type !== "tool_use" || typeof c.id !== "string") continue;
         state.started++;
+        state.trail.push({ at, name: toolName(c.name), summary: summaryOf(c.name, c.input)?.slice(0, TRAIL_COMMAND_MAX) ?? null });
         state.pending.set(c.id, { name: toolName(c.name), summary: summaryOf(c.name, c.input), since: at });
       }
     } else if (event.type === "user") {
@@ -158,7 +163,14 @@ export function progressTracker({ now = Date.now, ps, git } = {}) {
       run = { project, task, actor, base, workspace, log, harness, telemetry: harness === "claude-code", startedAt: new Date(now()).toISOString(), endedAt: null, pid: null, stream: newStream(), sent: false };
     },
     spawned(pid) { if (run) run.pid = pid; },
-    end() { if (run && !run.endedAt) run.endedAt = new Date(now()).toISOString(); },
+    end() {
+      if (!run || run.endedAt) return;
+      // What the harness wrote since the last report is read once more, so a command it started just before it ended is seen.
+      if (run.telemetry) readStream(run.stream, run.log, new Date(now()).toISOString());
+      run.endedAt = new Date(now()).toISOString();
+    },
+    // Each command the stream showed start, with when this runner saw it.
+    trail() { return run ? run.stream.trail.map((c) => ({ ...c })) : []; },
     active() { return !!run; },
     sent() { if (run?.endedAt) run = null; },
     report() {
