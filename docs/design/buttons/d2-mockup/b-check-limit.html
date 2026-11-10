@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Check-limit block</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<main>
+<p class="mockbar"><strong>Mockup, invented data.</strong> State B: a task blocked at the check limit, a fact, which keeps Unblock (task d2).</p>
+<section class="state">
+  <article class="card hero is-fact">
+    <header class="hero-top">
+      <div class="crumbs mono">atelier<span>/</span>t607</div>
+      <span class="pill pill-fact"><span class="pill-dot"></span>Blocked at the check limit</span>
+    </header>
+    <h1>The nightly backup check reads the newest snapshot first</h1>
+    <div class="verdict has-form">
+      <p><span class="mono">npm test</span> stopped at its 45-minute limit on the Studio runner. A fact about the run, not a decision: the model lifts it once the cause is seen.</p>
+    </div>
+
+    <form class="decide" method="post" action="/ui/atelier/t607/unblock" aria-labelledby="unblock-h">
+      <div class="decide-h"><h2 id="unblock-h">Blocked by codex/gpt-6-astra 3:02 pm</h2><span class="meta">as a fact · timeout</span></div>
+      <p class="fact-reason">validation_blocked: npm test timed out after 45 minutes, counted from its held test slot</p>
+      <p class="fact-note">It keeps its holder and workspace, is skipped by runners and stuck detection, and cannot be pushed or submitted. Unblocking returns it to working.</p>
+      <div class="form-actions">
+        <button class="btn" type="submit"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 9.5a5.5 5.5 0 1 1-1.8-4.1M15.5 3.8v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Unblock</span></button>
+      </div>
+      <p class="no-answer"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 7.2v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="4.9" r=".9" fill="currentColor"/></svg><span>No answer is asked here. A stopped run needs a rerun, not your words, so this block keeps Unblock and the builder's brief gets nothing new.</span></p>
+    </form>
+
+    <ol class="track" aria-label="Stages" style="--done:2"><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Claim</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Branch</span></li><li class="st st-now"><span class="node"></span><span class="st-name">Prove</span><span class="st-note">stopped at limit</span></li><li class="st st-next"><span class="node"></span><span class="st-name">Review</span></li><li class="st st-next"><span class="node"></span><span class="st-name">Land</span></li></ol>
+  </article>
+
+  <div class="block">
+    <h3>Evidence</h3>
+    <div class="card list">
+      <div class="group-h"><span>Required checks</span><span class="count">2 of 3 passed</span></div>
+      <ul class="rows">
+        <li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run typecheck</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>2:12 pm</div></li>
+        <li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run test:static</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>2:13 pm</div></li>
+        <li class="row"><span class="mark mark-warn"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 4.2v4.6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="8" cy="11.4" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span class="mono">npm test</span><span class="row-sub">Stopped: timed out after 45 minutes</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>3:01 pm</div></li>
+      </ul>
+      <div class="group-h"><span>Review</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-wait"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="11" cy="8" r="1.1" fill="currentColor"/></svg></span><div class="row-main"><span>Not reviewed yet</span><span class="row-sub">Waits for every required check to pass</span></div></li></ul>
+      <div class="group-h"><span>Scope</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span>All files inside the declared scope</span></div><div class="row-meta">4 of 4 inside</div></li></ul>
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>What the builder says <span class="tag tag-unv">Not verified</span></h3>
+    <blockquote class="said"><p>Reads the snapshot list newest first and stops at the first one whose checksum matches, so the check no longer walks every snapshot. The long test now builds 400 snapshots, which may be what ran out the clock.</p><footer>codex/gpt-6-astra (OpenAI), in its own words</footer></blockquote>
+  </div>
+
+  <div class="folds">
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Brief and criteria</span></summary><p class="row-sub">Folded, as task c decides.</p></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Thread of events</span><span class="n">5</span></summary><ol class="thread"><li><span class="t-at">1:40 pm</span><span class="t-dot"></span><span>Dispatched to codex/gpt-6-astra</span></li><li><span class="t-at">1:41 pm</span><span class="t-dot"></span><span>Claimed</span></li><li><span class="t-at">2:11 pm</span><span class="t-dot"></span><span>Pushed 9b02d7e1</span></li><li><span class="t-at">3:01 pm</span><span class="t-dot"></span><span>npm test stopped at its limit</span></li><li><span class="t-at">3:02 pm</span><span class="t-dot"></span><span>Blocked as a fact by codex/gpt-6-astra</span></li></ol></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Technical details</span></summary><dl class="tech"><dt>Task</dt><dd><span class="mono">atelier / t607</span></dd><dt>Head commit</dt><dd><span class="mono">9b02d7e1</span></dd><dt>Builder</dt><dd>codex/gpt-6-astra (OpenAI)</dd><dt>Check limit</dt><dd>45 minutes, from the project's policy</dd></dl></details>
+  </div>
+</section>
+</main>
+</body>
+</html>

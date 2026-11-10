@@ -24,6 +24,7 @@ import command_criteria_verdict from "./criteria-verdict.ts";
 import command_decide from "./decide.ts";
 import command_decisions from "./decisions.ts";
 import command_defect from "./defect.ts";
+import command_design from "./design.ts";
 import command_diff from "./diff.ts";
 import command_dispatch from "./dispatch.ts";
 import command_done from "./done.ts";
@@ -130,6 +131,7 @@ export const COMMAND_MODULES: CommandModule[] = [
   { path: "src/usage/commands/decide.ts", spec: command_decide },
   { path: "src/usage/commands/decisions.ts", spec: command_decisions },
   { path: "src/usage/commands/defect.ts", spec: command_defect },
+  { path: "src/usage/commands/design.ts", spec: command_design },
   { path: "src/usage/commands/diff.ts", spec: command_diff },
   { path: "src/usage/commands/dispatch.ts", spec: command_dispatch },
   { path: "src/usage/commands/done.ts", spec: command_done },

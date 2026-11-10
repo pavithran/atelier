@@ -4,6 +4,7 @@ import type { LedgerEvent, ReviewClaim } from "../src/ledger.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import type { PlanPart } from "../src/plans/schema.ts";
 import { parseRuleError, type Evidence, type ProjectPolicy } from "../src/rules.ts";
+import { withoutDefaultRunnerDuring } from "./support/default-runner.ts";
 
 // t394 on the Ledger: under single-family mode no other company's model
 // reviews by any path. A switch to the mode withdraws the review requests
@@ -141,7 +142,8 @@ it("a plan's planner and a part's builder are never rerouted to another company'
   await refusal(L.newPlan("Ship it", ["src/**"], "owner", GPT, []), "single_family", /not one of anthropic's models/);
   // G17: no planner is picked. The refusal lists only the company's models as eligible, whatever the others' rank.
   const pool = [entry("gpt-6-astra", "codex"), entry("glm-5.3", "zcode"), entry("opus-5.5", "claude-code")];
-  await refusal(L.newPlan("Ship the feature", ["src/**"], "owner", null, pool), "planner_needed", /Eligible \(1\):\n {2}claude-code\/opus-5\.5/);
+  // The default review runner would count among the runners planner candidates are read from.
+  await withoutDefaultRunnerDuring(() => refusal(L.newPlan("Ship the feature", ["src/**"], "owner", null, pool), "planner_needed", /Eligible \(1\):\n {2}claude-code\/opus-5\.5/));
   const picked = await L.newPlan("Ship the feature", ["src/**"], "owner", OPUS, pool);
   expect(picked.planner).toBe(OPUS);
   const { item } = picked;

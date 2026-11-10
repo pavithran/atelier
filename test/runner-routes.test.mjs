@@ -925,11 +925,12 @@ test("the criteria review job's calls are the reviewer's agent token's: the clai
   const builder = await expect(call("POST", "/tokens", { body: { actor: ACTOR, projects: [p.name] } }), 201, "builder's agent token");
   const as = (who, id, verb, body, actor = REVIEWER) => call("POST", `${p.base(id)}/${verb}`, { token: who.token, actor, runner: RUNNER, body });
   const parts = (id, verb) => ["projects", p.name, "items", id, verb];
+  // The reviewer's runner offers the job before it is asked (t591).
+  await expect(api("POST", "/queue", { body: { ...OFFER, jobs: ["criteria-review"] } }), 200, "poll");
   for (const id of [approved, failed]) {
     const asked = await expect(call("POST", `${p.base(id)}/criteria-review-request`, { body: { reviewer: REVIEWER } }), 200, "criteria-review-request");
     assert.deepEqual([asked.requested, asked.reviewer], [true, REVIEWER]);
   }
-  await expect(api("POST", "/queue", { body: { ...OFFER, jobs: ["criteria-review"] } }), 200, "poll");
   for (const verb of ["criteria-review-claim", "criteria-review", "criteria-review-failed"]) {
     assert.deepEqual([runnerRoute("POST", parts(approved, verb)), agentRoute("POST", parts(approved, verb))], [false, true], verb);
     await denied(api("POST", `${p.base(approved)}/${verb}`, { actor: REVIEWER, runner: RUNNER, body: { request: 1, rev: 1, criteria: "x", approve: true } }), token, `${verb} under the runner token`);

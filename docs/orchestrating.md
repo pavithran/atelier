@@ -188,6 +188,26 @@ build` states rules 3 and 4, which are the builder's.
    criterion that tests it.** A requirement with no criterion is added, or
    dropped from the brief, before the reviewer sees either.
 
+## A decided plan is filed whole the same day
+
+PAVI, 9 November 2026 ("Yes, both"): a plan the developer approves is filed
+whole the same day, and Atelier shows any planned task not yet filed. On
+8 November the model slate planned tasks A to E and only A was filed; B to E
+sat unfiled for a day because the plan lived in session notes that a handover
+dropped. When a design is decided, file its tasks (each with `--design NAME`),
+and record how many it plans:
+
+    atelier design NAME --planned N --quote "the developer's words"
+
+`atelier status --project P` and `atelier stuck` then show `Design NAME: K of
+N tasks filed` while fewer than N tasks name the design. K counts every task
+that names it in any state, merged and abandoned included. A later `atelier
+design` for the same name replaces the count; lower it, with the developer's
+words, when the plan shrinks, and the line clears. The route
+`GET /api/projects/P/designs` lists each design's name, planned, filed, quote
+and time. Record the count when the plan is approved, before the first task is
+filed, so the gap is visible from the start.
+
 ## Acting on the developer token
 
 The developer token is the developer's authority, and a model holds it

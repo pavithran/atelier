@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Override form</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="mock.css">
+</head>
+<body>
+<main>
+<p class="mockbar"><strong>Mockup, invented data.</strong> State C: a sent-back task, the Override form open after an empty reason was refused (task d2).</p>
+<section class="state">
+  <article class="card hero is-back">
+    <header class="hero-top">
+      <div class="crumbs mono">atelier<span>/</span>t598</div>
+      <span class="pill pill-back"><span class="pill-dot"></span>Sent back, round 2</span>
+    </header>
+    <h1>The protected-paths list moves into the project's policy file</h1>
+    <div class="verdict has-form">
+      <p>Sent back by codex/gpt-6-astra (OpenAI) in round 2: one blocking finding. No new round has started, so this revision can still be accepted by your override.</p>
+    </div>
+
+    <div class="decide">
+      <details class="ovr" open>
+        <summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Accept without an independent review</span><span class="hint">hide</span></summary>
+        <form method="post" action="/ui/atelier/t598/override">
+          <h3>Override and accept</h3>
+          <div class="overrides"><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><div><strong>This overrides the review by codex/gpt-6-astra (OpenAI), round 2, 11:40 am</strong><span class="what">It sent revision <span class="mono">c71fa0e4</span> back with one blocking finding at <span class="mono">src/policy.ts:88</span>.</span></div></div>
+          <label class="field"><span class="field-row"><span>Why are you overriding the independent review?</span><span class="hint">required · up to 500 characters</span></span>
+            <textarea name="note" required maxlength="500" rows="3" aria-invalid="true" aria-describedby="error-override"></textarea>
+          </label>
+          <p class="form-meta">This records your override and its reason on the task and in the inbox, and accepts the revision. It is not a review. Your Cloudflare Access sign-in is the confirmation an override needs; the developer token alone cannot give it.</p>
+          <div class="form-actions">
+            <button class="btn btn-grave" type="submit" aria-describedby="error-override">Override the review and accept</button>
+            <p class="refusal" role="alert" id="error-override"><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><span>An override of the independent review needs a reason. Nothing was recorded from this attempt. <a href="#">Reload this task</a> to see its current revision, then try again.</span></p>
+          </div>
+        </form>
+        <form method="post" action="/ui/atelier/t598/allow-override">
+          <h3>Command-line permission</h3>
+          <p class="form-meta">Or allow <code>atelier accept t598 --override-review "reason"</code> from the command line for this revision, for 15 minutes and one override; without it the command is refused. Allowing it approves, overrides and accepts nothing by itself.</p>
+          <div class="form-actions"><button class="btn" type="submit">Allow an override from the command line</button></div>
+        </form>
+      </details>
+    </div>
+    <div class="others"><span class="lead">Also</span><button class="btn btn-quiet" type="button">Approve revision</button><button class="btn btn-quiet" type="button">Request changes</button><button class="btn btn-quiet" type="button">Block this task</button></div>
+
+    <ol class="track" aria-label="Stages" style="--done:3"><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Claim</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Branch</span></li><li class="st st-done"><span class="node"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span class="st-name">Prove</span></li><li class="st st-now"><span class="node"></span><span class="st-name">Review</span><span class="st-note">sent back 11:40 am</span></li><li class="st st-next"><span class="node"></span><span class="st-name">Land</span></li></ol>
+  </article>
+
+  <div class="block">
+    <h3>Evidence</h3>
+    <div class="card list">
+      <div class="group-h"><span>Required checks</span><span class="count c-ok">3 of 3 passed</span></div>
+      <ul class="rows">
+        <li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run typecheck</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>11:21 am</div></li>
+        <li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm run test:static</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>11:22 am</div></li>
+        <li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span class="mono">npm test</span><span class="row-sub">6,810 tests, 0 failed</span></div><div class="row-meta">Studio runner, clean clone<span class="sep">·</span>11:29 am</div></li>
+      </ul>
+      <div class="group-h"><span>Review</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-bad"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 5l6 6M11 5l-6 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg></span><div class="row-main"><span>Sent back by <strong>codex/gpt-6-astra</strong> <span class="co">OpenAI</span></span><span class="row-sub">Built by claude-code/sonnet-5.5 (Anthropic)</span><div class="finding">
+      <div class="finding-top"><span class="tag tag-bad">Blocking</span><span class="mono">src/policy.ts:88</span></div>
+      <p>The old protected-paths file is still read when the policy file has no list, so a project that never migrates keeps two sources. Remove the fallback or migrate the file on first read.</p>
+    </div></div><div class="row-meta">Round 2<span class="sep">·</span>11:40 am</div></li></ul>
+      <div class="group-h"><span>Scope</span></div>
+      <ul class="rows"><li class="row"><span class="mark mark-ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8.4l2.6 2.6L12 5.4" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div class="row-main"><span>All files inside the declared scope</span></div><div class="row-meta">6 of 6 inside</div></li></ul>
+    </div>
+  </div>
+
+  <div class="block">
+    <h3>What the builder says <span class="tag tag-unv">Not verified</span></h3>
+    <blockquote class="said"><p>Moved the protected-paths list into the policy file and kept the old file as a read-only fallback, as the brief's note on old projects asks.</p><footer>claude-code/sonnet-5.5 (Anthropic), in its own words</footer></blockquote>
+  </div>
+
+  <div class="folds">
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Brief and criteria</span></summary><p class="row-sub">Folded, as task c decides.</p></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Thread of events</span><span class="n">5</span></summary><ol class="thread"><li><span class="t-at">9:12 am</span><span class="t-dot"></span><span>Dispatched to claude-code/sonnet-5.5</span></li><li><span class="t-at">10:05 am</span><span class="t-dot"></span><span>Submitted</span></li><li><span class="t-at">10:31 am</span><span class="t-dot"></span><span>Review: rejected</span></li><li><span class="t-at">11:18 am</span><span class="t-dot"></span><span>Submitted</span></li><li><span class="t-at">11:40 am</span><span class="t-dot"></span><span>Review: rejected</span></li></ol></details>
+    <details><summary><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Technical details</span></summary><dl class="tech"><dt>Task</dt><dd><span class="mono">atelier / t598</span></dd><dt>Head commit</dt><dd><span class="mono">c71fa0e4</span></dd><dt>Builder</dt><dd>claude-code/sonnet-5.5 (Anthropic)</dd><dt>Reviewer</dt><dd>codex/gpt-6-astra (OpenAI)</dd><dt>Overrides</dt><dd>Allowed with a reason; Access is the confirmation</dd></dl></details>
+  </div>
+</section>
+</main>
+</body>
+</html>
