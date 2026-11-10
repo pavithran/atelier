@@ -1872,7 +1872,7 @@ export async function runTask(assignment, config, name, io) {
     if (!context || typeof context.text !== "string") throw new Error("the server's job brief has no text");
     // The build limit (t588) is the policy as it stands at this claim: read
     // anew at every call, never kept from an earlier run.
-    policyBuildMs = Number.isFinite(context.buildLimitMinutes) && context.buildLimitMinutes > 0 ? context.buildLimitMinutes * 60_000 : null;
+    policyBuildMs = Number.isFinite(context.buildLimitMinutes) && context.buildLimitMinutes > 0 ? Math.round(context.buildLimitMinutes * 60_000) : null;
     return context;
   };
   // The ceiling every build harness of this run goes by, and the sentence that
@@ -1882,8 +1882,7 @@ export async function runTask(assignment, config, name, io) {
   // The ceiling in words, exact to the millisecond the harness applies: "N
   // minutes", or "M minutes S seconds" with S at most three decimals.
   const ceilingWords = (ms) => {
-    const whole = Math.round(ms);
-    const minutes = Math.floor(whole / 60_000), rest = whole - minutes * 60_000;
+    const minutes = Math.floor(ms / 60_000), rest = ms - minutes * 60_000;
     return rest === 0 ? `${minutes} minutes` : `${minutes} minutes ${Number((rest / 1000).toFixed(3))} seconds`;
   };
   const harnessLimitLine = () => `Your harness is stopped ${ceilingWords(harnessCeilingMs())} after it starts. A run that reaches that limit fails as "harness timed out" and ends with no submit, so plan the work and run any long check once, early enough to finish and commit inside it.`;
