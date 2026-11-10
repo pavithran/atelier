@@ -569,7 +569,7 @@ it("the developer withdraws an unclaimed review request with a reason and asks a
   // Nothing stands now, so a second withdrawal finds nothing.
   await refusal(L.withdrawReviewRequest(id, "owner", "again"), "no_request", /nothing to withdraw/);
   // Another reviewer is asked at the same head, with no new commit.
-  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true);
+  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true);
   expect(next).toMatchObject({ needed: true, requested: true, reviewer: GEMINI, head });
   expect(next.withdrew).toBeUndefined();
   const [waiting] = await L.reviewWaiting();
@@ -596,7 +596,7 @@ it("naming another reviewer redirects an unclaimed review request, says so, and 
   // Nor does an ask the gate refuses after the redirect began: the check
   // failing at the head blocks the new request, and the old one stands.
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: false, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
-  await refusal(L.requestReview(id, "owner", GEMINI, NAMED_POOL, true), "review_blocked", /failed at/);
+  await refusal(L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true), "review_blocked", /failed at/);
   expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["open"]);
   expect((await events(L, id)).some((e) => e.kind === "review.withdrawn")).toBe(false);
   // The same through the review-request route without `wanted`, where a
@@ -616,14 +616,14 @@ it("naming another reviewer redirects an unclaimed review request, says so, and 
   expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["open"]);
   expect((await events(L, id)).some((e) => e.kind === "review.withdrawn")).toBe(false);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
-  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true);
+  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true);
   expect(next).toMatchObject({ needed: true, requested: true, reviewer: GEMINI, head, withdrew: [{ request: asked.request, reviewer: GPT }] });
   expect(next.request).not.toBe(asked.request);
   expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ actor: "owner", data: { head, reviewer: GPT, request: asked.request, reason: `the developer named ${GEMINI} to review it` } });
   const waiting = await L.reviewWaiting();
   expect(waiting.map((w) => w.request)).toEqual([next.request]);
   // Naming the same reviewer again keeps the request as it stands.
-  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true)).toMatchObject({ requested: false, reviewer: GEMINI, request: next.request });
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true)).toMatchObject({ requested: false, reviewer: GEMINI, request: next.request });
   // The review-withdraw route is the developer's alone and needs a reason.
   const ownerToken = "land-withdraw-token";
   const token = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;

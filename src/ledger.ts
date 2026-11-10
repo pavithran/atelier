@@ -9725,12 +9725,15 @@ export class Ledger extends DurableObject<Env> {
     // before the transaction: the ticks read them.
     offers = this.ownOffers(offers);
     this.keepOffers(offers);
+    // Only the offers the caller gave say a request was skipped by every
+    // runner that offers it; the held ones judge who may be asked (t591).
+    const given = offers;
     offers = this.judgedOffers(offers);
     if (actor !== this.owner) throw new RuleError("not_project_owner", "only the developer asks for a review", 403, `only the developer can: atelier review-request ${id} --reviewer H/M`);
     this.reviewItem(id);
     this.keepPool(pool);
     try {
-      return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers, hand, [], undefined, auto));
+      return this.ctx.storage.transactionSync(() => this.askReview(id, actor, reviewer, pool, wanted, proved, records, offers, hand, [], undefined, auto, given ?? null));
     } catch (err) {
       // Rolled back: the requests the redirect would have withdrawn stand.
       if (!(err instanceof KeptRequests)) throw err;
@@ -9767,7 +9770,7 @@ export class Ledger extends DurableObject<Env> {
     }
   }
 
-  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = [], standingDecision?: string, auto = false): ReviewAsked {
+  private askReview(id: string, actor: string, reviewer: string | null, pool: ModelEntry[], wanted: boolean, proved: boolean, records: ((ReviewerRecords | SuggestionRecords) & { project: string }) | undefined, offers: readonly SeenOffer[] | undefined, hand = false, together: readonly string[] = [], standingDecision?: string, auto = false, skipOffers: readonly SeenOffer[] | null | undefined = offers): ReviewAsked {
     const item = this.reviewItem(id);
     if (!wanted && item.state !== "merged") this.assertParallelCriteriaReviewed(id);
     if (item.state === "merged") wanted = true;
@@ -9881,7 +9884,7 @@ export class Ledger extends DurableObject<Env> {
     // for, so the request is withdrawn here and asked anew below, under a
     // fresh number the runners serve again. Judged only when the caller has
     // the live offers; a claimed request is being served and stays.
-    const renewed = item.head && offers ? this.renewSkippedRequest(id, item.head, offers, actor, at, proved) : null;
+    const renewed = item.head && skipOffers ? this.renewSkippedRequest(id, item.head, skipOffers, actor, at, proved) : null;
     // Reviewers asked together (G11) are judged each as if the others' live
     // requests were not there, so one does not stand in for another.
     const besideMe = (who: string | null | undefined) => !!who && together.some((t) => sameActor(t, who)) && !(reviewer !== null && sameActor(who, reviewer));
