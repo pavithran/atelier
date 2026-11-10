@@ -405,6 +405,8 @@ it("the routes: a dispatch is refused until the criteria review the owner asks f
   // Only the owner asks; the agent's token is refused by the allowlist.
   const glmToken = ((await (await call("POST", "/tokens", "owner", { actor: GLM, projects: [name] })).json()) as { token: string }).token;
   expect((await call("POST", `${P}/items/${id}/criteria-review-request`, null, {}, glmToken)).status).toBe(403);
+  // A runner that offers the criteria-review job is on record (t591), or the review could be asked of no one.
+  await call("POST", "/queue", "owner", { runner: "home:rev", kind: "home", agents: [{ agent: "zcode", models: ["glm-5.3"] }], jobs: ["criteria-review"] });
   // G17: a request that names no reviewer is refused with the candidates, and asks nothing.
   const unnamed = await call("POST", `${P}/items/${id}/criteria-review-request`, "owner", {});
   expect(unnamed.status).toBe(409);
@@ -435,6 +437,7 @@ it("the routes: a dispatch is refused until the criteria review the owner asks f
   // The owner answers the finding; the next review, by the same reviewer, approves; the dispatch goes.
   const resolved = await call("POST", `${P}/items/${id}/criteria-finding`, "owner", { review: claim.request, index: 1, verdict: "refuted", note: "200 ms is the measurement" });
   expect(resolved.status).toBe(201);
+  await call("POST", "/queue", "owner", { ...offer, jobs: ["criteria-review"] });
   expect((await (await call("POST", `${P}/items/${id}/criteria-review-request`, "owner", { reviewer: GLM })).json() as { reviewer: string }).reviewer).toBe(GLM);
   const claim2 = await (await call("POST", `${P}/items/${id}/criteria-review-claim`, null, {}, glmToken, { "x-atelier-runner": "home:rev" })).json() as { rev: number; criteria: string; request: number };
   expect((await call("POST", `${P}/items/${id}/criteria-review`, null, { rev: claim2.rev, criteria: claim2.criteria, request: claim2.request, approve: true, note: "Clear." }, glmToken)).status).toBe(200);
@@ -876,6 +879,8 @@ it("parallel dispatches planned parts but asks no automatic gate review until cr
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head: H1, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/a/x.ts"] } satisfies Evidence);
   await L.submit(id, OPUS);
   expect(await L.reviewWaiting()).toEqual([]);
+  // The criteria review is asked only of a model a live runner offers for it (t591).
+  await runInDurableObject(L, (instance: Ledger) => (instance as unknown as { keepOffers(o: unknown[]): void }).keepOffers([{ runner: "home:criteria", kind: "home", jobs: ["criteria-review", "review"], agents: [{ agent: "zcode", models: ["glm-5.3"] }, { agent: "codex", models: ["gpt-6-astra"] }], at: new Date().toISOString() }]));
   await reviewed(L, id, true);
   expect((await L.reviewWaiting()).map((i) => i.id)).toEqual([id]);
   const claim = await L.claimReview(id, GPT, RUNNER) as unknown as ReviewClaim;

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import worker from "../src/index.ts";
 import { makeDispatch } from "../src/dispatch/rules.ts";
+import { runnerOffers } from "./support/offers.ts";
 // @ts-expect-error plain JavaScript formatter
 import { formatStatus, statusJson } from "../cli/status.mjs";
 
@@ -16,6 +17,7 @@ async function setup(name: string, intent: boolean | "default" = true, chosen = 
   const L = env.LEDGER.get(env.LEDGER.idFromName(`project:${name}`));
   await L.setProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: ["src/**"] }, createdAt: new Date().toISOString() }, "owner");
   await L.poolChanged(pool);
+  await runnerOffers(L, [reviewer, "claude-code/sonnet-5.5"]);
   if (intent === "default") await L.setMode("owner", "fast", "Test the recorded reviewer mapping", builder, "Use fast mode to test the recorded reviewer mapping");
   if (intent === "default") await L.recordDecision({ standing: { key: "review-on-checked", value: `openai=${reviewer}` }, quote: "Use this reviewer for OpenAI builds" }, "owner");
   const { id } = await L.newItem("Review the submitted task", ["src/**"], "owner", { accept: ["Works"] });

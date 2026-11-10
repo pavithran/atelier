@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { promisify } from "node:util";
 import { startServer } from "../src/runtime/server.mjs";
+import "./support/default-runner.ts";
 
 const run = promisify(execFile);
 const OWNER = "atl_00112233445566778899aabbccddeeff";

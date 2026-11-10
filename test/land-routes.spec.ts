@@ -1,5 +1,6 @@
 import { env } from "./support/workers.ts";
 import { runInDurableObject } from "./support/workers.ts";
+import { withoutDefaultRunnerDuring } from "./support/default-runner.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -461,15 +462,18 @@ it("asking again for a review every runner that offers the reviewer has skipped 
   const ask = async () => (await worker.fetch(new Request(`https://atelier.test/api/projects/${name}/items/${b}/review-request`, {
     method: "POST", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json", "x-atelier-actor": "owner", "x-atelier-acting": GPT }, body: JSON.stringify({ reviewer: GPT, wanted: true }),
   }), token)).json() as Promise<{ requested: boolean; request: number; reason: string }>;
-  const asked = await ask();
-  expect(asked).toMatchObject({ requested: true });
-  expect(await ask()).toMatchObject({ requested: false, request: asked.request });
-  await L.recordReviewSkip(b, asked.request, headB, "home:studio", "owner", "no agent token");
-  const renewed = await ask();
-  expect(renewed).toMatchObject({ requested: true });
-  expect(renewed.request).toBeGreaterThan(asked.request);
-  expect(renewed.reason).toMatch(/every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
-  expect((await L.reviewWaiting()).map((w) => [w.id, w.request])).toEqual([[b, renewed.request]]);
+  // The default review runner also offers the reviewer and has skipped nothing, so this step runs without it.
+  await withoutDefaultRunnerDuring(async () => {
+    const asked = await ask();
+    expect(asked).toMatchObject({ requested: true });
+    expect(await ask()).toMatchObject({ requested: false, request: asked.request });
+    await L.recordReviewSkip(b, asked.request, headB, "home:studio", "owner", "no agent token");
+    const renewed = await ask();
+    expect(renewed).toMatchObject({ requested: true });
+    expect(renewed.request).toBeGreaterThan(asked.request);
+    expect(renewed.reason).toMatch(/every runner that offers codex\/gpt-6-astra had skipped it \(home:studio\)/);
+    expect((await L.reviewWaiting()).map((w) => [w.id, w.request])).toEqual([[b, renewed.request]]);
+  });
 });
 
 it("a wanted review is requested for the named reviewer though the gate needs none, and the gate's own refusals stand", async () => {
@@ -569,7 +573,7 @@ it("the developer withdraws an unclaimed review request with a reason and asks a
   // Nothing stands now, so a second withdrawal finds nothing.
   await refusal(L.withdrawReviewRequest(id, "owner", "again"), "no_request", /nothing to withdraw/);
   // Another reviewer is asked at the same head, with no new commit.
-  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true);
+  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true);
   expect(next).toMatchObject({ needed: true, requested: true, reviewer: GEMINI, head });
   expect(next.withdrew).toBeUndefined();
   const [waiting] = await L.reviewWaiting();
@@ -596,7 +600,7 @@ it("naming another reviewer redirects an unclaimed review request, says so, and 
   // Nor does an ask the gate refuses after the redirect began: the check
   // failing at the head blocks the new request, and the old one stands.
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: false, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
-  await refusal(L.requestReview(id, "owner", GEMINI, NAMED_POOL, true), "review_blocked", /failed at/);
+  await refusal(L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true), "review_blocked", /failed at/);
   expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["open"]);
   expect((await events(L, id)).some((e) => e.kind === "review.withdrawn")).toBe(false);
   // The same through the review-request route without `wanted`, where a
@@ -616,14 +620,14 @@ it("naming another reviewer redirects an unclaimed review request, says so, and 
   expect((await L.reviewRequests(id)).map((r) => r.state)).toEqual(["open"]);
   expect((await events(L, id)).some((e) => e.kind === "review.withdrawn")).toBe(false);
   await L.addEvidence({ itemId: id, claim: "npm test", grade: "observed", head, passed: true, by: OPUS, at: new Date().toISOString(), changedPaths: ["src/land.ts"] } satisfies Evidence);
-  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true);
+  const next = await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true);
   expect(next).toMatchObject({ needed: true, requested: true, reviewer: GEMINI, head, withdrew: [{ request: asked.request, reviewer: GPT }] });
   expect(next.request).not.toBe(asked.request);
   expect((await events(L, id)).find((e) => e.kind === "review.withdrawn")).toMatchObject({ actor: "owner", data: { head, reviewer: GPT, request: asked.request, reason: `the developer named ${GEMINI} to review it` } });
   const waiting = await L.reviewWaiting();
   expect(waiting.map((w) => w.request)).toEqual([next.request]);
   // Naming the same reviewer again keeps the request as it stands.
-  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true)).toMatchObject({ requested: false, reviewer: GEMINI, request: next.request });
+  expect(await L.requestReview(id, "owner", GEMINI, NAMED_POOL, true, false, undefined, undefined, true)).toMatchObject({ requested: false, reviewer: GEMINI, request: next.request });
   // The review-withdraw route is the developer's alone and needs a reason.
   const ownerToken = "land-withdraw-token";
   const token = { ...env, ATELIER_TOKEN: ownerToken } as typeof env;
