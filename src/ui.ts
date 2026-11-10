@@ -2786,7 +2786,9 @@ export function renderError(message: string, back = "/home", ownerName: string |
 // The Access refusals (401 with no assertion, 503 with broken settings) reach
 // a visitor who is not signed in, so they are drawn as a public page: no owner
 // bar, no project switcher, no Sign out, and no Go back (t559).
-export function renderAccessRefusal(message: string): string {
+// The 401 also offers a primary Sign in link to /login, which the Cloudflare
+// edge sends to the Access prompt (t625); the 503 has nothing to sign in to.
+export function renderAccessRefusal(message: string, signIn = false): string {
   return publicPage({
     title: "Action needs attention · Atelier",
     description: "Atelier, a Git platform for multiple coding agents, built on Cloudflare.",
@@ -2794,7 +2796,8 @@ export function renderAccessRefusal(message: string): string {
     nav: [["How it works", "/how"]],
     mainClass: "error-page-public",
     main: `<section class="page-width error-page">
-  <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>
+  <h1>Let’s resolve this.</h1><p class="lead" role="alert">${e(message)}</p>${signIn ? `
+  <p><a class="button primary" href="/login">Sign in</a></p>` : ""}
 </section>`,
   });
 }

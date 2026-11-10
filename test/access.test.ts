@@ -170,3 +170,52 @@ test("keys that cannot be fetched leave the request unvouched for", async () => 
     } finally { globalThis.fetch = restore; }
   }
 });
+
+// t626: Cloudflare sends the header only on the paths the Access application
+// lists, but the CF_Authorization cookie, holding the same token, goes on
+// every path. Without the header the cookie is verified exactly alike.
+const asCookie = (token: string) => ({ cookie: `other=1; CF_Authorization=${token}; x=y` });
+const vouched = (headers: Record<string, string>, settings: AccessSettings) =>
+  accessVouches(new Request("https://atelier.test/", { headers }), settings);
+
+test("with no header, a valid CF_Authorization cookie vouches", async () => {
+  const t = await team(6);
+  const restore = globalThis.fetch;
+  globalThis.fetch = serveKeys(t.jwks).stub as typeof fetch;
+  try {
+    assert.equal(await vouched(asCookie(await assertion(t.pair, t.issuer, AUD)), t.settings), true);
+    assert.equal(await vouched({ cookie: "CF_Authorization=" }, t.settings), false);
+    assert.equal(await vouched({ cookie: "NotCF_Authorization=x" }, t.settings), false);
+  } finally { globalThis.fetch = restore; }
+});
+
+test("a header that is present decides alone, whatever the cookie holds", async () => {
+  const t = await team(7);
+  const good = await assertion(t.pair, t.issuer, AUD);
+  const bad = await assertion(t.pair, t.issuer, AUD, "-1m");
+  const restore = globalThis.fetch;
+  globalThis.fetch = serveKeys(t.jwks).stub as typeof fetch;
+  try {
+    assert.equal(await vouched({ "cf-access-jwt-assertion": bad, ...asCookie(good) }, t.settings), false);
+    assert.equal(await vouched({ "cf-access-jwt-assertion": "", ...asCookie(good) }, t.settings), false);
+    assert.equal(await vouched({ "cf-access-jwt-assertion": good, ...asCookie(bad) }, t.settings), true);
+  } finally { globalThis.fetch = restore; }
+});
+
+test("a cookie token that is expired, malformed, foreign, or for another audience, issuer or email does not vouch", async () => {
+  const t = await team(8);
+  const foreign = await generateKeyPair("RS256");
+  const cases = {
+    expired: await assertion(t.pair, t.issuer, AUD, "-1m"),
+    malformed: "not.a.jwt",
+    key: await new SignJWT({ email: OWNER }).setProtectedHeader({ alg: "RS256", kid: "atelier-test" }).setIssuer(t.issuer).setAudience(AUD).setExpirationTime("5m").sign(foreign.privateKey),
+    audience: await assertion(t.pair, t.issuer, "0000000000000000000000000000000a"),
+    issuer: await assertion(t.pair, "https://other.access-test", AUD),
+    email: await assertion(t.pair, t.issuer, AUD, "5m", "someone.else@example.com"),
+  };
+  const restore = globalThis.fetch;
+  globalThis.fetch = serveKeys(t.jwks).stub as typeof fetch;
+  try {
+    for (const [name, token] of Object.entries(cases)) assert.equal(await vouched(asCookie(token), t.settings), false, name);
+  } finally { globalThis.fetch = restore; }
+});

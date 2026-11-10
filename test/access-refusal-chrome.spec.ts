@@ -49,6 +49,30 @@ it("the broken-Access 503 draws no owner bar, keeps its status and message, and 
   expect(html).not.toContain("Go back");
 });
 
+// t625: the 401 offers the way forward, a primary Sign in link to /login (which
+// the edge sends to the Access prompt). The 503 offers none.
+const firstMainLink = (html: string) => /<main id="main"[^>]*>[\s\S]*?<a ([^>]*)>([^<]*)<\/a>/.exec(html);
+
+for (const path of ["/", "/today"]) {
+  it(`the Access 401 on ${path} leads with a primary Sign in link to /login`, async () => {
+    const res = await get(on, path);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("set-cookie")).toBeNull();
+    const html = await res.text();
+    expect(html).toContain(MESSAGE_401);
+    const link = firstMainLink(html);
+    expect(link?.[1]).toContain('href="/login"');
+    expect(link?.[1]).toMatch(/class="[^"]*\bbutton\b[^"]*\bprimary\b/);
+    expect(link?.[2]).toBe("Sign in");
+  });
+}
+
+it("the broken-Access 503 shows no Sign in link", async () => {
+  const html = await (await get(broken, "/today")).text();
+  expect(html).not.toContain("Sign in");
+  expect(html).not.toContain('href="/login"');
+});
+
 async function unknownAction(cookie: string) {
   const L = await project("refusal-chrome");
   const made = await L.newItem("A task", [], "owner", {});
