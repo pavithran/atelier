@@ -17,11 +17,12 @@ const mergeMain = (id: string, over: Partial<Item> = {}) =>
   item(id, { dispatch: { ...makeDispatch({}, "owner", AT), job: "merge-main", head: "a".repeat(40), task: true }, ...over });
 const plain = (id: string) => item(id);
 
-const lease = { item: "t617", holder: "pavi", at: AT };
+const lease = { item: "t617", holder: "pavi", at: "2026-11-10T10:55:00.000Z" };
+const lapsed = { ...lease, at: "2026-11-10T10:00:00.000Z" };
 const holders: [string, Item[], typeof lease | null][] = [
   ["a claimed task", [item("t617", { state: "claimed", owner: "x/y", everClaimed: true })], null],
   ["a task claimed and open again", [item("t617", { state: "open", everClaimed: true })], null],
-  ["the holder of a live landing lease", [item("t617", { state: "submitted", owner: "x/y", everClaimed: true })], lease],
+  ["the holder of a live landing lease", [item("t617", { state: "open" })], lease],
 ];
 
 for (const [name, others, l] of holders) {
@@ -36,6 +37,14 @@ for (const [name, others, l] of holders) {
     assert.deepEqual(coreBlockers(p, [p, ...others], core, l, NOW).map((b) => b.id), ["t617"]);
   });
 }
+
+test("criterion 2: the live lease alone holds the plain dispatch; lapsed or absent, it holds nothing", () => {
+  const p = plain("t588");
+  const others = [item("t617", { state: "open" })];
+  assert.equal(coreHold(p, [p, ...others], core, lease, NOW)?.id, "t617");
+  assert.equal(coreHold(p, [p, ...others], core, lapsed, NOW), null);
+  assert.equal(coreHold(p, [p, ...others], core, null, NOW), null);
+});
 
 test("criterion 3: two claimed tasks, one waiting on merge-main, show no deadlock", () => {
   const a = mergeMain("t588", { everClaimed: true });
