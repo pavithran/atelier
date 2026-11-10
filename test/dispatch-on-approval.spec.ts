@@ -284,7 +284,7 @@ it("t587 criterion 3: with no mapping, landReviewer takes the first eligible mod
   const [asked] = await openReview(L, id);
   await verdict(P, id, asked.reviewer, true);
   const d = (await L.item(id)).dispatch;
-  expect(POOL.map(e => `${e.harness}/${e.id}`)).toContain(d?.reviewer);
+  expect(d?.reviewer).toBe("codex/gpt-6.1-sol");
   expect(familyOf(d!.reviewer!.split("/")[1])).not.toBe("anthropic");
 });
 
