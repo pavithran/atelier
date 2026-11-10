@@ -625,13 +625,26 @@ export async function ship(ctx) {
     outputTail: ctx.redact(r.output ?? "", ctx.secrets).slice(-TAIL), ship: id, note: extra ?? "",
   });
   let startsUnavailable = false;
-  const starting = async (step, command) => {
+  // A step with the terminal says when its timeout kills it, so status and
+  // Today can show the ship waiting at a password prompt (src/ship-wait.ts).
+  // That post is a courtesy: when it fails or times out, a warning is printed
+  // and the step runs. A repeat of it for this ship and step is recorded once.
+  const starting = async (step, command, terminalFor = null, attempt = 0, runIndex = 0) => {
     if (startsUnavailable) return;
+    const body = { ship: id, step, command: ctx.redact(command, ctx.secrets), commit };
+    if (terminalFor) Object.assign(body, { terminal: true, run: runIndex, attempt, givesUpAt: new Date(Date.now() + terminalFor.timeoutMs).toISOString() });
     try {
-      await request("POST", `${P}/actions/starts`, {
-        ship: id, step, command: ctx.redact(command, ctx.secrets), commit,
-      });
+      if (terminalFor) {
+        // A response lost on the way is asked again once, with the same body,
+        // so the server's one event stands; request() itself repeats no write.
+        try { await request("POST", `${P}/actions/starts`, body); }
+        catch { await request("POST", `${P}/actions/starts`, body); }
+      } else await request("POST", `${P}/actions/starts`, body);
     } catch (error) {
+      if (terminalFor) {
+        print(`Warning: could not record that ${step} waits for the developer's password (${error.message}); running it anyway.`);
+        return;
+      }
       if (error.refusal?.code !== "not_found" && error.refusal?.code !== "404") throw error;
       startsUnavailable = true;
       print("Warning: the server cannot record ship step starts; continuing without start telemetry.");
@@ -677,7 +690,7 @@ export async function ship(ctx) {
       const output = `${r.stdout ?? ""}${r.stderr ?? ""}${r.status === 0 && !holds ? `\n[atelier] ${target.remote} does not show ${short(now)} on ${target.branch} after the push` : ""}`;
       results.push({ command: label, status: r.status, signal: r.signal ?? null, durationMs: Date.now() - started, passed: r.status === 0 && holds, output, kind: null, approval: null, note: `pushed ${short(now)}` });
     } else {
-      for (const run of s.runs) {
+      for (const [runIndex, run] of s.runs.entries()) {
         const command = run.argv ? run.argv.map(quote).join(" ") : run.label;
         if (run.skip) {
           print(`${s.step}: skipping ${command}: ${run.skip}`);
@@ -687,7 +700,7 @@ export async function ship(ctx) {
         // A retry is the same run: it uses the approval already taken.
         for (let attempt = 0; attempt <= (run.retries ?? 0); attempt++) {
           print(`${s.step}: ${run.argv ? `running ${command}` : run.label}${attempt ? ` (retry ${attempt} of ${run.retries})` : ""}`);
-          await starting(s.step, command);
+          await starting(s.step, command, run.terminal && run.argv ? run : null, attempt, runIndex);
           const r = run.argv ? await (run.terminal ? runTerminal : runCommand)(run.argv, { cwd, env: stepEnv(ctx.env, head, INTERNAL.has(s.step)), timeoutMs: run.timeoutMs, secrets: ctx.secrets }) : await runRequest(run, head);
           const note = [s.verifies ? `verifies the ${s.verifies}` : "", run.why ?? "", attempt ? `retry ${attempt}` : ""].filter(Boolean).join("; ");
           results.push({ ...r, command, kind: run.kind, approval: run.kind ? used[run.kind] : null, note });

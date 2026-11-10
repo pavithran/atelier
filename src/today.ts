@@ -23,6 +23,7 @@ import { vendorOf } from "./graph.ts";
 import { machineName, runnerNameOf } from "./runner-names.ts";
 import { criteriaOf } from "./criteria.ts";
 import { dayInZone } from "./time.ts";
+import { shipWaitLines, type ShipWaitRecord } from "./ship-wait.ts";
 import { answerBlock, landBlock, landStateOf, LAND_CALLS, overrideBlock } from "./page-actions.ts";
 import { escapeText as e, page, type Live } from "./ui";
 import todayCss from "./today.css";
@@ -44,6 +45,8 @@ export interface TodayLedger {
   events(id?: string, limit?: number, before?: number): Promise<LedgerEvent[]>;
   situationFacts(tasks: string[]): Promise<Pick<SituationFacts, "items" | "stages" | "reviewRequests" | "landings"> & Partial<Pick<SituationFacts, "landJobs">> & { progress?: NowProject["progress"] }>;
   postMergeRun(item: string): Promise<Pick<PostMergeRun, "state"> | null>;
+  // The newest terminal ship step start (src/ship-wait.ts); a stub without it shows no wait.
+  shipWait?(): Promise<ShipWaitRecord | null> | ShipWaitRecord | null;
 }
 
 export interface TodaySource {
@@ -62,6 +65,8 @@ export interface TodayProjectInput {
   now: NowProject;
   // For buildPulse and the day's merges and deploys: the events of the last 14 days.
   pulseEvents: LedgerEvent[];
+  // The project's newest terminal ship start, read whole rather than from the 14 days.
+  shipWait?: ShipWaitRecord | null;
   // Every ship.recorded of those 14 days.
   ships: DeployRecord[];
   // The post-merge run state of each task a deploy of today shipped; null: no run recorded.
@@ -141,7 +146,7 @@ async function readProject(src: TodaySource, p: TodaySource["projects"][number],
       name: p.name, title: p.title, items: facts.items, stages: facts.stages, owner: attentionFor(p.name, items, inbox, src.offers, now).owner,
       reviewRequests: facts.reviewRequests, landings: facts.landings, progress: facts.progress ?? {}, events, deploys: ships,
     },
-    pulseEvents, ships, postMerge, cutShort,
+    pulseEvents, ships, postMerge, cutShort, shipWait: (await ledger.shipWait?.()) ?? null,
     landJobs: facts.landJobs ?? [],
     heads: Object.fromEntries(items.map((i) => [i.id, { head: i.head ?? null, criteria: criteriaOf(i), fact: !!i.blocked?.fact }])),
   };
@@ -212,6 +217,8 @@ export interface TodayView {
   timeline: TodayEvent[];
   projects: TodayProjectCard[];
   unread: string[];
+  // A ship waiting at the developer's password, or one that gave up (src/ship-wait.ts), by project.
+  shipWaits: string[];
   now: NowView;
 }
 
@@ -383,7 +390,9 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
     },
     dots: { need: cards.map(() => "owner"), running: lanes.map((l) => l.family) },
     hours, ships: deploys.map((d) => ({ shipped: d.s.result === "shipped" })),
-    cards, lanes: lanes.slice(0, LANES_SHOWN), lanesMore: Math.max(0, lanes.length - LANES_SHOWN), timeline, projects, unread: inputs.unread, now: view,
+    cards, lanes: lanes.slice(0, LANES_SHOWN), lanesMore: Math.max(0, lanes.length - LANES_SHOWN), timeline, projects, unread: inputs.unread,
+    shipWaits: inputs.projects.flatMap((p) => shipWaitLines(p.shipWait, at).map((line) => `${p.now.name}: ${line}`)),
+    now: view,
   };
 }
 
@@ -461,7 +470,8 @@ export function todayBody(v: TodayView, act?: TodayAct): string {
   const merges = v.timeline.filter((ev) => ev.kind === "merge").length, ships = v.ships.filter((s) => s.shipped).length;
   const unread = v.unread.length ? `<p class="today-unread" role="alert">Not read: ${e(v.unread.join(", "))}. Their figures are not in the totals below.</p>` : "";
   const running = v.lanes.length ? `<div class="today-runlist">${v.lanes.map(laneHtml).join("")}</div>` + (v.lanesMore ? `<p class="meta">and ${v.lanesMore} more · <a href="/flow">Flow</a></p>` : "") : empty("No task is running.");
-  return `<div class="today"><div class="today-date">${e(v.dateText)}</div>${headline(v)}${unread}${tiles(v)}`
+  const waits = v.shipWaits.map((line) => `<p class="today-unread" role="alert" data-ship-wait>${e(line)}</p>`).join("");
+  return `<div class="today"><div class="today-date">${e(v.dateText)}</div>${headline(v)}${waits}${unread}${tiles(v)}`
     + section("needs-you", "Needs you", String(v.cards.length), v.cards.length ? v.cards.map((c) => cardHtml(c, act)).join("") : empty("Nothing waits for you."))
     + section("running", "Running", String(v.tiles.running.value ?? 0), running, `<a href="/flow">Flow →</a>`)
     + section("merged", "Merged and deployed today", `${merges} · ${plural(ships, "deploy")}`, v.timeline.length ? `<div class="today-landed">${v.timeline.map(eventHtml).join("")}</div>` : empty("Nothing has merged or deployed today."), `<a href="/history">History →</a>`)

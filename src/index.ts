@@ -2251,7 +2251,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
     // Runner clients need policy/configuration here, not unrelated tasks or
     // their history. Job detail routes below enforce the claim binding.
     if (c.token?.runner) return json({ project: await L.project(), items: [], events: [] });
-    return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50), wayBack: await L.wayBackStatus() });
+    return json({ project: await L.project(), items: await L.items(), events: await L.events(undefined, 50), wayBack: await L.wayBackStatus(), shipWait: await L.shipWait() });
   }
   // The owner gives the project a new name. The index decides and refuses a
   // clash; the project's own record follows. If that second write did not

@@ -84,6 +84,7 @@ import {
 } from "./plans/state.ts";
 import { integrationBlockers, nextToIntegrate, planGate, type Integration, type Part as PlanPartView } from "./plans/integrate.ts";
 import type { PlanPartReview, PlanView } from "./plans/show.ts";
+import { readShipWait, type ShipWaitRecord } from "./ship-wait.ts";
 import { actionRuns, startActionRun, approveAction, consumeAction, listApprovals, recordActionRun, unrunKinds, withdrawAction, type ActionRun, type ActionStore, type ApprovalView } from "./actions.ts";
 import { cleanPlanned, designViews, PLANNED_EVENT, plansOf, repeats, type DesignPlan, type DesignView } from "./designs.ts";
 import { listDecisions, recordDecision, standingDecisions, withdrawDecision, type Decision, type DecisionStore, type DecisionView } from "./decisions.ts";
@@ -7866,6 +7867,11 @@ export class Ledger extends DurableObject<Env> {
 
   startActionRun(body: Record<string, unknown>, actor: string): void {
     startActionRun(this.actionStore, actor, body);
+  }
+
+  // The newest terminal ship step start and whether it is resolved (src/ship-wait.ts).
+  shipWait(): ShipWaitRecord | null {
+    return readShipWait(this.sql);
   }
 
   recordActionRun(body: Record<string, unknown>, actor: string): ActionRun {
