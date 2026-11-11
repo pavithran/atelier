@@ -7,7 +7,7 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Items", line: 1, slot: 10,
-      form: 'new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--design NAME] [--duplicate-ok] [--fix-of tN]',
+      form: 'new "short title" [--brief TEXT] [--accept TEXT]... [--scope GLOB]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--design NAME] [--duplicate-ok] [--fix-of tN] [--priority N]',
       about: "The developer creates a task with a short title (at most 80 characters, what every list shows), and optionally its brief (the whole task, shown on its page and given to the agents that build and review it), its acceptance criteria (a change that fails one is rejected in review), the globs it intends to touch, what it is not to do, what tells its holder to stop and ask, and the gate it goes to next. A task filed without criteria is created with a warning, since a review would have none to judge its change against; a project that requires criteria (`init --require-criteria`) refuses it. One long text with no --brief is kept as the brief, and the title is derived from its first clause. Before filing, the CLI checks for live tasks with overlapping scopes and closely matching titles. A task with no scope is compared against every title regardless of scope; the titles must still closely match. If any match, it names them and files nothing; --duplicate-ok files the task anyway. --fix-of tN records item.fix_of to an existing merged task; an unknown or unmerged task is refused. The brief, `atelier start` and the task's page show them.",
     },
   ],
@@ -21,6 +21,7 @@ const spec: CommandSpec = {
     "stop-when": '--stop-when needs text: atelier new --stop-when "TEXT", once per entry',
     "next-gate": '--next-gate needs text: atelier new --next-gate "TEXT"',
     design: '--design needs a short name: atelier new --design NAME',
+    priority: "--priority needs 1, 2 or 3: atelier new --priority N",
   },
   help: {
     flags: {
@@ -32,6 +33,7 @@ const spec: CommandSpec = {
       "--non-goal TEXT": "something the task is not to do; once per entry",
       "--stop-when TEXT": "what tells the holder to stop and ask; once per entry",
       "--next-gate TEXT": "the gate the task goes to next",
+      "--priority N": "1 removes waiting or the developer's involvement, 2 is useful, 3 is long-term; without it the server files the task at 2",
       "--design NAME": "the short name of the design note the task builds on; a live task naming the same design that was claimed and has not merged or been abandoned holds this one back, as a shared core file does",
     },
     example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier new "Fix the parser" --brief "Nested lists fail to parse; make them parse" --accept "A nested list parses" --scope "src/parser/**" --project demo',

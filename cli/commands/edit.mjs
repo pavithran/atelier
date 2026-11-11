@@ -23,6 +23,7 @@ export default async function editCommand() {
     ...(fields.brief !== undefined ? [item.brief ? `Brief: ${item.brief.length} characters, shown on the task's page.` : "Brief: cleared."] : []),
     ...(fields.scope !== undefined ? [`Scope: ${item.scope.map(flat).join(", ") || "not specified (it overlaps every live task)"}`] : []),
     ...formatFields(item),
+    ...(item.priority !== undefined ? [`Priority: ${item.priority}`] : []),
   ];
   console.log(`${id} edited.${lines.length || appended.length ? `\n${[...appended, ...lines].join("\n")}` : " No framing is set now."}`);
   if (item.criteriaChange) console.log(criteriaNotice(id, item.criteriaChange));

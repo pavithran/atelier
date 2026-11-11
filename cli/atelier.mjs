@@ -914,6 +914,10 @@ export function fieldsArg(cmd) {
     if (typeof design !== "string" || (!design.trim() && cmd !== "edit")) die(FLAGS[cmd].design);
     out.design = design.trim() || null;
   }
+  if (args.priority !== undefined) {
+    if (!/^[123]$/.test(String(args.priority))) die(FLAGS[cmd].priority);
+    out.priority = Number(args.priority);
+  }
   return out;
 }
 
