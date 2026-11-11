@@ -9,7 +9,8 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, taskRevisionKey, WORK_IN_PROGRESS, lostToHold, giveUpClaim, unfinishedReport } from "../cli/runner.mjs";
+import { runnerTransport, offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, taskRevisionKey, WORK_IN_PROGRESS, lostToHold, giveUpClaim, unfinishedReport } from "../cli/runner.mjs";
+import { cleanRun } from "../src/models/reliability.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
 import { MAX_HARNESS_RERUNS, runKeyOf } from "../cli/runner-failure.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -2070,17 +2071,38 @@ test("loadLimit must be a positive number, and the refusal names the field", () 
   }
 });
 
-test("a build that times out reports the host's load and cores", async (t) => {
+// The report goes through the production transport and the server's own
+// validation, not an injected reporter (t662 fix round).
+const viaTransport = (sent) => {
+  const transport = runnerTransport({ server: "https://atelier.test", credential: "fixture", runner: "home:studio", fetch: async (url, init) => { sent.push(JSON.parse(init.body)); return Response.json({ ok: true }, { status: 201 }); } });
+  return async (body, _runner, signal) => {
+    const res = await transport.send("runs", {}, { body, actor: "owner", signal });
+    if (!res.ok) throw new Error(`${res.status}`);
+    return res.data;
+  };
+};
+
+test("a build that times out reports the host's load as it read when the harness timed out, through the transport and the server's validation", async (t) => {
   const args = loadRig(t);
-  const reports = [];
+  const sent = [], out = said(t);
   const { io } = fixture({ head: "before", timedOut: true });
-  await runRunner(args, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: reading(3.5, 8), queue: async () => [assignment],
-    reportRun: async (body) => reports.push(body),
-  });
-  assert.equal(reports.length, 1);
-  assert.equal(reports[0].outcome, "timed-out");
-  assert.deepEqual(reports[0].load, { average: 3.5, cores: 8 });
+  // 3.5 on the first reading after the claim; every later reading is 9.
+  let reads = 0;
+  const changing = () => { reads += 1; return reads === 1 ? { load: 0.5, cores: 8 } : reads === 2 ? { load: 3.5, cores: 8 } : { load: 9, cores: 8 }; };
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: changing, queue: async () => [assignment], reportRun: viaTransport(sent) });
+  assert.equal(out.some((l) => l.includes("could not report")), false, out.join("\n"));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].outcome, "timed-out");
+  assert.deepEqual(sent[0].load, { average: 3.5, cores: 8 });
+  const stored = cleanRun(sent[0], "2026-11-10T00:00:00.000Z", "home:studio");
+  assert.deepEqual(stored.load, { average: 3.5, cores: 8 });
+});
+
+test("the server refuses a malformed load on a run report", () => {
+  const base = { actor: "codex/gpt-6-astra", role: "build", outcome: "timed-out", project: "a", item: "t1" };
+  for (const load of [{ average: -1, cores: 8 }, { average: "3", cores: 8 }, { average: 1, cores: 0 }, { average: 1, cores: 1.5 }, 5, []]) {
+    assert.throws(() => cleanRun({ ...base, load }, "2026-11-10T00:00:00.000Z", "home:studio"), /load must be/, JSON.stringify(load));
+  }
 });
 
 test("a build that ends another way carries no load", async (t) => {

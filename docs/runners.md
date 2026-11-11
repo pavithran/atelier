@@ -733,12 +733,16 @@ run; every build brief states the minutes applied), and `finishTimeoutMs` to cha
 deadline from 60 minutes. Expiry ends the process group as above. A finish
 timeout leaves the claim held.
 
-Runner admission no longer uses load average. Individual test commands share
+A build runner takes no build while its host's 1-minute load average divided by
+its core count is at or above `loadLimit` (a positive number in the runner
+config, default 1.0); it logs why once, until that changes. Config load refuses a
+`loadLimit` that is zero, negative or not a number. Review, criteria-review and
+land jobs are not gated. A build that times out reports the load average and
+core count read at the moment the harness timed out. Individual test commands share
 [the host test-slot pool](test-slots.md), including commands an agent runs
 through the documented wrapper. Review harnesses inherit review priority;
 build and plan harnesses inherit ordinary priority. The runner includes the
-wrapper's absolute path in build, plan and review briefs. The old `loadLimit`
-setting is ignored. The pool at `/tmp/atelier-test-slots-v2/pool.sqlite` and its
+wrapper's absolute path in build, plan and review briefs. The pool at `/tmp/atelier-test-slots-v2/pool.sqlite` and its
 journals are world writable in a non-sticky shared directory, including after
 reboot; cleanup checks the caller’s launch nonce in live processes before signalling, never trusting stored PIDs.
 

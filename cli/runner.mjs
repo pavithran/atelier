@@ -1827,6 +1827,7 @@ export async function runTask(assignment, config, name, io) {
   // The recovery obligation (t363): a harness run failed in this workspace and
   // none has since succeeded. `failedRun` is what the run found at its start;
   // the rest is what this run did to it.
+  let timeoutLoad = null;
   let failedNow = false, savedOnce = false, markHead = null, markFrom = null, harnessExit = null, harnessTail = null, commandTrail = null, headUnreadable = false;
   const obligationKey = () => unsavedKey(workspace, item.id);
   // Records the obligation. The first call comes the moment a harness (or the
@@ -2267,6 +2268,9 @@ export async function runTask(assignment, config, name, io) {
     // The obligation is recorded the moment the run fails, before HEAD is read
     // or a reason made, and how the run ended is kept as a structured fact.
     if (result && (result.timedOut || result.code !== 0) && !limit) {
+      // The host's load as the harness timed out, before cleanup and
+      // reporting let it move (t662).
+      if (result.timedOut) { try { const r = io.load?.(); if (r) timeoutLoad = { average: r.load, cores: r.cores }; } catch { /* no reading */ } }
       harnessExit = harnessExitOf(result);
       harnessTail = harnessTailOf(result);
       await markFailure();
@@ -2390,7 +2394,7 @@ export async function runTask(assignment, config, name, io) {
       const named = `files the harness left uncommitted after its commits and one follow-up turn: ${leftovers.map((f) => f.path).join(", ")}`;
       state = { ...state, leftovers: leftovers.map((f) => f.path), detail: `${state.reason}; ${named}`.slice(0, 2000), reason: `${state.reason}; ${named}` };
     }
-    state = { ...state, claimedTask: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(harnessExit && harnessTail ? { harnessTail, commandTrail } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
+    state = { ...state, claimedTask: claimed, taskFailure: taskFailure && !error.infrastructure && !io.stopped(), ...(harnessExit ? { harnessExit } : {}), ...(timeoutLoad ? { timeoutLoad } : {}), ...(harnessExit && harnessTail ? { harnessTail, commandTrail } : {}), ...(error.needsDeveloper ? { needsDeveloper: true } : {}) };
     // The final record adds the head, the start and the reason as information.
     if (failedNow && claimed && !error.providerLimit) {
       await markFailure({ reason: state.reason });
@@ -5121,6 +5125,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       }
     },
     ...taskIO,
+    load: taskIO.load ?? load,
   };
   // A one-shot review (t273, cli/review-oneshot.mjs) takes the io above and
   // the config and runs one job in this process: it polls nothing, offers
@@ -5488,8 +5493,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               const detail = exit && outcome === "refused" ? exitDetail(exit) : state.detail ?? state.reason;
               // A build's timeout carries the host's load and cores as they
               // read then, so a later count tells contention from a long task.
-              let host = {};
-              if (role === "build" && outcome === "timed-out") { try { const r = load(); host = { load: { average: r.load, cores: r.cores } }; } catch { /* no reading */ } }
+              const host = role === "build" && outcome === "timed-out" && state.timeoutLoad ? { load: state.timeoutLoad } : {};
               await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, ...host, facts: factsOf(task, exit && outcome === "refused" ? { ...state, detail } : state) }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }

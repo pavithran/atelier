@@ -121,9 +121,11 @@ status never reports cloud containers.
 Do not mount the host pool database into a container or share `/tmp` between
 otherwise independent process namespaces.
 
-The former runner `loadLimit`, `ATELIER_LOAD_LIMIT`, and `ATELIER_LOAD`
-settings are retired and ignored. Neither runner admission nor checks wait
-on load average. Old evidence can still contain historical load readings.
+The former `ATELIER_LOAD_LIMIT` and `ATELIER_LOAD` settings are retired and
+ignored, and checks do not wait on load average. A runner config's `loadLimit`
+is separate: it is validated at config load, and a build runner skips claims
+while its host's load per core is at or above it (docs/runners.md). Old evidence
+can still contain historical load readings.
 
 ## Runtime smoke check
 
