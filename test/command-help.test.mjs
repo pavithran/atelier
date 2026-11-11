@@ -106,3 +106,15 @@ test("merge-main help distinguishes claim-time main from --head dispatch context
 test("unblock help says it also lifts a pre-review's fence on the landing", () => {
   assert.match(commandUsage("unblock"), /also lifts the fence a blocking pre-review left on the task's landing, so atelier land can queue it again/);
 });
+
+// t698: edit's criterion flags state the limits new's --accept states.
+test("edit --help states the criterion limits for --accept and --add-accept", () => {
+  const run = spawnSync(process.execPath, [cli, "edit", "--help"], { encoding: "utf8" });
+  const lines = run.stdout.split("\n");
+  for (const flag of ["--accept TEXT", "--add-accept TEXT"]) {
+    const line = lines.find((l) => l.includes(flag + " ") || l.trim().startsWith(flag));
+    assert.ok(line, flag);
+    assert.match(line, /at most 300 characters/, flag);
+    assert.match(line, /at most 12/, flag);
+  }
+});
