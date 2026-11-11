@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -360,26 +360,37 @@ test("summarise counts a landing that stopped at the ask as not landed and exits
 
 // t682: a lander's checkout catches up to the baseline's head by itself.
 // Each test runs the runner as production does (runRunner builds the io that
-// runLandJob gets) with a fake executeChild standing in for the processes.
+// runLandJob gets) over real git: a "server" repository, and a checkout of it
+// that is behind, ahead or diverged. Only the land and atelier-show children
+// are faked. The queue offers the landing on several polls of the one runner.
 process.env.ATELIER_LOAD = "0";
-const OLD = "a".repeat(40), NEW = "b".repeat(40);
-async function catchUpRun(t, { relation, fail = null, grant = { remote: "https://git.example/demo.git", token: "tok-secret", defaultBranch: "main" } }) {
+const gitIn = (cwd, ...argv) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...argv], { cwd, encoding: "utf8" }).trim();
+const commit = (cwd, name) => { writeFileSync(join(cwd, name), name); gitIn(cwd, "add", name); gitIn(cwd, "commit", "-q", "-m", name); return gitIn(cwd, "rev-parse", "HEAD"); };
+function catchUpRepos(t, relation) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-catchup-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
+  const server = join(dir, "server"), co = join(dir, "co");
+  mkdirSync(server);
+  gitIn(server, "init", "-q", "-b", "main");
+  const old = commit(server, "one");
+  gitIn(dir, "clone", "-q", server, co);
+  const base = commit(server, "two");
+  if (relation === "ahead") { gitIn(co, "pull", "-q", "--ff-only"); commit(co, "local"); }
+  if (relation === "diverged") commit(co, "local");
+  return { dir, server, co, old, base };
+}
+// polls: one entry per poll of the one runner; each is { grant } where grant
+// is the baselineGrant for that poll (a function may throw).
+async function catchUpRun(t, { relation, polls, between = () => {} }) {
+  const r = catchUpRepos(t, relation);
+  const path = join(r.dir, "runner.json");
   writeFileSync(path, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{model}", "{brief_file}"] }], jobs: ["land"] }));
-  const calls = [], lands = [], logs = [];
-  let head = OLD;
+  const lands = [], logs = [], heads = [], fetchEnvs = [];
   const executeChild = async (argv, options = {}) => {
     if (argv[0] === "git") {
-      const sub = argv[1];
-      calls.push({ argv: argv.slice(1), env: options.env });
-      if (fail && sub === fail.cmd) return fail.result;
-      if (sub === "status") return { code: 0, output: "", stderr: "" };
-      if (sub === "rev-parse") return { code: 0, output: `${head}\n`, stderr: "" };
-      if (sub === "merge-base") return { code: (argv[3] === OLD ? relation === "behind" : relation === "ahead") ? 0 : 1, output: "", stderr: "" };
-      if (sub === "merge") { head = NEW; return { code: 0, output: "", stderr: "" }; }
-      return { code: 0, output: "", stderr: "" };
+      if (argv[1] === "fetch") fetchEnvs.push({ argv: argv.slice(1), env: options.env });
+      if (options.timedOut) return options.timedOut;
+      return new Promise((resolve) => execFile("git", argv.slice(1), { cwd: options.cwd, env: options.env ?? process.env, encoding: "utf8" }, (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, output: stdout, stderr })));
     }
     if (argv[2] === "ls") return { code: 0, output: JSON.stringify([{ id: "t9", state: "merged", head: "h" }]), stderr: "" };
     if (argv[2] === "show") return { code: 0, output: JSON.stringify({ reviews: [] }), stderr: "" };
@@ -389,53 +400,84 @@ async function catchUpRun(t, { relation, fail = null, grant = { remote: "https:/
   t.mock.method(console, "log", (line) => logs.push(String(line)));
   let n = 0;
   await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
-    workspacePath: () => dir, executeChild, checkouts: ["demo"], checkoutOf: () => "/co", landJournal: () => false,
-    baselineHead: async () => NEW, baselineGrant: async () => grant, harnessReady: async () => ({ ready: true }),
+    workspacePath: () => r.dir, executeChild, checkouts: ["demo"], checkoutOf: () => r.co, landJournal: () => false,
+    baselineHead: async () => r.base,
+    baselineGrant: async () => { const grant = polls[n - 1]; return typeof grant === "function" ? grant(r) : grant; },
+    harnessReady: async () => ({ ready: true }),
     wait: () => new Promise((resolve) => setImmediate(resolve)),
-    async queue() { if (++n > 1) { process.emit("SIGTERM"); return []; } return [{ project: "demo", item: { id: "t9", title: "x", dispatch: { job: "land", at: "2026-10-24T00:00:00.000Z" } }, agent: "atelier", model: "lander", actor: "atelier/lander" }]; },
+    async queue() {
+      if (n > 0) { heads.push(gitIn(r.co, "rev-parse", "HEAD")); between(r, n, lands.length); }
+      if (++n > polls.length) { process.emit("SIGTERM"); return []; }
+      return [{ project: "demo", item: { id: "t9", title: "x", dispatch: { job: "land", at: "2026-10-24T00:00:00.000Z" } }, agent: "atelier", model: "lander", actor: "atelier/lander" }];
+    },
   });
-  return { calls, lands, logs, head: () => head };
+  return { ...r, lands, logs, heads, fetchEnvs, head: () => gitIn(r.co, "rev-parse", "HEAD") };
 }
-const refusal = (c) => c.logs.find((l) => l.includes("refused:")) ?? "";
+const goodGrant = (r) => ({ remote: r.server, token: "tok-secret", defaultBranch: "main" });
+const refusals = (c) => c.logs.filter((l) => l.includes("refused:"));
 
 test("t682: a clean checkout strictly behind the baseline fetches with the baseline's credential, fast-forwards, then lands", async (t) => {
-  const c = await catchUpRun(t, { relation: "behind" });
+  const c = await catchUpRun(t, { relation: "behind", polls: [goodGrant] });
   assert.equal(c.lands.length, 1);
-  assert.equal(c.head(), NEW);
-  const fetch = c.calls.find((x) => x.argv[0] === "fetch");
-  assert.deepEqual(fetch.argv.slice(-2), ["https://git.example/demo.git", "main"]);
+  assert.equal(c.head(), c.base);
+  const fetch = c.fetchEnvs[0];
+  assert.deepEqual(fetch.argv.slice(-2), [c.server, "main"]);
   assert.equal(fetch.env.GIT_CONFIG_VALUE_0, "Authorization: Bearer tok-secret");
   assert.ok(!fetch.argv.join(" ").includes("tok-secret"));
-  assert.ok(c.calls.some((x) => x.argv.join(" ") === `merge --ff-only --quiet ${NEW}`));
 });
 
 for (const relation of ["ahead", "diverged"]) {
   test(`t682: a checkout ${relation} of the baseline is refused naming atelier pull and the project`, async (t) => {
-    const c = await catchUpRun(t, { relation });
-    assert.match(refusal(c), /atelier pull --project demo/);
-    assert.doesNotMatch(refusal(c), /atelier sync/);
+    const c = await catchUpRun(t, { relation, polls: [goodGrant] });
+    const [reason] = refusals(c);
+    assert.match(reason, /atelier pull --project demo/);
+    assert.doesNotMatch(reason, /atelier sync/);
     assert.deepEqual(c.lands, []);
-    assert.equal(c.head(), OLD);
-    assert.ok(!c.calls.some((x) => x.argv[0] === "merge"));
+    assert.notEqual(c.head(), c.base);
+    assert.equal(c.heads[0], c.head());
   });
 }
 
-test("t682: no readable baseline credential refuses and fetches nothing", async (t) => {
-  const c = await catchUpRun(t, { relation: "behind", grant: null });
-  assert.match(refusal(c), /atelier pull --project demo/);
-  assert.deepEqual(c.lands, []);
-  assert.ok(!c.calls.some((x) => x.argv[0] === "fetch"));
+test("t682: a credential reader that refuses refuses this landing only; the same runner's next poll lands", async (t) => {
+  const c = await catchUpRun(t, { relation: "behind", polls: [() => { throw new Error("git-token: 429 exhausted"); }, goodGrant] });
+  assert.equal(refusals(c).length, 1);
+  assert.match(refusals(c)[0], /atelier pull --project demo/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.lands.length, 1);
+  assert.equal(c.head(), c.base);
 });
 
-for (const [cmd, timedOut] of [["fetch", false], ["merge", false], ["fetch", true], ["merge", true]]) {
-  test(`t682: a ${cmd} that ${timedOut ? "is stopped" : "exits nonzero"} refuses with git's stderr lines and leaves HEAD`, async (t) => {
-    const c = await catchUpRun(t, { relation: "behind", fail: { cmd, result: { code: timedOut ? null : 128, output: "", stderr: "one\nfatal: no route", timedOut } } });
-    assert.match(refusal(c), /fatal: no route/);
-    assert.match(refusal(c), /atelier pull --project demo/);
-    assert.deepEqual(c.lands, []);
-    assert.equal(c.head(), OLD);
-    // The next poll re-checks from the start.
-    const again = await catchUpRun(t, { relation: "behind" });
-    assert.equal(again.lands.length, 1);
+test("t682: no readable baseline credential refuses and fetches nothing", async (t) => {
+  const c = await catchUpRun(t, { relation: "behind", polls: [null, goodGrant] });
+  assert.match(refusals(c)[0], /atelier pull --project demo/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.fetchEnvs.length, 1);
+});
+
+test("t682: a fetch that git fails, from a remote at a missing path, refuses with git's stderr, leaves HEAD, and the next poll lands", async (t) => {
+  const c = await catchUpRun(t, { relation: "behind", polls: [(r) => ({ ...goodGrant(r), remote: join(r.dir, "missing") }), goodGrant] });
+  assert.match(refusals(c)[0], /git fetch failed \(exit 128\): fatal: Could not read from remote repository/);
+  assert.match(refusals(c)[0], /atelier pull --project demo/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.lands.length, 1);
+  assert.equal(c.head(), c.base);
+});
+
+test("t682: a fast-forward that git fails refuses with git's stderr, leaves HEAD, and the next poll lands", async (t) => {
+  const lock = (r) => join(r.co, ".git", "index.lock");
+  const c = await catchUpRun(t, {
+    relation: "behind",
+    polls: [(r) => { writeFileSync(lock(r), ""); return goodGrant(r); }, goodGrant],
+    between: (r, poll) => { if (poll === 1) rmSync(lock(r)); },
   });
-}
+  assert.match(refusals(c)[0], /git merge --ff-only failed \(exit 1\).*index\.lock/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.lands.length, 1);
+  assert.equal(c.head(), c.base);
+});
+
+test("t682: the runner's credential call throws a refusal and never calls the exiting readGrant", () => {
+  const source = readFileSync(new URL("../cli/commands/runner.mjs", import.meta.url), "utf8");
+  assert.match(source, /readBaselineGrant\(request,/);
+  assert.doesNotMatch(source, /[^a-zA-Z]readGrant\(/);
+});
