@@ -24,28 +24,22 @@ Atelier's subject is several agents working at once under one owner, and
 evidence graded by where it was observed. The pages show that subject, not
 only a list of tasks.
 
-- **Decisions** puts the next human decision beside its evidence. Its first
-  screen also shows who is on the floor, so the parallel work is visible
-  before anything is opened.
-- **Studio** is the floor itself: one lane per live task on a shared time
-  axis, drawn as the Flow graph draws a thread. A lane is banded by who held
-  the task, each band and the thread along it in the holder's family colour
-  (a local run dotted), so a handoff is a visible change of band and colour;
-  the current holder's band runs to the "now" line, where the head breathes.
-  Every recorded event is a mark on the lane. The page refreshes every
-  fifteen seconds without script.
+- **Today** is the front page and puts the next human decision beside its
+  evidence. It shows what waits for the owner, what is running, what merged
+  and deployed today, and how each project is doing, so the parallel work is
+  visible before anything is opened. It took over what Home, Now and
+  Decisions showed.
 - **Code** and **Log** carry the same neutral stripe on every entry and
   every commit; company colours stay inside charts (d9), so the stripe never
   says which family. The agent the commit's message names (or "no agent
   named") is written beside it in words. An entry's stripe is the commit that
   last changed it; an entry none of the commits read changed gets a fainter
   stripe.
-- **Home** is the portfolio: a card per project with what needs the owner
+- **Projects** is the portfolio: a card per project with what needs the owner
   there, what is running, its two weeks of moves as a bar per day stacked by
   the family of the agent that made them, and its last merge. Projects with
-  something waiting come first. The portfolio's Flow and its timeline are
-  reached from here, and the Models and Usage pages live under the account
-  menu, out of the work navigation.
+  something waiting come first. Usage lives under the account menu, out of
+  the work navigation.
 - **A project's area**, under /p/NAME, is the unit the owner works in:
   Overview (where it stands and what waits on the owner there), Tasks (one
   list of every task, each row with its state, its holder and when it last
@@ -56,8 +50,19 @@ only a list of tasks.
   ControlPlane policy). A task's page sits inside the area.
 - **History** is the timeline of merges and closures across projects, by
   day, each marked in the family of the agent that held the task when it
-  ended; a closure is a grey cap, not a dot. It is reached from Home, and a
+  ended; a closure is a grey cap, not a dot. It also holds the floor: one
+  lane per live task on a shared time axis, drawn as the Flow graph draws a
+  thread. A lane is banded by who held the task, each band and the thread
+  along it in the holder's family colour (a local run dotted), so a handoff
+  is a visible change of band and colour; the current holder's band runs to
+  the "now" line, where the head breathes. Every recorded event is a mark on
+  the lane. The page refreshes every fifteen seconds without script. A
   project's own record is its Log tab.
+- **Process** is the map of a project's process: each block and how often
+  each loop runs.
+- **Models** shows the pool of models and each model's record.
+- **Rigs** shows each machine a runner polls from, with its load, its live
+  runners and the stage of each one's task.
 
 ## Evidence always says where
 
@@ -92,7 +97,7 @@ staggered above and below the line so none hides another.
 ## Constraints
 
 Every page reads fully without script, and every action is a form post
-bound to the revision on screen. Flow, Decisions and a task's page also
+bound to the revision on screen. Today, Flow and a task's page also
 carry Atelier's own script, served from this origin under a nonce made for
 the request, which the content security policy names and the script tag
 carries; no inline script and no script from elsewhere runs, and every
@@ -103,7 +108,7 @@ revisions on screen: when the fetched copy binds its forms to revisions
 other than the ones the page shows, one moved, new or gone, the page keeps
 what it shows, says a new revision arrived with a link to reload, and
 stops refreshing. Badges never wrap. Pages hold their layout without horizontal scrolling at 390 px,
-and the navigation drops its icons below 720 px so its three work destinations
+and the navigation drops its icons below 720 px so its work destinations
 and the account menu fit.
 
 The [orchestrator design](docs/orchestrator.md) describes plans, review and integration, with implementation status.
