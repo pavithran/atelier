@@ -97,7 +97,7 @@ test("owner initialization scans history in batches and preserves other hook rul
     git("-C", nonempty, "fetch", "-q", work, `${empty}:refs/heads/other`);
     refused(push(nonempty, history), /adds more than 1000 commits/);
     for (const [path, text, mode, reason] of [
-      ["binary", "\0binary", "100644", "binary content"],
+      ["binary", "\0".repeat(8 * 1024 * 1024 + 1), "100644", "bytes, over"],
       ["large", "a".repeat(8 * 1024 * 1024 + 1), "100644", "bytes, over"],
       ["sub", "", "160000", "a submodule"],
     ]) {

@@ -157,7 +157,9 @@ export function scanLine(text: string): boolean {
 //   of it as added, and blocks only if a key pattern is in it (t554). A
 //   media file over SCAN_BYTES is not read and not flagged (t518: 10 flags on
 //   binary media in Nov 1-6 held no secret; 6 pushes were refused).
-// - A head side that is not text and not media (any other binary content, a
+// - Any other binary under SCAN_BYTES is scanned as raw bytes the same way
+//   (t702); it blocks only on a key pattern.
+// - A head side that is not scannable (a binary over SCAN_BYTES, a
 //   submodule, which is a commit in another repository, a text blob over
 //   SCAN_BYTES) is recorded unscanned with the reason and the
 //   object's hash, so the owner clears it by content, like a hit.
@@ -212,10 +214,9 @@ async function readSide(r: Reader, leaf: Leaf): Promise<Side> {
   // Media is decided by its signature or its name before its size: a large
   // clip is not read and not flagged.
   if (bytes.length > SCAN_BYTES) return isBinary(bytes) && isMedia(bytes, leaf.path) ? { lines: [], media: true } : { reason: `${bytes.length} bytes, over the ${SCAN_BYTES} the scan reads` };
-  if (isBinary(bytes)) {
-    if (isMedia(bytes, leaf.path)) return { lines: splitLines(new TextDecoder("latin1").decode(bytes)), media: true };
-    return { reason: "binary content" };
-  }
+  // Any binary under SCAN_BYTES is scanned as raw bytes and blocks only on a
+  // key pattern (t702); only one over SCAN_BYTES stays unscanned.
+  if (isBinary(bytes)) return { lines: splitLines(new TextDecoder("latin1").decode(bytes)), media: true };
   return { lines: splitLines(decoder.decode(bytes)) };
 }
 

@@ -179,11 +179,11 @@ test("a key inside an image's bytes is still a hit, and other binaries still blo
   const stub = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]);        // a PNG's first four bytes only
   const scan = await fullScan(s, s.tree({}), s.tree({ "k.png": { blob: s.bytes(keyed) }, "x.bin": { blob: s.bytes(other) }, "s.png": { blob: s.bytes(stub) }, "s.dat": { blob: s.bytes(stub) } }));
   assert.deepEqual(scan.hits.map((h) => h.file), ["k.png"]);
-  // The truncated PNG is flagged under a neutral name only (t518).
-  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["s.dat", "x.bin"]);
+  // Other binaries under SCAN_BYTES are scanned as bytes, not flagged (t702).
+  assert.deepEqual(scan.unscanned, []);
 });
 
-test("a false or truncated image signature under a neutral name still blocks, whatever the format", async () => {
+test("a false or truncated image signature under a neutral name is scanned as bytes, whatever the format", async () => {
   const s = store();
   const enc = new TextEncoder();
   const files: Record<string, Uint8Array> = {
@@ -197,7 +197,7 @@ test("a false or truncated image signature under a neutral name still blocks, wh
   };
   const neutral = Object.fromEntries(Object.entries(files).map(([n, b]) => [`${n}.dat`, { blob: s.bytes(b) }]));
   const scan = await fullScan(s, s.tree({}), s.tree(neutral));
-  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), Object.keys(files).map((n) => `${n}.dat`).sort());
+  assert.deepEqual(scan, { hits: [], unscanned: [] });
   // The same bytes under their media names are scanned and not flagged.
   const named = Object.fromEntries(Object.entries(files).map(([n, b]) => [n, { blob: s.bytes(b) }]));
   assert.deepEqual(await fullScan(s, s.tree({}), s.tree(named)), { hits: [], unscanned: [] });
@@ -227,7 +227,31 @@ test("a PNG, JPEG, MP4 and WebP add no flag, at any size, while an oversized tex
   assert.deepEqual(await fullScan(s, s.tree({}), s.tree(large)), { hits: [], unscanned: [] });
   const text = new Uint8Array(SCAN_BYTES + 1).fill(0x61);
   const scan = await fullScan(s, s.tree({}), s.tree({ "big.txt": { blob: s.bytes(text) }, "x.bin": { blob: s.bytes(new Uint8Array([0x7f, 0x45, 0x4c, 0x46, 0, 1])) } }));
-  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["big.txt", "x.bin"]);
+  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["big.txt"]);
+});
+
+// t702: a non-media binary under SCAN_BYTES is scanned as raw bytes.
+test("a 1 MB random .bin with no key pattern records nothing, and one with a key written into it is a hit", async () => {
+  const s = store();
+  const random = new Uint8Array(1024 * 1024);
+  let x = 12345;
+  for (let i = 0; i < random.length; i++) { x = (x * 1103515245 + 12345) & 0x7fffffff; random[i] = (x >> 16) & 0xff; }
+  random[0] = 0; // a NUL, so it reads as binary whatever the rest holds
+  const keyed = random.slice();
+  keyed.set(new TextEncoder().encode(`\n${FAKE.openai}\n`), 5000);
+  assert.deepEqual(await fullScan(s, s.tree({}), s.tree({ "pack.bin": { blob: s.bytes(random) } })), { hits: [], unscanned: [] });
+  const scan = await fullScan(s, s.tree({}), s.tree({ "pack.bin": { blob: s.bytes(keyed) } }));
+  assert.deepEqual(scan.hits.map((h) => h.file), ["pack.bin"]);
+  assert.deepEqual(scan.unscanned, []);
+});
+
+test("a non-media binary over SCAN_BYTES and a submodule stay unscanned", async () => {
+  const s = store();
+  const big = new Uint8Array(SCAN_BYTES + 1).fill(0xfe);
+  big[0] = 0;
+  const scan = await fullScan(s, s.tree({}), s.tree({ "big.bin": { blob: s.bytes(big) }, sub: { blob: "a".repeat(40), mode: "160000" } }));
+  assert.deepEqual(scan.unscanned.map((u) => u.file).sort(), ["big.bin", "sub"]);
+  assert.deepEqual(scan.hits, []);
 });
 
 // A text file with a known secret pattern is still a hit, beside media.

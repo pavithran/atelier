@@ -410,8 +410,8 @@ test("a first move and a later merge scan every commit, even when the merge brin
   let input = "", id = 0;
   const commit = (branch, extra = "", files = "") => {
     id++;
-    const bytes = `\0marker-${id}`;
-    input += `commit refs/heads/${branch}\nmark :${id}\ncommitter Test <t@example.test> ${1700000000 + id} +0000\ndata 1\nx\n${extra}M 100644 inline artifact.bin\ndata ${Buffer.byteLength(bytes)}\n${bytes}\n${files}\n`;
+    const gitlink = id.toString(16).padStart(40, "0");
+    input += `commit refs/heads/${branch}\nmark :${id}\ncommitter Test <t@example.test> ${1700000000 + id} +0000\ndata 1\nx\n${extra}M 160000 ${gitlink} artifact.bin\n${files}\n`;
   };
   for (let i = 0; i < 1005; i++) commit("main");
   const firstTip = id;
@@ -423,7 +423,7 @@ test("a first move and a later merge scan every commit, even when the merge brin
   execFileSync("git", ["fast-import", "--quiet"], { cwd: source, env: gitEnv, input });
   const merged = tipOf(source, "refs/heads/main");
   // First carry a long linear baseline. Each commit has a unique unreadable
-  // blob, so the report's commit set proves all commits were visited.
+  // gitlink, so the report's commit set proves all commits were visited.
   const initial = git(source, "rev-list", "--first-parent", merged).split("\n")[1];
   git(source, "update-ref", "refs/heads/main", initial);
   const scan = { root: join(root, "scans"), policy: { clearances: [], private: [] } };
@@ -457,7 +457,7 @@ test("a move past 60 seconds reports binary and oversized history as unscanned i
   assert.equal(imported.code, 0, imported.stderr);
   const source = join(root, "media-history");
   makeV1History(source);
-  writeFileSync(join(source, "archive.bin"), Buffer.from([0, 1, 2, 3]));
+  writeFileSync(join(source, "archive.bin"), Buffer.alloc(8388609));
   writeFileSync(join(source, "lexicon.json"), '"' + "x".repeat(8388608) + '"');
   git(source, "add", ".");
   git(source, "commit", "-q", "-m", "historical media");
@@ -474,7 +474,7 @@ test("a move past 60 seconds reports binary and oversized history as unscanned i
   try { result = await cli(["projects", "move-host", "media", "--from", source, "--project", "media"]); }
   finally { server.git.mirror = mirror; }
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /Unscanned: archive.bin .*binary content/);
+  assert.match(result.stdout, /Unscanned: archive.bin .*over the 8388608/);
   assert.match(result.stdout, /Unscanned: lexicon.json .*over the 8388608/);
   assert.equal(tipOf(join(root, "data", "repos", "media.git"), "refs/heads/main"), git(source, "rev-parse", "HEAD"));
   const kept = server.namespace.get(server.namespace.idFromName("project:media"));
