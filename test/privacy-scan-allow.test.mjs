@@ -82,9 +82,10 @@ test("a real key is not allowed by an allowance for another line", (t) => {
 // Three entries for a placeholder in cli/server-errors.test.mjs, then seven
 // for the made-up key in test/runner-same-exit.test.mjs, then the 37 lines
 // the tip-tree scan of the 2.0 tree flagged (tool paths, made-up test keys,
-// the public Access audience tag); each names the developer's decision in
+// the public Access audience tag), then the 51 lines the 2.0 push scan
+// flagged on 2026-11-11; each names the developer's decision in
 // its reason.
-test("the shipped allowance list holds the t266, t323 and 2.0 tip-scan entries and no key text", () => {
+test("the shipped allowance list holds the t266, t323, 2.0 tip-scan and 2.0 push-scan entries and no key text", () => {
   const list = readAllowances();
   assert.deepEqual(list.slice(0, 10).map((a) => a.commit), ["1acf7deb", "ae4368a4", "bcf2c358", ...["7304c123","e0c69f61","cea43fa7","a46f9404","0b092bd9","573fb054","83fade85"]]);
   for (const a of list.slice(0, 3)) {
@@ -95,12 +96,16 @@ test("the shipped allowance list holds the t266, t323 and 2.0 tip-scan entries a
     assert.equal(a.file, "test/runner-same-exit.test.mjs");
     assert.match(a.reason, /^PAVI 2026-10-27/);
   }
-  const tip = list.slice(10);
+  const tip = list.slice(10, 47);
   assert.equal(tip.length, 37);
   for (const a of tip) {
     assert.equal(a.commit, "d04b6ac4");
     assert.match(a.reason, /^PAVI 2026-10-30/);
   }
+  // The 51 lines the 2.0 push scan flagged on 2026-11-11 (t703).
+  const push = list.slice(47);
+  assert.equal(push.length, 51);
+  for (const a of push) assert.match(a.reason, /^PAVI 2026-11-11/);
   assert.ok(!JSON.stringify(list).includes("Bearer"));
 });
 
