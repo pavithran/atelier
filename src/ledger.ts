@@ -7451,11 +7451,12 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // A standing instruction (src/standing.ts, G6) is recorded for a project
-  // in fast mode alone, except models, dispatch-on-criteria and
-  // review-on-checked (which outside fast mode only names a dispatch's reviewer).
+  // in fast mode alone, except models, dispatch-on-criteria, queue-landable,
+  // deploy-on-landing and review-on-checked (which outside fast mode only
+  // names a dispatch's reviewer).
   recordDecision(body: Record<string, unknown>, actor: string, acting: string | null = null): DecisionView {
     const p = this.project();
-    if (body.standing !== undefined && !["models", "dispatch-on-criteria", "review-on-checked"].includes(String((body.standing as { key?: unknown } | null)?.key).trim()) && actor === this.owner && this.mode().mode !== "fast") {
+    if (body.standing !== undefined && !["models", "dispatch-on-criteria", "queue-landable", "deploy-on-landing", "review-on-checked"].includes(String((body.standing as { key?: unknown } | null)?.key).trim()) && actor === this.owner && this.mode().mode !== "fast") {
       throw new RuleError("not_fast", `${p.name} is not in fast mode, and a standing instruction is recorded only for a project in fast mode; nothing was recorded`, 409, `only the developer can: atelier mode fast --reason TEXT --project ${p.name}, then run the same command again`);
     }
     const decision = recordDecision(this.decisionStore, actor, body, new Date().toISOString(), acting);
@@ -7486,10 +7487,11 @@ export class Ledger extends DurableObject<Env> {
   }
 
   // The standing instructions that act now, by key: those recorded and not
-  // withdrawn. dispatch-on-criteria also acts outside fast mode.
+  // withdrawn. dispatch-on-criteria, queue-landable and deploy-on-landing
+  // also act outside fast mode.
   standing(): Map<string, string> {
     const instructions = standingOf(standingDecisions(this.decisionStore));
-    return this.fastMode() ? instructions : new Map([...instructions].filter(([key]) => key === "dispatch-on-criteria"));
+    return this.fastMode() ? instructions : new Map([...instructions].filter(([key]) => ["dispatch-on-criteria", "queue-landable", "deploy-on-landing"].includes(key)));
   }
 
   decisions(): DecisionView[] {
