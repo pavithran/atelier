@@ -46,7 +46,7 @@ test("a dirty checkout is refused with the reason and nothing runs", async () =>
 });
 
 test("a main that differs from the baseline is refused with both commits named", async () => {
-  const { io, ran } = jobIo({ baselineHead: async () => OTHER });
+  const { io, ran } = jobIo({ baselineHead: async () => OTHER, git: async (argv) => (argv[0] === "status" ? { code: 0, output: "" } : argv[0] === "merge-base" ? { code: 1, output: "" } : { code: 0, output: `${HEAD}\n` }) });
   const result = await runLandJob("t9", io);
   assert.equal(result.refused, true);
   assert.match(result.reason, /main in the checkout \/checkout is at aaaaaaaa, not at the baseline's bbbbbbbb/);

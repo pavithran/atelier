@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { landFixture } from "./land-fixture.mjs";
-import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../cli/land-queue.mjs";
+import { childFlags, parseParallel, runLandJob, runLandQueue, spawnLanding, summarise, uniqueIds } from "../cli/land-queue.mjs";
 
 // t54: atelier land t1 t2 t3 runs a bounded pool of the ordinary land command.
 // The pool is tested with stand-in landings (each one a handle the test
@@ -356,3 +356,60 @@ test("summarise counts a landing that stopped at the ask as not landed and exits
   assert.equal(s.line, "2 tasks: 1 landed, 1 asked, not landed.");
   assert.equal(s.status, 1);
 });
+
+// t682: a lander's checkout catches up to the baseline's head by itself.
+const OLD = "a".repeat(40), NEW = "b".repeat(40);
+function catchUpIo({ relation, fail = null, project = "demo" }) {
+  const calls = [], ran = [];
+  let head = OLD;
+  const git = async (argv) => {
+    calls.push(argv.join(" "));
+    if (argv[0] === "status") return { code: 0, output: "" };
+    if (argv[0] === "rev-parse") return { code: 0, output: `${head}\n` };
+    if (fail && argv[0] === fail.cmd) return fail.result;
+    if (argv[0] === "merge-base") {
+      const [, , a] = argv, behind = relation === "behind";
+      return { code: (a === OLD ? behind : relation === "ahead") ? 0 : 1, output: "" };
+    }
+    if (argv[0] === "merge") { head = NEW; return { code: 0, output: "" }; }
+    return { code: 0, output: "" };
+  };
+  const io = { checkout: "/co", project, git, baselineHead: async () => NEW, hasJournal: () => false, land: async () => { ran.push("land"); return { code: 0, output: "ok" }; } };
+  return { io, calls, ran, head: () => head };
+}
+
+test("t682: a clean checkout strictly behind the baseline fast-forwards, then lands", async () => {
+  const c = catchUpIo({ relation: "behind" });
+  assert.deepEqual(await runLandJob("t1", c.io), { ok: true });
+  assert.deepEqual(c.ran, ["land"]);
+  assert.equal(c.head(), NEW);
+  assert.ok(c.calls.some((x) => x.startsWith("fetch")) && c.calls.some((x) => x === `merge --ff-only --quiet ${NEW}`));
+});
+
+for (const relation of ["ahead", "diverged"]) {
+  test(`t682: a checkout ${relation} of the baseline is refused naming atelier pull`, async () => {
+    const c = catchUpIo({ relation });
+    const r = await runLandJob("t1", c.io);
+    assert.equal(r.refused, true);
+    assert.match(r.reason, /atelier pull --project demo/);
+    assert.doesNotMatch(r.reason, /atelier sync/);
+    assert.deepEqual(c.ran, []);
+    assert.equal(c.head(), OLD);
+    assert.ok(!c.calls.some((x) => x.startsWith("merge ")));
+  });
+}
+
+for (const [cmd, timedOut] of [["fetch", false], ["merge", false], ["fetch", true], ["merge", true]]) {
+  test(`t682: a ${cmd} that ${timedOut ? "is stopped" : "exits nonzero"} refuses with git's last lines and leaves HEAD`, async () => {
+    const c = catchUpIo({ relation: "behind", fail: { cmd, result: { code: timedOut ? 0 : 128, output: "one\nfatal: no route", timedOut } } });
+    const r = await runLandJob("t1", c.io);
+    assert.equal(r.refused, true);
+    assert.match(r.reason, /fatal: no route/);
+    assert.match(r.reason, /atelier pull --project demo/);
+    assert.deepEqual(c.ran, []);
+    assert.equal(c.head(), OLD);
+    // The next poll re-checks from the start.
+    const again = catchUpIo({ relation: "behind" });
+    assert.deepEqual(await runLandJob("t1", again.io), { ok: true });
+  });
+}

@@ -233,6 +233,30 @@ export function failureReport(id, output, record = null) {
   return `landing ${id} failed at ${failedStep(output)}${tail ? `:\n${tail}` : "."}`;
 }
 
+// A checkout that is clean and strictly behind the baseline's head is brought
+// to it with a fast-forward, the only write; the baseline's commit is fetched
+// first, which writes objects and no ref. A checkout that is ahead of the
+// baseline or has diverged from it is refused as it is, naming atelier pull.
+// Any git step that exits nonzero or is stopped refuses the job with git's
+// last lines and leaves HEAD where it was; the next poll starts again.
+// Resolves null when the checkout is now at the baseline's head.
+async function catchUp(id, io, here, base) {
+  const { checkout, git } = io;
+  const pull = `atelier pull --project ${io.project ?? "NAME"}`;
+  const at = `main in the checkout ${checkout} is at ${here.slice(0, 8)}, not at the baseline's ${base.slice(0, 8)}`;
+  const failed = (step, r) => ({ ok: false, refused: true, reason: `${at}; ${step} failed${r.timedOut ? " (stopped)" : ` (exit ${r.code})`}: ${String(r.output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ")}; run ${pull} there, and the landing of ${id} runs on the next poll` });
+  const fetched = await git(["fetch", "--quiet", "--no-tags", io.remote ?? "origin", base]);
+  if (fetched.code !== 0 || fetched.timedOut) return failed("git fetch", fetched);
+  const behind = await git(["merge-base", "--is-ancestor", here, base]);
+  if (behind.code !== 0) {
+    const ahead = (await git(["merge-base", "--is-ancestor", base, here])).code === 0;
+    return { ok: false, refused: true, reason: `${at}; the checkout is ${ahead ? "ahead of" : "diverged from"} the baseline; run ${pull} there, and the landing of ${id} runs on the next poll` };
+  }
+  const moved = await git(["merge", "--ff-only", "--quiet", base]);
+  if (moved.code !== 0 || moved.timedOut) return failed("git merge --ff-only", moved);
+  return null;
+}
+
 // One land job, run by a runner that holds the project's registered
 // checkout: the same flow as `atelier land ID`, run in that checkout as a
 // process of its own, so the landing lease and the landing journal
@@ -245,6 +269,8 @@ export function failureReport(id, output, record = null) {
 // so it is the command that judges it. io:
 //   checkout     the registered checkout's folder
 //   git          async (args) => { code, output }, run in the checkout
+//   project      the project's name, for the refusal's `atelier pull` line
+//   remote       where the baseline's commits are fetched from (default origin)
 //   baselineHead async () => the baseline's head commit, or null
 //   hasJournal   () => whether a landing journal exists for the checkout
 //   land         async () => { code, output, timedOut } of `atelier land ID`
@@ -276,7 +302,10 @@ export async function runLandJob(id, io) {
     const base = await baselineHead();
     if (head.code !== 0 || !base) return { ok: false, refused: true, reason: `main in the checkout ${checkout} cannot be compared with the baseline (${head.code !== 0 ? "its HEAD cannot be read" : "the baseline's head cannot be read"})` };
     const here = head.output.trim();
-    if (here !== base && !await io.samePaired?.(here, base)) return { ok: false, refused: true, reason: `main in the checkout ${checkout} is at ${here.slice(0, 8)}, not at the baseline's ${base.slice(0, 8)}; run atelier sync there, and the landing of ${id} runs on the next poll` };
+    if (here !== base && !await io.samePaired?.(here, base)) {
+      const caught = await catchUp(id, io, here, base);
+      if (caught) return caught;
+    }
   }
   const result = await land();
   if (result.code === 0 && !result.timedOut) {
