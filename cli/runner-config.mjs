@@ -8,6 +8,7 @@ import { isOwnerSecretName } from "./credentials.mjs";
 
 export const DEFAULT_TASK_TIMEOUT_MS = 45 * 60_000;
 export const DEFAULT_FINISH_TIMEOUT_MS = 60 * 60_000;
+export const DEFAULT_LOAD_LIMIT = 1.0;
 
 // The jobs a runner offers and takes (offerFrom in runner.mjs): every form of
 // building — a plain build, the plan job (docs/orchestrator.md, section 2) and
@@ -108,7 +109,10 @@ export function parseConfig(json, { configPath, env } = {}) {
   if (!Number.isInteger(taskTimeoutMs) || taskTimeoutMs <= 0 || taskTimeoutMs > 2_147_483_647) errors.push("taskTimeoutMs must be a positive timer-safe integer");
   const finishTimeoutMs = value.finishTimeoutMs ?? DEFAULT_FINISH_TIMEOUT_MS;
   if (!Number.isInteger(finishTimeoutMs) || finishTimeoutMs <= 0 || finishTimeoutMs > 2_147_483_647) errors.push("finishTimeoutMs must be a positive timer-safe integer");
-  // loadLimit is retired: test commands, not runner jobs, use host slots.
+  // The ratio of the host's 1-minute load average to its cores at or above
+  // which a build runner claims no build (t662).
+  const loadLimit = value.loadLimit === undefined ? DEFAULT_LOAD_LIMIT : value.loadLimit;
+  if (typeof loadLimit !== "number" || !Number.isFinite(loadLimit) || loadLimit <= 0) errors.push("loadLimit must be a positive number (the ratio of load average to cores)");
   // Optional: for each model that needs an API key, the name of the Keychain
   // entry that holds it. The key itself is refused here, and never echoed.
   let keychain;
@@ -243,7 +247,7 @@ export function parseConfig(json, { configPath, env } = {}) {
     }
     if (errors.length === start) agents.push({ agent: entry.agent, models: [...entry.models], command: [...entry.command], ...(entry.env ? { env: [...entry.env] } : {}) });
   }
-  return { agents, errors, taskTimeoutMs, finishTimeoutMs, ...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}), ...(claudeTokenFile ? { claudeTokenFile } : {}),
+  return { agents, errors, taskTimeoutMs, finishTimeoutMs, loadLimit,...(keychain ? { keychain } : {}), ...(balances ? { balances } : {}), ...(tokens ? { tokens } : {}), ...(claudeTokenFile ? { claudeTokenFile } : {}),
     ...(jobs !== undefined ? { jobs } : {}), ...(projects ? { projects } : {}) };
 }
 

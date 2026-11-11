@@ -9,7 +9,8 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseConfig, readConfig, DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS } from "../cli/runner-config.mjs";
-import { offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, taskRevisionKey, WORK_IN_PROGRESS, lostToHold, giveUpClaim, unfinishedReport } from "../cli/runner.mjs";
+import { runnerTransport, offerFrom, briefFor, commandFor, nextStep, runTask, runRunner, execute, writeBrief, removeBrief, redactGitArgs, refusedKey, failureCount, passedBy, taskKey, failureKey, runOutcome, versionRefusal, transientQueueError, queueBackoffMs, skipRefusedForGood, skipRetryPolls, alreadyComplete, taskRevisionKey, WORK_IN_PROGRESS, lostToHold, giveUpClaim, unfinishedReport } from "../cli/runner.mjs";
+import { cleanRun } from "../src/models/reliability.ts";
 import { GAVE_UP } from "../src/dispatch/rules.ts";
 import { MAX_HARNESS_RERUNS, runKeyOf } from "../cli/runner-failure.mjs";
 import { ROUTE_LEVEL, SERVER_CAPABILITIES } from "../src/route-level.ts";
@@ -31,7 +32,7 @@ test("a stub that ignores SIGTERM exits once the process it watches is gone", { 
 test("parseConfig accepts supported harnesses and copies their arrays", () => {
   const value = { agents: ["opencode", "claude-code", "codex", "zcode"].map((agent) => ({ ...entry, agent })) };
   const parsed = parseConfig(JSON.stringify(value));
-  assert.deepEqual(parsed, { ...value, errors: [], taskTimeoutMs: DEFAULT_TASK_TIMEOUT_MS, finishTimeoutMs: DEFAULT_FINISH_TIMEOUT_MS });
+  assert.deepEqual(parsed, { ...value, errors: [], taskTimeoutMs: DEFAULT_TASK_TIMEOUT_MS, finishTimeoutMs: DEFAULT_FINISH_TIMEOUT_MS, loadLimit: 1 });
   const direct = parseConfig(config);
   direct.agents[0].models.push("extra");
   assert.equal(entry.models.length, 2);
@@ -1990,4 +1991,143 @@ test("a failure marker does not let an unchanged rejected head be submitted", as
   assert.equal(state.phase, "failed", f.logs.join("\n"));
   assert.ok(!f.calls.some((c) => c.argv?.[0] === "finish"), "nothing is submitted");
   assert.equal(failureCount(0, state), 1);
+});
+
+// A build runner takes no build while its host is overloaded (t662).
+const loadRig = (t, extra = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-load-gate-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, ...extra }));
+  return { _: ["runner"], multi: {}, name: "home:studio", config: path, once: true };
+};
+const reading = (load, cores = 8) => () => ({ load, cores });
+const loadLines = (logs) => logs.filter((s) => s.includes("claiming no build"));
+// The runner's own log goes to the console, which the test reads.
+const said = (t) => { const out = []; t.mock.method(console, "log", (s) => out.push(String(s))); return out; };
+const claims = (calls) => calls.filter((c) => c.argv?.[0] === "claim").length;
+
+test("an overloaded host claims no build and logs the load and the limit once; the next poll under the limit claims", async (t) => {
+  const args = loadRig(t);
+  const out = said(t);
+  const over = fixture();
+  await runRunner(args, { workspacePath: over.io.workspacePath, taskIO: over.io, wait: async () => {}, load: reading(8), queue: async () => [assignment] });
+  assert.equal(claims(over.calls), 0);
+  assert.equal(loadLines(out).length, 1);
+  assert.match(loadLines(out)[0], /load average 8\.00.*limit 1 x 8 cores = 8/);
+  const under = fixture();
+  await runRunner(args, { workspacePath: under.io.workspacePath, taskIO: under.io, wait: async () => {}, load: reading(7.99), queue: async () => [assignment] });
+  assert.equal(claims(under.calls), 1);
+  assert.equal(loadLines(out).length, 1, "the poll under the limit says nothing more");
+});
+
+test("repeated overloaded polls log once, until the runner claims or the reason changes", async (t) => {
+  const { once: _once, ...args } = loadRig(t);
+  const logs = said(t);
+  const { io, calls } = fixture();
+  let polls = 0, load = 20;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, load: () => ({ load, cores: 8 }),
+    queue: async () => { polls++; return [assignment]; },
+    // The runner waits between polls: the test steps its host's load there.
+    wait: async () => {
+      if (polls === 3) load = 1;
+      if (polls === 5) load = 30;
+      if (polls === 7) process.emit("SIGINT");
+    },
+  });
+  process.exitCode = 0;
+  assert.ok(claims(calls) >= 1);
+  assert.equal(loadLines(logs).length, 2, logs.join("\n"));
+});
+
+test("a review runner at the same load is not held", async (t) => {
+  const args = loadRig(t, { jobs: ["review"], agents: [{ ...entry, command: [...entry.command, "{verdict_file}"] }], tokens: { [entry.models[0]]: "agent.glm" } });
+  const logs = said(t);
+  const { io, calls } = fixture();
+  io.readSecret = () => "atl_" + "f".repeat(64);
+  const review ={ ...assignment, item: { id: "t21", dispatch: { job: "review" } } };
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: reading(80), queue: async () => [review] });
+  assert.ok(calls.some((c) => c.argv?.[0] === "review-claim"), logs.join("\n"));
+  assert.equal(loadLines(logs).length, 0);
+});
+
+test("loadLimit replaces the default ratio", async (t) => {
+  const args = loadRig(t, { loadLimit: 2.5 });
+  const free = fixture();
+  await runRunner(args, { workspacePath: free.io.workspacePath, taskIO: free.io, wait: async () => {}, load: reading(19, 8), queue: async () => [assignment] });
+  assert.equal(claims(free.calls), 1, "19 is under 2.5 x 8");
+  const held = fixture();
+  await runRunner(args, { workspacePath: held.io.workspacePath, taskIO: held.io, wait: async () => {}, load: reading(20, 8), queue: async () => [assignment] });
+  assert.equal(claims(held.calls), 0);
+});
+
+test("loadLimit must be a positive number, and the refusal names the field", () => {
+  assert.equal(parseConfig(config).loadLimit, 1);
+  assert.equal(parseConfig({ ...config, loadLimit: 0.5 }).loadLimit, 0.5);
+  for (const bad of [0, -1, "2", null, NaN, Infinity, true, []]) {
+    const { errors } = parseConfig({ ...config, loadLimit: bad });
+    assert.ok(errors.some((e) => e.includes("loadLimit")), String(bad));
+  }
+});
+
+// The report goes through the production transport and the server's own
+// validation, not an injected reporter (t662 fix round).
+const viaTransport = (sent) => {
+  const transport = runnerTransport({ server: "https://atelier.test", credential: "fixture", runner: "home:studio", fetch: async (url, init) => { sent.push(JSON.parse(init.body)); return Response.json({ ok: true }, { status: 201 }); } });
+  return async (body, _runner, signal) => {
+    const res = await transport.send("runs", {}, { body, actor: "owner", signal });
+    if (!res.ok) throw new Error(`${res.status}`);
+    return res.data;
+  };
+};
+
+test("a build that times out reports the host's load as it read when the harness timed out, through the transport and the server's validation", async (t) => {
+  const args = loadRig(t);
+  const sent = [], out = said(t);
+  const { io } = fixture({ head: "before", timedOut: true });
+  // 3.5 on the first reading after the claim; every later reading is 9.
+  let reads = 0;
+  const changing = () => { reads += 1; return reads === 1 ? { load: 0.5, cores: 8 } : reads === 2 ? { load: 3.5, cores: 8 } : { load: 9, cores: 8 }; };
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: changing, queue: async () => [assignment], reportRun: viaTransport(sent) });
+  assert.equal(out.some((l) => l.includes("could not report")), false, out.join("\n"));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].outcome, "timed-out");
+  assert.deepEqual(sent[0].load, { average: 3.5, cores: 8 });
+  const stored = cleanRun(sent[0], "2026-11-10T00:00:00.000Z", "home:studio");
+  assert.deepEqual(stored.load, { average: 3.5, cores: 8 });
+});
+
+test("the timeout load is read before cleanup, so a cleanup that moves the load does not change the report", async (t) => {
+  const args = loadRig(t);
+  const reports = [];
+  const { io } = fixture({ head: "before", timedOut: true });
+  let cleaned = false;
+  const removed = io.removeDataHome;
+  io.removeDataHome = async (home) => { cleaned = true; return removed(home); };
+  // The gate's reading is low; once cleanup has run the host reads 9.
+  const load = () => cleaned ? { load: 9, cores: 8 } : { load: 0.5, cores: 8 };
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load, queue: async () => [assignment], reportRun: async (body) => reports.push(body) });
+  assert.equal(cleaned, true, "cleanup ran");
+  assert.equal(reports[0].outcome, "timed-out");
+  assert.deepEqual(reports[0].load, { average: 0.5, cores: 8 });
+});
+
+test("the server refuses a malformed load on a run report", () => {
+  const base = { actor: "codex/gpt-6-astra", role: "build", outcome: "timed-out", project: "a", item: "t1" };
+  for (const load of [{ average: -1, cores: 8 }, { average: "3", cores: 8 }, { average: 1, cores: 0 }, { average: 1, cores: 1.5 }, 5, []]) {
+    assert.throws(() => cleanRun({ ...base, load }, "2026-11-10T00:00:00.000Z", "home:studio"), /load must be/, JSON.stringify(load));
+  }
+});
+
+test("a build that ends another way carries no load", async (t) => {
+  const args = loadRig(t);
+  const reports = [];
+  const { io } = fixture({ head: "before", code: 1 });
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: reading(3.5, 8), queue: async () => [assignment],
+    reportRun: async (body) => reports.push(body),
+  });
+  assert.equal(reports[0].outcome, "refused");
+  assert.equal("load" in reports[0], false);
 });
