@@ -240,7 +240,15 @@ async function runLocal(t, setup, argv) {
     else if (req.url === "/api/projects/demo/baseline-head") body = { head: git(state.checkout, "rev-parse", "HEAD") };
     else if (req.url === "/api/projects/demo/standing") body = state.standing ?? STANDING;
     else if (req.url === "/api/projects/demo") body = { project: { ...STANDING.project, policy: state.policy }, items: state.items ?? [], events: state.events ?? [] };
-    else if (req.url === "/api/projects/demo/landing-lease") {
+    else if (req.url.startsWith("/api/projects/demo/events")) {
+      if (state.eventsFail) { status = 500; body = { error: "boom", detail: "events" }; }
+      else {
+        const before = new URL(req.url, "http://x").searchParams.get("before");
+        const pages = state.eventPages ?? [[]];
+        const at = before === null ? 0 : pages.findIndex((pg) => pg.length && pg[0].seq < Number(before));
+        body = { events: pages[at] ?? [], next: pages[at + 1] ? pages[at][pages[at].length - 1].seq : null };
+      }
+    } else if (req.url === "/api/projects/demo/landing-lease") {
       if (state.noLeaseRoute) { status = 404; body = { error: "not_found", detail: "no such route" }; }
       else body = { lease: state.lease ?? null };
     } else { status = 404; body = { error: "unexpected", detail: `${req.method} ${req.url}` }; }
@@ -612,4 +620,65 @@ for (const mode of [undefined, null, "Mode: full", "Mode: fast since yesterday (
   assert.equal(r.code, 0, r.output);
   assert.doesNotMatch(r.output, /Mode:/);
   if (json) assert.equal(Object.hasOwn(JSON.parse(r.output).project, "mode"), false);
+});
+
+// t690: a task left at its second rejection waits on the orchestrator.
+const HEAD = "9c0c686d1111111111111111111111111111111111";
+const submitted = (over = {}) => ({ id: "t5", title: "Five", state: "submitted", owner: "x/y", head: HEAD, reviewAskedHead: HEAD, since: null, ...over });
+const standingOf = (live) => ({ ...STANDING, live });
+const notice = (seq, head = HEAD, itemId = "t5") => ({ seq, itemId, kind: "item.second_rejection_notice", data: { head } });
+const later = (seq, kind, itemId = "t5") => ({ seq, itemId, kind, data: {} });
+const WAIT = "t5  second rejection at 9c0c686d, nothing dispatched; atelier dispatch t5 --project demo";
+
+for (const [label, argv, want] of [
+  ["status --project", ["status", "--project", "demo"], (o) => assert.match(o, /Waiting on the orchestrator\n\s+t5  second rejection at 9c0c686d, nothing dispatched; atelier dispatch t5 --project demo/)],
+  ["status --brief", ["status", "--brief", "--project", "demo"], (o) => assert.match(o, /Waiting on the orchestrator: t5 \(second rejection at 9c0c686d, nothing dispatched\); atelier dispatch t5 --project demo\./)],
+]) {
+  test(`${label} lists a task still submitted at its second-rejection notice with the head and the dispatch command`, async (t) => {
+    const r = await runLocal(t, () => ({ standing: standingOf([submitted()]), eventPages: [[later(9, "review.rejected"), notice(8), later(7, "review.rejected")]] }), argv);
+    want(r.output);
+    assert.ok(r.output.includes("9c0c686d"));
+  });
+  for (const [why, live, events] of [
+    ["dispatched after the notice", [submitted()], [later(9, "item.dispatched"), notice(8)]],
+    ["given a new head", [submitted({ head: "bbbbbbbb2222" })], [notice(8)]],
+    ["merged", [submitted({ state: "merged" })], [notice(8)]],
+    ["abandoned", [submitted({ state: "abandoned" })], [notice(8)]],
+  ]) {
+    test(`${label} does not list a task ${why}`, async (t) => {
+      const r = await runLocal(t, () => ({ standing: standingOf(live), eventPages: [events] }), argv);
+      assert.doesNotMatch(r.output, /Waiting on the orchestrator/);
+    });
+  }
+  test(`${label} says the second-rejection waits are unknown when the events cannot be read`, async (t) => {
+    const r = await runLocal(t, () => ({ standing: standingOf([submitted()]), eventsFail: true }), argv);
+    assert.match(r.output, /Waiting on the orchestrator/);
+    assert.match(r.output, /second-rejection waits unknown/);
+  });
+}
+
+test("the notice is found on an older events page", async (t) => {
+  const r = await runLocal(t, () => ({ standing: standingOf([submitted()]), eventPages: [[later(30, "review.rejected", "t9")], [notice(8)]] }), ["status", "--brief", "--project", "demo"]);
+  assert.match(r.output, /t5 \(second rejection at 9c0c686d.*atelier dispatch t5/);
+});
+
+// t690 fix round: the reader pages back to the earliest push, not to a fixed page count.
+const dayAt = (n) => `2026-11-${String(n).padStart(2, "0")}T12:00:00Z`;
+const filler = (seq, n) => ({ seq, itemId: "t9", kind: "review.rejected", at: dayAt(n), data: {} });
+
+test("a notice behind twenty newer pages is still found", async (t) => {
+  const pages = Array.from({ length: 21 }, (_, k) => [filler(100 - k, 10)]);
+  pages.push([{ ...notice(10), at: dayAt(10) }]);
+  const r = await runLocal(t, () => ({ standing: standingOf([submitted({ lastPushAt: dayAt(5) })]), eventPages: pages }), ["status", "--brief", "--project", "demo"]);
+  assert.match(r.output, /t5 \(second rejection at 9c0c686d.*atelier dispatch t5/);
+  assert.doesNotMatch(r.output, /unknown/);
+});
+
+test("no events page older than the earliest push of a submitted task is read", async (t) => {
+  const pages = [[filler(40, 10)], [filler(30, 8)], [filler(20, 3)], [filler(10, 2)]];
+  const r = await runLocal(t, () => ({ standing: standingOf([submitted({ lastPushAt: dayAt(5) }), submitted({ id: "t6", lastPushAt: dayAt(7) })]), eventPages: pages }), ["status", "--brief", "--project", "demo"]);
+  const reads = r.seen.filter((s) => s.includes("/events"));
+  assert.equal(reads.length, 3, reads.join("\n"));
+  assert.ok(!reads.some((s) => s.includes("before=20")), reads.join("\n"));
+  assert.doesNotMatch(r.output, /unknown/);
 });

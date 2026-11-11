@@ -20,7 +20,7 @@ const spec: CommandSpec = {
   },
   help: {
     flags: {
-      "--head SHA": "the revision accepted; the task's current head unless given, and any other is refused",
+      "--head SHA": "the revision accepted: the task's current head unless given, as the full head or the 7 or more characters atelier show prints; any other is refused",
       "--override-review REASON": "accepts without the independent review, when no reviewer qualifies; the reason is recorded, and it is confirmed by the developer's direction (--quote) or allowed first on the task's page with the Access sign-in or the server's confirmation secret",
       "--quote WORDS": "with --override-review, the developer's own words directing the override; with --as H/M, the model acting on them, they confirm it with the developer token alone, and both are recorded with it",
       "--note TEXT": "the developer's word on the acceptance, kept with it in the ledger",

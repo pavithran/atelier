@@ -1,14 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { canInspectSlots } from "./fixtures/slot-inspection.mjs";
 import { landFixture } from "./land-fixture.mjs";
-import { childFlags, parseParallel, runLandQueue, spawnLanding, summarise, uniqueIds } from "../cli/land-queue.mjs";
+import { runRunner } from "../cli/runner.mjs";
+import { childFlags, parseParallel, runLandJob, runLandQueue, spawnLanding, summarise, uniqueIds } from "../cli/land-queue.mjs";
 
 // t54: atelier land t1 t2 t3 runs a bounded pool of the ordinary land command.
 // The pool is tested with stand-in landings (each one a handle the test
@@ -355,4 +356,150 @@ test("summarise counts a landing that stopped at the ask as not landed and exits
   const s = summarise({ results: [{ id: "t1", outcome: "landed" }, { id: "t2", outcome: "asked" }], stoppedBy: null, held: null });
   assert.equal(s.line, "2 tasks: 1 landed, 1 asked, not landed.");
   assert.equal(s.status, 1);
+});
+
+// t682: a lander's checkout catches up to the baseline's head by itself.
+// Each test runs the runner as production does (runRunner builds the io that
+// runLandJob gets) over real git: a "server" repository, and a checkout of it
+// that is behind, ahead or diverged. Only the land and atelier-show children
+// are faked. The queue offers the landing on several polls of the one runner.
+process.env.ATELIER_LOAD = "0";
+const gitIn = (cwd, ...argv) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...argv], { cwd, encoding: "utf8" }).trim();
+const commit = (cwd, name) => { writeFileSync(join(cwd, name), name); gitIn(cwd, "add", name); gitIn(cwd, "commit", "-q", "-m", name); return gitIn(cwd, "rev-parse", "HEAD"); };
+function catchUpRepos(t, relation) {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-catchup-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const server = join(dir, "server"), co = join(dir, "co");
+  mkdirSync(server);
+  gitIn(server, "init", "-q", "-b", "main");
+  const old = commit(server, "one");
+  gitIn(dir, "clone", "-q", server, co);
+  const base = commit(server, "two");
+  if (relation === "ahead") { gitIn(co, "pull", "-q", "--ff-only"); commit(co, "local"); }
+  if (relation === "diverged") commit(co, "local");
+  return { dir, server, co, old, base };
+}
+// polls: one entry per poll of the one runner; each is { grant } where grant
+// is the baselineGrant for that poll (a function may throw).
+// stop(step, poll) may return "timeout" (the step is still running when the
+// production timeout ends it) or "signal" (git is killed by a signal); the
+// step then runs a stand-in for git, so the real clock and signal path are used.
+async function catchUpRun(t, { relation, polls, between = () => {}, stop = () => null }) {
+  const r = catchUpRepos(t, relation);
+  const path = join(r.dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{model}", "{brief_file}"] }], jobs: ["land"] }));
+  const lands = [], logs = [], heads = [], fetchEnvs = [];
+  const executeChild = async (argv, options = {}) => {
+    if (argv[0] === "git") {
+      if (argv[1] === "fetch") fetchEnvs.push({ argv: argv.slice(1), env: options.env });
+      assert.ok(options.signal instanceof AbortSignal, "production passes its abort signal");
+      assert.equal(typeof options.timeoutMs, "number", "production passes its timeout");
+      const fault = stop(argv[1], n);
+      const [bin, args, timeout] = fault === "timeout" ? ["sh", ["-c", "echo git is slow >&2; sleep 5"], 100] : fault === "signal" ? ["sh", ["-c", "echo fatal: killed >&2; kill -KILL $$"], options.timeoutMs] : ["git", argv.slice(1), options.timeoutMs];
+      return new Promise((resolve) => execFile(bin, args, { cwd: options.cwd, env: options.env ?? process.env, encoding: "utf8", signal: options.signal, timeout }, (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === "number" ? error.code : null) : 0, signal: error?.signal ?? null, output: stdout, stderr, timedOut: error?.killed === true && error.signal === "SIGTERM" && fault === "timeout" })));
+    }
+    if (argv[2] === "ls") return { code: 0, output: JSON.stringify([{ id: "t9", state: "merged", head: "h" }]), stderr: "" };
+    if (argv[2] === "show") return { code: 0, output: JSON.stringify({ reviews: [] }), stderr: "" };
+    lands.push(argv);
+    return { code: 0, output: "ok", stderr: "" };
+  };
+  t.mock.method(console, "log", (line) => logs.push(String(line)));
+  let n = 0;
+  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path }, {
+    workspacePath: () => r.dir, executeChild, checkouts: ["demo"], checkoutOf: () => r.co, landJournal: () => false,
+    baselineHead: async () => r.base,
+    baselineGrant: async () => { const grant = polls[n - 1]; return typeof grant === "function" ? grant(r) : grant; },
+    harnessReady: async () => ({ ready: true }),
+    wait: () => new Promise((resolve) => setImmediate(resolve)),
+    async queue() {
+      if (n > 0) { heads.push(gitIn(r.co, "rev-parse", "HEAD")); between(r, n, lands.length); }
+      if (++n > polls.length) { process.emit("SIGTERM"); return []; }
+      return [{ project: "demo", item: { id: "t9", title: "x", dispatch: { job: "land", at: "2026-10-24T00:00:00.000Z" } }, agent: "atelier", model: "lander", actor: "atelier/lander" }];
+    },
+  });
+  return { ...r, lands, logs, heads, fetchEnvs, head: () => gitIn(r.co, "rev-parse", "HEAD") };
+}
+const goodGrant = (r) => ({ remote: r.server, token: "tok-secret", defaultBranch: "main" });
+const refusals = (c) => c.logs.filter((l) => l.includes("refused:"));
+
+test("t682: a clean checkout strictly behind the baseline fetches with the baseline's credential, fast-forwards, then lands", async (t) => {
+  const c = await catchUpRun(t, { relation: "behind", polls: [goodGrant] });
+  assert.equal(c.lands.length, 1);
+  assert.equal(c.head(), c.base);
+  const fetch = c.fetchEnvs[0];
+  assert.deepEqual(fetch.argv.slice(-2), [c.server, "main"]);
+  assert.equal(fetch.env.GIT_CONFIG_VALUE_0, "Authorization: Bearer tok-secret");
+  assert.ok(!fetch.argv.join(" ").includes("tok-secret"));
+});
+
+for (const relation of ["ahead", "diverged"]) {
+  test(`t682: a checkout ${relation} of the baseline is refused naming atelier pull and the project`, async (t) => {
+    const c = await catchUpRun(t, { relation, polls: [goodGrant] });
+    const [reason] = refusals(c);
+    assert.match(reason, /atelier pull --project demo/);
+    assert.doesNotMatch(reason, /atelier sync/);
+    assert.deepEqual(c.lands, []);
+    assert.notEqual(c.head(), c.base);
+    assert.equal(c.heads[0], c.head());
+  });
+}
+
+test("t682: a credential reader that refuses refuses this landing only; the same runner's next poll lands", async (t) => {
+  const c = await catchUpRun(t, { relation: "behind", polls: [() => { throw new Error("git-token: 429 exhausted"); }, goodGrant] });
+  assert.equal(refusals(c).length, 1);
+  assert.match(refusals(c)[0], /atelier pull --project demo/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.lands.length, 1);
+  assert.equal(c.head(), c.base);
+});
+
+test("t682: no readable baseline credential refuses and fetches nothing", async (t) => {
+  const c = await catchUpRun(t, { relation: "behind", polls: [null, goodGrant] });
+  assert.match(refusals(c)[0], /atelier pull --project demo/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.fetchEnvs.length, 1);
+});
+
+test("t682: a fetch that git fails, from a remote at a missing path, refuses with git's stderr, leaves HEAD, and the next poll lands", async (t) => {
+  const c = await catchUpRun(t, { relation: "behind", polls: [(r) => ({ ...goodGrant(r), remote: join(r.dir, "missing") }), goodGrant] });
+  assert.match(refusals(c)[0], /git fetch failed \(exit 128\): fatal: Could not read from remote repository/);
+  assert.match(refusals(c)[0], /atelier pull --project demo/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.lands.length, 1);
+  assert.equal(c.head(), c.base);
+});
+
+test("t682: a fast-forward that git fails refuses with git's stderr, leaves HEAD, and the next poll lands", async (t) => {
+  const lock = (r) => join(r.co, ".git", "index.lock");
+  const c = await catchUpRun(t, {
+    relation: "behind",
+    polls: [(r) => { writeFileSync(lock(r), ""); return goodGrant(r); }, goodGrant],
+    between: (r, poll) => { if (poll === 1) rmSync(lock(r)); },
+  });
+  assert.match(refusals(c)[0], /git merge --ff-only failed \(exit 1\).*index\.lock/);
+  assert.equal(c.heads[0], c.old);
+  assert.equal(c.lands.length, 1);
+  assert.equal(c.head(), c.base);
+});
+
+for (const [step, argvStep, fault, text] of [
+  ["fetch", "fetch", "timeout", /git fetch failed \(stopped\)/],
+  ["fetch", "fetch", "signal", /git fetch failed \(exit null\): fatal: killed/],
+  ["fast-forward", "merge", "timeout", /git merge --ff-only failed \(stopped\)/],
+  ["fast-forward", "merge", "signal", /git merge --ff-only failed \(exit null\): fatal: killed/],
+]) {
+  test(`t682: a ${step} that is ${fault === "timeout" ? "stopped by the timeout" : "killed by a signal"} refuses, leaves HEAD, and the same runner's next poll lands`, async (t) => {
+    const c = await catchUpRun(t, { relation: "behind", polls: [goodGrant, goodGrant], stop: (git, poll) => (git === argvStep && poll === 1 ? fault : null) });
+    assert.match(refusals(c)[0], text);
+    assert.match(refusals(c)[0], /atelier pull --project demo/);
+    assert.equal(c.heads[0], c.old);
+    assert.equal(c.lands.length, 1);
+    assert.equal(c.head(), c.base);
+  });
+}
+
+test("t682: the runner's credential call throws a refusal and never calls the exiting readGrant", () => {
+  const source = readFileSync(new URL("../cli/commands/runner.mjs", import.meta.url), "utf8");
+  assert.match(source, /transport\.send\("baseline-grant"/);
+  assert.doesNotMatch(source, /[^a-zA-Z]readGrant\(/);
 });

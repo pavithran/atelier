@@ -162,6 +162,15 @@ export default async function runnerCommand() {
         if (!res.ok) throw new Error(`baseline-head: ${res.status}`);
         return res.data?.head ?? null;
       },
+      // The baseline's remote and a read credential, as atelier pull reads
+      // them, for a lander's checkout that is behind server main (t682). A
+      // refused or failed read throws, which refuses only this landing; the
+      // declared "baseline-grant" call, through the transport.
+      async baselineGrant(project) {
+        const res = await transport.send("baseline-grant", { project }, { body: { kind: "read" }, actor: OWNER });
+        if (!res.ok) throw new Error(`baseline-grant: ${res.status}${detail(res)}`);
+        return res.data;
+      },
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does. A report
       // the server refuses throws its status and detail, as a skip does.
