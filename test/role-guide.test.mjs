@@ -14,11 +14,9 @@ for (const role of ["build", "review", "plan"]) {
   });
 }
 
-test("orchestrate guide keeps the owner commands", () => {
-  const text = rolePrompt("orchestrate");
-  assert.match(text, /ATELIER_ACTING=H\/M/);
-  assert.match(text, /atelier land ID --reviewer H\/M/);
-  assert.match(text, /Manual fallback:/);
+test("orchestrate guide prints every owner landing line verbatim", () => {
+  const guide = rolePrompt("orchestrate").split("\n");
+  for (const line of OWNER_LANDING.split("\n")) assert.ok(guide.includes(line), `missing: ${line}`);
 });
 
 test("build guide's browser paragraph names no project or test file", () => {
