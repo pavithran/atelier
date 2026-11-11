@@ -1,5 +1,6 @@
 import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
+import worker from "../src/index.ts";
 import type { RunnerOffer } from "../src/dispatch/rules.ts";
 import type { LedgerEvent } from "../src/ledger.ts";
 import type { Evidence, RetentionFacts } from "../src/rules.ts";
@@ -102,4 +103,25 @@ it("the owner's queue says the withheld landing waits for an approval at HEAD, a
   expect(withheld[0].why[0].line).toContain("waits for an approval at HEAD");
   await approve(L, id, GPT, H1);
   expect(await L.withheldLandings()).toEqual([]);
+});
+
+it("the owner's GET /api/queue lists a withheld landing of a claimed task with its reason, and offers it to no runner", async () => {
+  const name = "lo-claimed";
+  const L = await setup(name);
+  const { id } = await L.newItem("Still claimed", ["src/**"], "owner");
+  await L.claim(id, OPUS);
+  await L.setWorkspace(id, `${name}/${id.replace("t", "t/")}`, H0, OPUS);
+  await L.recordPush(id, OPUS, H1, H1);
+  await L.requestLand(id, "owner");
+  expect((await L.item(id)).state).toBe("claimed");
+  const TOKEN = "t632-owner-token";
+  const call = async (init: RequestInit) => {
+    const res = await worker.fetch(new Request("https://atelier.test/api/queue", { ...init, headers: { authorization: `Bearer ${TOKEN}`, "x-atelier-actor": "owner", "content-type": "application/json" } }), { ...env, ATELIER_TOKEN: TOKEN } as typeof env);
+    return (await res.json()) as { project: string; item: { id: string; why?: { line: string }[] } }[];
+  };
+  const mine = (rows: { project: string; item: { id: string; why?: { line: string }[] } }[]) => rows.filter((r) => r.project === name);
+  const listed = mine(await call({ method: "GET" }));
+  expect(listed.map((r) => r.item.id)).toEqual([id]);
+  expect(listed[0].item.why?.[0].line).toContain("waits for an approval at HEAD");
+  expect(await offered(L, name)).toEqual([]);
 });

@@ -1897,6 +1897,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // checkout (t226) goes to that runner alone.
         const landings = offer && (offer.jobs ?? []).includes("land") ? await L.landJobs(offer, namesOf(p)) : [];
         // The owner's listing names a landing withheld for want of an approval (t632); a runner's poll never carries it.
+        // It keeps its task's claim state, so the listing below passes it whatever that state (isHeld).
         const withheld = offer ? [] : await L.withheldLandings();
         for (const b of projectBusy) busy.set(b.runner.toLowerCase(), `${p.name}/${b.id}`);
         return [...held, ...waiting, ...reviews, ...refreshes, ...landings, ...withheld].map((item) => ({ project: p.name, item }));
@@ -1926,7 +1927,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
           // as another's claim (claim guards the runner name; assign the actor).
           return a && (!c.token?.runner || !["integrate", "refresh", "task-refresh", "task-resolve"].includes(item.dispatch?.job ?? "")) && (!c.token || c.token.runner || a.actor === actor) && (!isHeld(item) || item.dispatch?.job === "land" || item.owner === a.actor) ? [{ project, item, ...a, ...mark }] : [];
         })
-      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item)), offer, c.token?.runner ? c.token.runner : null, busy);
+      : await queueWhy(env, queued.filter(({ item }) => !isHeld(item) || "why" in item), offer, c.token?.runner ? c.token.runner : null, busy);
     // A project that could not be read is named, so a missing task is never silent.
     const res = json(result);
     if (unreadable.length) res.headers.set("x-atelier-incomplete", unreadable.sort().join(","));
