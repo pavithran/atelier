@@ -1,6 +1,7 @@
 import { env } from "./support/workers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { readFileSync } from "node:fs";
 
 // GET /api/version names main's head beside the deployed commit (t556): a
 // merge of cli/** alone deploys nothing, so DEPLOYED_MAIN stays put, but the
@@ -20,8 +21,16 @@ async function project(name: string) {
 async function version(settings: Record<string, string> = {}) {
   const res = await worker.fetch(new Request("https://atelier.test/api/version"), { ...env, DEPLOYED_MAIN: DEPLOYED, ...settings } as typeof env);
   expect(res.status).toBe(200);
-  return await res.json() as { commit: string | null; main: string | null; routeLevel: number };
+  return await res.json() as { commit: string | null; main: string | null; routeLevel: number; version: string };
 }
+
+// It also reports the release the package declares (t464), so a reader can
+// tell a 2.0 server from an older one without reading commits.
+it("reports the package version, 2.0.0 at the 2.0 release", async () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  expect(pkg.version).toBe("2.0.0");
+  expect((await version()).version).toBe("2.0.0");
+});
 
 it("names no main while the source project is unregistered or its ledger has seen none", async () => {
   expect(await version()).toMatchObject({ commit: DEPLOYED, main: null });
