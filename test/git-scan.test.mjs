@@ -178,7 +178,7 @@ test("no key, token or found value reaches the data directory, the hook's files 
 });
 
 const meta = { holdsRecorded: true, rebasedFrom: null };
-const unreadable = { "blob.bin": "PK\0\u0001\0binary\0", "big.txt": "a".repeat(8 * 1024 * 1024 + 1), "sub": null };
+const unreadable = { "blob.bin": Buffer.concat([Buffer.from("PK\0\u0001\0binary\0"), Buffer.alloc(8 * 1024 * 1024, 0xfe)]), "big.txt": "a".repeat(8 * 1024 * 1024 + 1), "sub": null };
 
 test("a file the scan cannot read is recorded on a task's push, and refuses the owner's push", async (t) => {
   // On a task: recorded, not refused, with the reason (a blob over SCAN_BYTES included).
@@ -188,13 +188,13 @@ test("a file the scan cannot read is recorded on a task's push, and refuses the 
   const item = await L().recordPush("t5", AGENT, c, c, false, meta, [], true);
   assert.deepEqual(item.secret.map((f) => [f.file, !!f.unscanned, f.reason]).sort(), [
     ["big.txt", true, `${8 * 1024 * 1024 + 1} bytes, over the ${8 * 1024 * 1024} the scan reads`],
-    ["blob.bin", true, "binary content"],
+    ["blob.bin", true, `${8 * 1024 * 1024 + 12} bytes, over the ${8 * 1024 * 1024} the scan reads`],
     ["sub", true, "a submodule, whose content is in another repository"],
   ]);
   // On dev/* (and on the project's branch, which only a landing moves since
   // task 6): refused, naming each file.
   for (const ref of ["refs/heads/dev/x"]) {
-    refused(await push(OWNER, `${c}:${ref}`), /could not read (?=.*big\.txt in [0-9a-f]{12} \(8388609 bytes, over the 8388608 the scan reads\))(?=.*blob\.bin in [0-9a-f]{12} \(binary content\))(?=.*sub in [0-9a-f]{12} \(a submodule).*no task to record/s);
+    refused(await push(OWNER, `${c}:${ref}`), /could not read (?=.*big\.txt in [0-9a-f]{12} \(8388609 bytes, over the 8388608 the scan reads\))(?=.*blob\.bin in [0-9a-f]{12} \(8388620 bytes, over the 8388608 the scan reads\))(?=.*sub in [0-9a-f]{12} \(a submodule).*no task to record/s);
   }
   for (const file of Object.keys(unreadable)) refused(await push(OWNER, `${commit(file, main(), { [file]: unreadable[file] })}:refs/heads/dev/${file}`), new RegExp(`could not read ${file} in`));
   assert.equal(await tip("refs/heads/main"), main());
@@ -237,9 +237,26 @@ test("a PNG, JPEG, MP4 or WebP is neither refused nor flagged as unscanned, what
   assert.equal(await tip("refs/heads/dev/keyed"), "");
 });
 
+// t702: a non-media binary under SCAN_BYTES is scanned as bytes, not flagged.
+test("a 1 MB random .bin with no key pattern passes the push scan, and one with a key in its bytes refuses", async () => {
+  const random = Buffer.alloc(1024 * 1024);
+  let x = 99;
+  for (let i = 0; i < random.length; i++) { x = (x * 1103515245 + 12345) & 0x7fffffff; random[i] = (x >> 16) & 0xff; }
+  random[0] = 0;
+  const clean = commit("pack", main(), { "pack.bin": random });
+  const ok = await push(t5, `+${clean}:refs/heads/t/5`);
+  assert.equal(ok.status, 0, ok.stderr);
+  const item = await L().recordPush("t5", AGENT, clean, clean, false, meta, [], true);
+  assert.deepEqual(item.secret ?? [], []);
+  const keyed = Buffer.from(random);
+  keyed.write(`\n${KEY}\n`, 5000, "latin1");
+  refused(await push(OWNER, `${commit("keyed pack", main(), { "pack.bin": keyed })}:refs/heads/dev/pack`), /pack\.bin/);
+});
+
 test("two pushes to one task keep a report each, and recordPush takes the one for the head it records", async () => {
-  const a = commit("a", main(), { "a.bin": "\0a\0" });
-  const b = commit("b", main(), { "b.bin": "\0b\0" });
+  const over = (c) => Buffer.concat([Buffer.from(`\0${c}\0`), Buffer.alloc(8 * 1024 * 1024, 0xfe)]);
+  const a = commit("a", main(), { "a.bin": over("a") });
+  const b = commit("b", main(), { "b.bin": over("b") });
   assert.equal((await push(t5, `+${a}:refs/heads/t/5`)).status, 0);
   assert.equal((await push(t5, `+${b}:refs/heads/t/5`)).status, 0);
   assert.deepEqual((await L().hookScan("t5", a)).unscanned.map((u) => u.file), ["a.bin"]);
