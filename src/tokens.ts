@@ -257,6 +257,9 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // The baseline's head, for a post-merge review the runner keeps waiting on
   // a merge commit no source held (t591).
   { name: "baseline-head", method: "GET", path: "/projects/{project}/baseline-head", credential: "runner", body: [], via: "runner", jobs: REVIEW },
+  // A lander's read grant for the project's branch (t682): the remote and a
+  // read credential its checkout fetches with, to catch up to server main.
+  { name: "baseline-grant", method: "POST", path: "/projects/{project}/git-token", credential: "runner", body: ["kind"], via: "runner", jobs: [] },
   { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "facts"], via: "runner", jobs: ["build", "plan", "review"] },
   { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "facts"], via: "runner", jobs: REVIEW },
   // The runner's word that it gives up a build or plan job under its

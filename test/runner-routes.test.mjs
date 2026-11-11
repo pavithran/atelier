@@ -105,7 +105,7 @@ test("each declared call is allowed for the credential it declares, and refused 
     assert.equal(call.actor === "none", ["config", "runner-me"].includes(call.name), `${call.name}: only the config and runner-me reads name no actor`);
   }
   // The reads of a task, its base and the project all go through the one git-token route.
-  for (const name of ["read-token", "base-token", "baseline-token"]) assert.equal(declaredCall(name).path, "/projects/{project}/git-token", name);
+  for (const name of ["read-token", "base-token", "baseline-token", "baseline-grant"]) assert.equal(declaredCall(name).path, "/projects/{project}/git-token", name);
   assert.throws(() => declaredCall("frobnicate"), /frobnicate is not a call the runner declares/);
 });
 
@@ -766,7 +766,7 @@ test("a build job: claim, reads, tokens, push, evidence, submit and release, eac
   assert.equal((await expect(api("POST", `${p.base(id)}/submit`, { body: { summary: "Built" } }), 200, "submit")).state, "submitted");
   assert.equal((await expect(api("POST", `${p.base(id)}/release`, { body: { note: "step harness; no new commit" } }), 200, "release")).state, "open");
   await denied(api("GET", p.base(id)), token, "item after release");
-  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "baseline-token", "baseline-project", "baseline-head", "push", "evidence", "submit", "release");
+  cover("project", "claim-project", "claim", "item", "job-brief", "read-token", "base-token", "baseline-token", "baseline-grant", "baseline-project", "baseline-head", "push", "evidence", "submit", "release");
 });
 
 test("a release that reports a provider limit reaches the ledger under the runner's own claim, and a fast take and its report are refused as not_fast_build", async () => {

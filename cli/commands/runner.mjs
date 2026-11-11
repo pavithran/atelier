@@ -1,10 +1,9 @@
 // atelier runner. Its forms, flags and help are declared in src/usage/commands/runner.ts.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readGrant as readBaselineGrant } from "../read-grant.mjs";
 import { guardName } from "../procs.mjs";
 import { landingJournalFile } from "../landing.mjs";
-import { I, OWNER, apiToken, args, cfg, die, discoverModels, landingHome, liveHere, reportUsage, request, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
+import { I, OWNER, apiToken, args, cfg, die, discoverModels, landingHome, liveHere, reportUsage, server, setupRunner, tokenRunner, workspacePath } from "../atelier.mjs";
 
 // Queue polling has already resolved the runner's identity. A failed policy
 // read must reach the job's infrastructure handling, never the process.exit
@@ -164,10 +163,13 @@ export default async function runnerCommand() {
         return res.data?.head ?? null;
       },
       // The baseline's remote and a read credential, as atelier pull reads
-      // them, for a lander's checkout that is behind server main (t682). request
-      // throws a refusal; readGrant (via call) would exit the runner.
+      // them, for a lander's checkout that is behind server main (t682). A
+      // refused or failed read throws, which refuses only this landing; the
+      // declared "baseline-grant" call, through the transport.
       async baselineGrant(project) {
-        return readBaselineGrant(request, project, null, OWNER);
+        const res = await transport.send("baseline-grant", { project }, { body: { kind: "read" }, actor: OWNER });
+        if (!res.ok) throw new Error(`baseline-grant: ${res.status}${detail(res)}`);
+        return res.data;
       },
       // A run that stalled, timed out or was refused goes to the run
       // reports, under the runner's name, as a model's status does. A report

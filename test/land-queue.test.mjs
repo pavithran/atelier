@@ -478,6 +478,6 @@ test("t682: a fast-forward that git fails refuses with git's stderr, leaves HEAD
 
 test("t682: the runner's credential call throws a refusal and never calls the exiting readGrant", () => {
   const source = readFileSync(new URL("../cli/commands/runner.mjs", import.meta.url), "utf8");
-  assert.match(source, /readBaselineGrant\(request,/);
+  assert.match(source, /transport\.send\("baseline-grant"/);
   assert.doesNotMatch(source, /[^a-zA-Z]readGrant\(/);
 });
