@@ -24,6 +24,12 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (check, ms = 10_000) => { for (const end = Date.now() + ms; Date.now() < end;) { if (check()) return true; await pause(25); } return check(); };
 
+// Waits, with a bound, until every pid shows as a process of `dir` (the way the sweep finds them), not for a fixed time.
+const running = async (pids, dir, ms = 30_000) => {
+  const up = () => { const found = new Set(processesOf({ workspace: dir }).map((p) => p.pid)); return pids.every((pid) => found.has(pid)); };
+  assert.equal(await until(up, ms), true, `processes ${pids.join(", ")} are running in ${dir}`);
+};
+
 function setup(t, name, mode, { timeoutMs, sleeperCwd = "-" } = {}) {
   mkdirSync(SCRATCH, { recursive: true });
   const dir = mkdtempSync(join(SCRATCH, "sweep-"));
@@ -177,7 +183,7 @@ test("the log names at most 20 processes", async (t) => {
   const s = setup(t, "home:sweep-h", "exit");
   const kids = Array.from({ length: 22 }, () => spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: s.workspace, stdio: "ignore", detached: true }));
   for (const k of kids) { k.unref(); s.track(k.pid); }
-  await pause(300);
+  await running(kids.map((k) => k.pid), s.workspace);
   const lines = [];
   const { ended } = await sweepRun({ workspace: s.workspace }, { log: (l) => lines.push(l) });
   assert.equal(ended.length, 22);
@@ -191,7 +197,7 @@ test("a runner that died part-way through a sweep leaves the rest to its next st
   const s = setup(t, "home:sweep-i", "exit");
   const kids = Array.from({ length: 3 }, () => spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: s.workspace, stdio: "ignore", detached: true }));
   for (const k of kids) { k.unref(); s.track(k.pid); }
-  await pause(300);
+  await running(kids.map((k) => k.pid), s.workspace);
   // The earlier runner (a child process) began a run, then died inside its sweep after one kill.
   const crasher = join(s.dir, "crash.mjs");
   writeFileSync(crasher, `import { sweepJournal } from ${JSON.stringify(new URL("../cli/sweep.mjs", import.meta.url).href)};
@@ -202,10 +208,13 @@ await run.end();
   const child = spawn(process.execPath, [crasher], { stdio: "ignore" });
   const code = await new Promise((resolve) => child.on("exit", (c, sig) => resolve(sig ?? c)));
   assert.equal(code, "SIGKILL");
-  assert.equal(kids.filter((k) => k.exitCode === null && k.signalCode === null).length, 2, "one died, the rest wait for the next start");
+  const left = () => kids.filter((k) => k.exitCode === null && k.signalCode === null).length;
+  // The killed kid's exit reaches this process a moment after the crasher's.
+  await until(() => left() === 2, 30_000);
+  assert.equal(left(), 2, "one died, the rest wait for the next start");
   // The restart: the runner ends what is left before its first claim.
   let claimedBefore = null;
-  await s.run(async () => { claimedBefore ??= kids.filter((k) => k.exitCode === null && k.signalCode === null).length; process.emit("SIGTERM"); return []; });
+  await s.run(async () => { if (claimedBefore === null) { await until(() => left() === 0, 5000); claimedBefore = left(); } process.emit("SIGTERM"); return []; });
   assert.equal(claimedBefore, 0, "nothing left at the first poll");
   const named = said.filter((l) => l.includes("ended leftover process"));
   assert.equal(named.length, 2, said.join("\n"));
@@ -216,7 +225,7 @@ test("a journal whose runner is still alive, or whose pid is dead, is handled wi
   const s = setup(t, "home:sweep-j", "exit");
   const kid = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: s.workspace, stdio: "ignore", detached: true });
   kid.unref(); s.track(kid.pid);
-  await pause(300);
+  await running([kid.pid], s.workspace);
   const dir = join(s.cache, "run-sweeps");
   mkdirSync(dir, { recursive: true });
   // Owned by this live process: left alone.
@@ -234,7 +243,7 @@ const deadPid = async () => { const c = spawn(process.execPath, ["-e", ""], { st
 test("a process that survives the rounds keeps the journal; the next start ends it", async (t) => {
   const s = setup(t, "home:sweep-l", "exit");
   const kid = orphan(s.workspace); kid.unref(); s.track(kid.pid);
-  await pause(300);
+  await running([kid.pid], s.workspace);
   const dir = join(s.cache, "run-sweeps"), file = join(dir, "home_sweep-l.json");
   const lines = [];
   const journal = sweepJournal({ name: "home:sweep-l", dir, log: (l) => lines.push(l), kill() { /* signals nothing */ } });
@@ -254,7 +263,7 @@ test("a process that survives the rounds keeps the journal; the next start ends 
 test("a signal that fails other than with ESRCH keeps the journal and reports incomplete; ESRCH does not", async (t) => {
   const s = setup(t, "home:sweep-m", "exit");
   const kid = orphan(s.workspace); kid.unref(); s.track(kid.pid);
-  await pause(300);
+  await running([kid.pid], s.workspace);
   const dir = join(s.cache, "run-sweeps"), file = join(dir, "home_sweep-m.json");
   const refuse = (code) => () => { throw Object.assign(new Error("no"), { code }); };
   const denied = await sweepJournal({ name: "home:sweep-m", dir, log: () => {}, kill: refuse("EPERM") }).begin(s.workspace).end();
@@ -274,7 +283,7 @@ const reap = (t, parent) => t.after(() => { for (const p of listProcesses().filt
 test("a tracked pid whose start time is not the live process's is not an ancestor: its children are not added or signalled", async (t) => {
   const parent = withChild();
   reap(t, parent);
-  await until(() => listProcesses().some((p) => p.ppid === parent.pid));
+  assert.equal(await until(() => listProcesses().some((p) => p.ppid === parent.pid), 30_000), true, "the parent's child is running");
   const tracked = { [parent.pid]: "Mon Jan 1 00:00:00 2001" };
   const watcher = watch(await deadPid(), tracked);
   await pause(400);
@@ -286,7 +295,7 @@ test("a tracked pid whose start time is not the live process's is not an ancesto
 test("the root's start time is recorded at the first look, and a reused root pid's children are not taken", async (t) => {
   const parent = withChild();
   reap(t, parent);
-  await until(() => listProcesses().some((p) => p.ppid === parent.pid));
+  assert.equal(await until(() => listProcesses().some((p) => p.ppid === parent.pid), 30_000), true, "the parent's child is running");
   const live = watch(parent.pid);
   live.stop();
   assert.equal(typeof live.tracked[parent.pid], "string", "the root's start time is recorded");
@@ -300,13 +309,13 @@ test("the root's start time is recorded at the first look, and a reused root pid
 test("recovery keeps the journal entries it has not swept yet when a sweep before them is incomplete", async (t) => {
   const s = setup(t, "home:sweep-n", "exit");
   const kid = orphan(s.workspace); kid.unref(); s.track(kid.pid);
-  await pause(300);
+  await running([kid.pid], s.workspace);
   const dir = join(s.cache, "run-sweeps"), file = join(dir, "home_sweep-n.json");
   mkdirSync(dir, { recursive: true });
   const second = join(s.dir, "second");
   mkdirSync(second);
   const kid2 = orphan(second); kid2.unref(); s.track(kid2.pid);
-  await pause(300);
+  await running([kid2.pid], second);
   writeFileSync(file, JSON.stringify({ owner: await deadPid(), runs: { 1: { workspace: s.workspace }, 2: { workspace: second } } }));
   // Every kill is refused; the journal is read each time a sweep logs.
   const counts = [];
