@@ -2893,6 +2893,12 @@ export class Ledger extends DurableObject<Env> {
   // `duplicateOk`. The check and the filing are one synchronous step.
   fileItem(title: string, scope: string[], actor: string, fields: ItemFields, duplicateOk: boolean): ReturnType<Ledger["newItem"]> {
     if (!duplicateOk) {
+      // A revert's title, brief and scope are derived from the original, so
+      // the check compares those, not the empty title the route supplies.
+      if (fields.revertOf !== undefined && fields.fixOf === undefined) {
+        const derived = this.revertFields(fields.revertOf);
+        title = derived.title; scope = derived.scope; fields = { ...fields, brief: derived.brief };
+      }
       const text = itemText(title, fields.brief);
       const key = (s: string[]) => JSON.stringify([...s].sort());
       const since = new Date(Date.now() - TWIN_WINDOW_MS).toISOString();
@@ -2901,6 +2907,22 @@ export class Ledger extends DurableObject<Env> {
       if (twin) throw new RuleError("duplicate", `already filed as ${twin.id}: a live task with this title, brief and scope was filed in the last 10 minutes, so nothing was filed`, 409, "work on that task, or file again with duplicateOk (atelier new --duplicate-ok) if a second is meant");
     }
     return this.newItem(title, scope, actor, fields);
+  }
+
+  // What a revert of a merged task files: its title, brief and scope.
+  private revertFields(revertOf: string) {
+    const original = this.item(revertOf);
+    if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409, `run atelier show ${original.id}`);
+    // A plan part's event names the whole plan's merge; reverting that
+    // would silently undo its siblings too. Ask for the plan explicitly.
+    if (original.kind === "part") throw new RuleError("revert_part", "revert the merged plan, not one of its parts");
+    const mergeCommit = this.events(original.id).find((e) => e.kind === "item.merged")?.data.mergeCommit;
+    if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`, 409, `run atelier show ${original.id}`);
+    return {
+      original, mergeCommit, scope: original.scope,
+      title: shortTitle(`Revert ${original.id}: ${original.title}`),
+      brief: `Undo ${original.id} by reverting its recorded merge commit ${mergeCommit} with git revert -m1. Resolve conflicts in this workspace, then run the normal checks and independent review.`,
+    };
   }
 
   // `title` is what the creator sent as the title, and `fields.brief` the
@@ -2921,18 +2943,10 @@ export class Ledger extends DurableObject<Env> {
       });
     }
     if (fields.revertOf !== undefined) {
-      const original = this.item(fields.revertOf);
-      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409, `run atelier show ${original.id}`);
-      // A plan part's event names the whole plan's merge; reverting that
-      // would silently undo its siblings too. Ask for the plan explicitly.
-      if (original.kind === "part") throw new RuleError("revert_part", "revert the merged plan, not one of its parts");
-      const mergeCommit = this.events(original.id).find((e) => e.kind === "item.merged")?.data.mergeCommit;
-      if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`, 409, `run atelier show ${original.id}`);
+      const { original, mergeCommit, title: revertTitle, brief, scope: revertScope } = this.revertFields(fields.revertOf);
       return this.ctx.storage.transactionSync(() => {
         const revert = { itemId: original.id, mergeCommit };
-        const item = this.newItem(shortTitle(`Revert ${original.id}: ${original.title}`), original.scope, actor, {
-          brief: `Undo ${original.id} by reverting its recorded merge commit ${mergeCommit} with git revert -m1. Resolve conflicts in this workspace, then run the normal checks and independent review.`,
-        });
+        const item = this.newItem(revertTitle, revertScope, actor, { brief });
         this.log(item.id, actor, "item.reverts", revert, item.createdAt);
         this.log(original.id, actor, "item.revert_requested", { itemId: item.id, mergeCommit }, item.createdAt);
         return { ...item, revert };

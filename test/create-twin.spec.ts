@@ -83,3 +83,19 @@ it("is not stopped by an identical live task in another project", async () => {
   expect((await file("twin-there")).status).toBe(201);
   expect((await file("twin-here")).status).toBe(201);
 });
+
+it("files a revert sent with only revertOf, and records the merge commit", async () => {
+  const name = "twin-revert";
+  await project(name);
+  await file(name);
+  const mergeCommit = "a".repeat(40);
+  await set(name, "t1", "state = 'merged'");
+  await runInDurableObject(ledger(name), (l: Ledger) => {
+    (l as unknown as { log(i: string, a: string, k: string, d: object, at: string): number }).log("t1", A, "item.merged", { mergeCommit }, new Date().toISOString());
+  });
+  const r = await file(name, { revertOf: "t1" });
+  expect(r.status, await r.clone().text()).toBe(201);
+  const made = await r.json() as { revert: { itemId: string; mergeCommit: string } };
+  expect(made.revert).toEqual({ itemId: "t1", mergeCommit });
+  expect((await file(name, { revertOf: "t1" })).status).toBe(409);
+});
