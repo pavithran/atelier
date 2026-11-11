@@ -520,6 +520,9 @@ function refusalFor(name: string, args: string[], words: string[]): Verdict | nu
       return m !== -1 && args[m + 1] === "twine" && args[m + 2] === "upload" ? refuse("publishes a package", words) : null;
     }
   }
+  // claude plugin test and claude plugin validate run a mod's tests locally and call no model.
+  // claude plugin test and claude plugin validate run a mod's tests locally and call no model.
+  if (name === "claude" && args[0] === "plugin" && ["test", "validate"].includes(args[1])) return null;
   if (PAID_MODELS.has(name)) return args.length && args.every((a) => ["--version", "-v", "--help", "-h"].includes(a)) ? null : refuse("runs a paid model", words);
   return null;
 }
