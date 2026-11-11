@@ -47,4 +47,3 @@ src/token-expiry.ts:warns exported and tested, no production caller on 2026-11-0
 src/tokens.ts:callParts exported and tested, no production caller on 2026-11-08; wire it in or delete it
 src/models/usage-readings.ts:availabilityOf no production caller by design in t597; the slate builder (task C), the consumers (task E) and t561 call it
 src/models/usage-readings.ts:readingsFor read only by availabilityOf callers; same tasks as availabilityOf
-src/runners/machine.ts:machineReadings built in t607 and tested; its production caller is the rigs display, t607 task 2 (t607 criterion 9 keeps src/index.ts to wiring parseMachine); delete this line when it lands

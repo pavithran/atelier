@@ -307,6 +307,28 @@ function recordRun(rec: ProgressRecord, stage: string, owner: string, at: Date):
   };
 }
 
+// Every Running and Waiting lane of the view, in the order Today draws them, before the twelve shown are taken.
+export function todayLanes(view: ReturnType<typeof buildNow>, inputs: TodayInputs, at: Date): TodayLane[] {
+  const group = (key: string) => view.groups.find((g) => g.key === key)!.rows;
+  const holders = new Map(inputs.projects.flatMap((p) => p.now.items.map((i) => [`${p.now.name}/${i.id}`, i.owner ?? null] as const)));
+  const familyOf = (row: NowRow) => { const h = holders.get(`${row.project}/${row.id}`); return h ? vendorOf(h, inputs.owner) : "other"; };
+  const live = [...group("running"), ...group("waiting")];
+  const lanes: TodayLane[] = live.map((r) => {
+    const run = runOf(r, inputs.projects.find((p) => p.now.name === r.project)!, holders.get(`${r.project}/${r.id}`) ?? null, inputs.owner, at);
+    const waited = age(at.getTime() - Date.parse(r.since));
+    return {
+      id: r.id, project: r.project, title: r.title, href: r.href, family: familyOf(r), holder: holders.get(`${r.project}/${r.id}`) ?? "no builder yet",
+      step: stepOf(r.stage), wait: r.group === "waiting", run, elapsed: run.started ?? (r.stuck ? `${waited} · stuck` : waited), stuck: !!r.stuck,
+    };
+  });
+  // Running rows first. Of the waiting rows, a stalled run comes first, then a silent run a machine still reports
+  // on, then a task stuck at its stage, then the rest, so the twelve shown are the ones to look at.
+  const rank = (l: TodayLane) => (l.run.pulse === "stalled" ? 3 : l.run.pulse !== "none" ? 2 : l.stuck ? 1 : 0);
+  lanes.sort((a, b) => Number(a.wait) - Number(b.wait) || (a.wait ? rank(b) - rank(a) : 0));
+
+  return lanes;
+}
+
 export function buildToday(inputs: TodayInputs, at: Date): TodayView {
   const view = { ...buildNow(inputs.projects.map((p) => p.now), at), unread: inputs.unread };
   const today = dayInZone(at, EASTERN);
@@ -315,7 +337,6 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
   const familyOf = (row: NowRow) => { const h = holders.get(`${row.project}/${row.id}`); return h ? vendorOf(h, inputs.owner) : "other"; };
 
   const needs = group("needs-you");
-  const live = [...group("running"), ...group("waiting")];
   const landed = group("landed");
   const cards: TodayCard[] = needs.map((r) => {
     const p = inputs.projects.find((x) => x.now.name === r.project);
@@ -331,18 +352,8 @@ export function buildToday(inputs: TodayInputs, at: Date): TodayView {
       : undefined;
     return { id: r.id, project: r.project, title: r.title, href: r.href, call: r.waitingOn.replace(/^you: /, ""), why: r.next, family: familyOf(r), age: age(at.getTime() - Date.parse(r.since)), ...(land ? { land } : {}), ...(answer ? { answer } : {}), ...(override ? { override } : {}) };
   });
-  const lanes: TodayLane[] = live.map((r) => {
-    const run = runOf(r, inputs.projects.find((p) => p.now.name === r.project)!, holders.get(`${r.project}/${r.id}`) ?? null, inputs.owner, at);
-    const waited = age(at.getTime() - Date.parse(r.since));
-    return {
-      id: r.id, project: r.project, title: r.title, href: r.href, family: familyOf(r), holder: holders.get(`${r.project}/${r.id}`) ?? "no builder yet",
-      step: stepOf(r.stage), wait: r.group === "waiting", run, elapsed: run.started ?? (r.stuck ? `${waited} · stuck` : waited), stuck: !!r.stuck,
-    };
-  });
-  // Running rows first. Of the waiting rows, a stalled run comes first, then a silent run a machine still reports
-  // on, then a task stuck at its stage, then the rest, so the twelve shown are the ones to look at.
-  const rank = (l: TodayLane) => (l.run.pulse === "stalled" ? 3 : l.run.pulse !== "none" ? 2 : l.stuck ? 1 : 0);
-  lanes.sort((a, b) => Number(a.wait) - Number(b.wait) || (a.wait ? rank(b) - rank(a) : 0));
+  const lanes = todayLanes(view, inputs, at);
+  const live = [...group("running"), ...group("waiting")];
 
   // Deploys of the Eastern day, from each project's ship.recorded events.
   const deploys = inputs.projects.flatMap((p) => {

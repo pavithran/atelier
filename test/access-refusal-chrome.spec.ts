@@ -102,7 +102,7 @@ async function sha(text: string) {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// SHA-256 of the pages as main draws them (49973c88, re-taken at t585 for the new bar and device theme, and at t596 for the synced theme and the Answer styles), so any change to their
+// SHA-256 of the pages as main draws them (49973c88, re-taken at t585 for the new bar and device theme, at t596 for the synced theme and the Answer styles, and at t608 for the Rigs item in the bar), so any change to their
 // status, message or chrome shows: a signed-in 404, a signed-out 404 (which
 // main answers with a redirect to the sign-in page) and a signed-in 400.
 it("other error pages are byte for byte as on main", async () => {
@@ -115,8 +115,8 @@ it("other error pages are byte for byte as on main", async () => {
   const bad = await unknownAction(cookie);
   seen["400 in"] = `${bad.status} ${await sha(await bad.text())}`;
   expect(seen).toEqual({
-    "404 in": "404 68595d53f679f3c5d85d53b7515abc764121ac5afd652679b2b165752a41a605",
+    "404 in": "404 79ac387a5bceb06868f144b866085af87f1354083e0dbb566c4723220fd95f79",
     "404 out": "303 https://atelier.test/login e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "400 in": "400 636826f23e080ba52f6092bdf5bee38fef44a1e55243938d9bc3a8a66bf1d8bc",
+    "400 in": "400 56635fde6f86ef19971157a165f671bfa01e9c4926bcceb8753c2873ba833601",
   });
 });
