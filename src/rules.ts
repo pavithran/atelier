@@ -2188,6 +2188,18 @@ export function gateApprovals(item: Item, policy: ProjectPolicy, evidence: Evide
   return approvalsCounted(item, policy, countingReviews(reviews, bindingOf(item), policy, owner), kind, view.changedPaths, owner, options);
 }
 
+// The approval a queued landing waits for before a lander is offered it
+// (t632): the one gateApprovals admits at the item's head, the same selection
+// a landing counts before it merges. Read only; null when none stands.
+export function landOfferApproval(item: Item, policy: ProjectPolicy, evidence: Evidence[], reviews: Review[], owner = DEFAULT_OWNER): Review | null {
+  return item.head ? gateApprovals(item, policy, evidence, reviews, owner).at(-1) ?? null : null;
+}
+
+// What the queue says of a landing withheld for want of that approval.
+export function landWaitsText(item: Pick<Item, "id" | "head">): string {
+  return `Land job withheld: ${item.id} waits for an approval at HEAD${item.head ? ` (${item.head.slice(0, 8)})` : ""} that the gate counts; a lander is offered it once one is recorded.`;
+}
+
 // The approval that lets Atelier land a task with no session (t520): a
 // review standing at the item's head and criteria that the gate admits as
 // independent, from a model of a company none of the task's contributors
