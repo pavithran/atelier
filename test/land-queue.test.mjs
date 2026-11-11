@@ -381,7 +381,10 @@ function catchUpRepos(t, relation) {
 }
 // polls: one entry per poll of the one runner; each is { grant } where grant
 // is the baselineGrant for that poll (a function may throw).
-async function catchUpRun(t, { relation, polls, between = () => {} }) {
+// stop(step, poll) may return "timeout" (the step is still running when the
+// production timeout ends it) or "signal" (git is killed by a signal); the
+// step then runs a stand-in for git, so the real clock and signal path are used.
+async function catchUpRun(t, { relation, polls, between = () => {}, stop = () => null }) {
   const r = catchUpRepos(t, relation);
   const path = join(r.dir, "runner.json");
   writeFileSync(path, JSON.stringify({ agents: [{ agent: "codex", models: ["gpt-6-astra"], command: ["codex", "{model}", "{brief_file}"] }], jobs: ["land"] }));
@@ -389,8 +392,11 @@ async function catchUpRun(t, { relation, polls, between = () => {} }) {
   const executeChild = async (argv, options = {}) => {
     if (argv[0] === "git") {
       if (argv[1] === "fetch") fetchEnvs.push({ argv: argv.slice(1), env: options.env });
-      if (options.timedOut) return options.timedOut;
-      return new Promise((resolve) => execFile("git", argv.slice(1), { cwd: options.cwd, env: options.env ?? process.env, encoding: "utf8" }, (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, output: stdout, stderr })));
+      assert.ok(options.signal instanceof AbortSignal, "production passes its abort signal");
+      assert.equal(typeof options.timeoutMs, "number", "production passes its timeout");
+      const fault = stop(argv[1], n);
+      const [bin, args, timeout] = fault === "timeout" ? ["sh", ["-c", "echo git is slow >&2; sleep 5"], 100] : fault === "signal" ? ["sh", ["-c", "echo fatal: killed >&2; kill -KILL $$"], options.timeoutMs] : ["git", argv.slice(1), options.timeoutMs];
+      return new Promise((resolve) => execFile(bin, args, { cwd: options.cwd, env: options.env ?? process.env, encoding: "utf8", signal: options.signal, timeout }, (error, stdout, stderr) => resolve({ code: error ? (typeof error.code === "number" ? error.code : null) : 0, signal: error?.signal ?? null, output: stdout, stderr, timedOut: error?.killed === true && error.signal === "SIGTERM" && fault === "timeout" })));
     }
     if (argv[2] === "ls") return { code: 0, output: JSON.stringify([{ id: "t9", state: "merged", head: "h" }]), stderr: "" };
     if (argv[2] === "show") return { code: 0, output: JSON.stringify({ reviews: [] }), stderr: "" };
@@ -475,6 +481,22 @@ test("t682: a fast-forward that git fails refuses with git's stderr, leaves HEAD
   assert.equal(c.lands.length, 1);
   assert.equal(c.head(), c.base);
 });
+
+for (const [step, argvStep, fault, text] of [
+  ["fetch", "fetch", "timeout", /git fetch failed \(stopped\)/],
+  ["fetch", "fetch", "signal", /git fetch failed \(exit null\): fatal: killed/],
+  ["fast-forward", "merge", "timeout", /git merge --ff-only failed \(stopped\)/],
+  ["fast-forward", "merge", "signal", /git merge --ff-only failed \(exit null\): fatal: killed/],
+]) {
+  test(`t682: a ${step} that is ${fault === "timeout" ? "stopped by the timeout" : "killed by a signal"} refuses, leaves HEAD, and the same runner's next poll lands`, async (t) => {
+    const c = await catchUpRun(t, { relation: "behind", polls: [goodGrant, goodGrant], stop: (git, poll) => (git === argvStep && poll === 1 ? fault : null) });
+    assert.match(refusals(c)[0], text);
+    assert.match(refusals(c)[0], /atelier pull --project demo/);
+    assert.equal(c.heads[0], c.old);
+    assert.equal(c.lands.length, 1);
+    assert.equal(c.head(), c.base);
+  });
+}
 
 test("t682: the runner's credential call throws a refusal and never calls the exiting readGrant", () => {
   const source = readFileSync(new URL("../cli/commands/runner.mjs", import.meta.url), "utf8");
