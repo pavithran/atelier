@@ -111,6 +111,10 @@ function sameString(a: string, b: string): boolean {
   return diff === 0;
 }
 
+// The release this server is, reported by GET /api/version. Keep it equal to
+// package.json's version; test/server-version.spec.ts fails when they differ.
+const RELEASE_VERSION = "2.0.0";
+
 type Settings = {
   CUSTODY_TOKEN?: string; ATELIER_TOKEN?: string; OWNER_ACTOR?: string; OWNER_NAME?: string; TIMEZONE?: string;
   // The usage alert thresholds (src/usage/report.ts); each a number, "off", or unset for the default.
@@ -4986,7 +4990,7 @@ export default {
         // dependent request, refusing with the missing names and saying to
         // deploy; a CLI from before capabilities reads routeLevel alone.
         if (parts.length === 2 && parts[1] === "version" && (req.method === "GET" || req.method === "HEAD")) {
-          return json({ commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, main: await sourceMain(env), routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
+          return json({ version: RELEASE_VERSION, commit: (env as unknown as Settings).DEPLOYED_MAIN ?? null, main: await sourceMain(env), routeLevel: ROUTE_LEVEL, capabilities: SERVER_CAPABILITIES });
         }
         if (how !== "api" && (typeof how !== "object" || !how)) {
           // A path that names no part of the API answers 404 whoever asks:
