@@ -110,6 +110,7 @@ export interface RunReport {
   item: string | null;
   detail: string;           // the facts' line (src/run-facts.ts), never the run's output
   facts?: RunFacts | null;  // what the runner reported of the run, structured
+  load?: { average: number; cores: number }; // a build's timeout: the host's 1-minute load average and cores then (t662)
   runner: string;           // kind:name, from X-Atelier-Runner
   at: string;               // when the server received it
 }
@@ -623,8 +624,18 @@ export function cleanRun(body: Record<string, unknown>, at: string, runner: stri
   // from them. A run the developer records by hand ("owner") keeps the
   // developer's own words, redacted, as before.
   const facts = cleanRunFacts(body.facts);
+  const load = cleanRunLoad(body.load, bad);
   const detail = runner === "owner" ? plain(str(body.detail), 300) : runFactsText(facts);
-  return { actor, role: role as RunRole, outcome: outcome as RunOutcome | InfrastructureOutcome, project, item, detail, ...(facts ? { facts } : {}), runner, at };
+  return { actor, role: role as RunRole, outcome: outcome as RunOutcome | InfrastructureOutcome, project, item, detail, ...(facts ? { facts } : {}), ...(load ? { load } : {}), runner, at };
+}
+
+// The host reading a timed-out build carries: a finite non-negative average
+// and a whole number of cores, or nothing.
+function cleanRunLoad(raw: unknown, bad: (detail: string) => RuleError): { average: number; cores: number } | null {
+  if (raw === undefined || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof raw !== "object" || Array.isArray(raw) || typeof r.average !== "number" || !Number.isFinite(r.average) || r.average < 0 || !Number.isInteger(r.cores) || (r.cores as number) < 1) throw bad("load must be { average, cores }: a load average of 0 or more and a whole number of cores");
+  return { average: Math.round(r.average * 100) / 100, cores: r.cores as number };
 }
 
 // ── defects ────────────────────────────────────────────────────────────────
