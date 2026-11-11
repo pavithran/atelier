@@ -132,6 +132,25 @@ it("a criteria-review assignment is recorded and listed, a role outside the list
   expect(await asked()).toMatchObject({ requested: true, reviewer: "codex/gpt-6-astra" });
 });
 
+it("an assignment naming one model still asks it again once its rejection's findings are settled", async () => {
+  const L = ledger("roles-rereview");
+  const record = { name: "roles-rereview", repo: "roles-rereview", policy: { checks: ["npm test"], protected: [] }, createdAt: AT };
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  for (const m of POOL) await index().putModel(m);
+  const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search is fast"] });
+  expect((await call("POST", "/model-roles", body({ scope: "roles-rereview", evidence: [`roles-rereview/${id}`], role: "criteria-review", choices: ["zcode/glm-5.3"] }))).status).toBe(201);
+  const first = await L.requestCriteriaReview(id, "owner", null, POOL);
+  expect(first.reviewer).toBe("zcode/glm-5.3");
+  const runner = { runner: "home:studio", kind: "home" } as const;
+  const claim = await L.claimCriteriaReview(id, "zcode/glm-5.3", runner) as unknown as { rev: number; criteria: string; request: number };
+  await L.addCriteriaReview({ itemId: id, by: "zcode/glm-5.3", rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: false, summary: "Vague.", findings: [{ file: "criterion-1", line: null, severity: "blocking", text: "Fast is not a measurement." }] }, true);
+  await L.resolveCriteriaFinding(id, "owner", claim.request, 1, "refuted", "200 ms is the measurement the brief names");
+  // The only model the assignment names is the previous reviewer, and it is available.
+  const again = await L.requestCriteriaReview(id, "owner", null, POOL);
+  expect(again).toMatchObject({ requested: true, reviewer: "zcode/glm-5.3" });
+});
+
 it("a second assignment supersedes only by naming the standing one; a retry is answered once; another project's is not sent here", async () => {
   const L = await project("roles-beta");
   await project("roles-gamma");

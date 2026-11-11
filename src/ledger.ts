@@ -10687,15 +10687,24 @@ export class Ledger extends DurableObject<Env> {
         avoid: status.lapsed.map((actor) => ({ actor, reason: "its claim on a review of these criteria lapsed" })),
       });
       const previous = status.previousReviewer ? listed.filter((c) => sameActor(c.actor, status.previousReviewer!)) : [];
-      const placed = orderByAssignment(listed.filter((c) => !previous.includes(c)), (c) => c.actor, applicableAssignments(this.heldAssignments(), null, ["criteria-review", "review"]), (c) => c.refusal, FALLBACK.review);
-      const candidates = [...previous, ...placed.order];
+      // The previous reviewer is set aside only when the assignment has
+      // another available model; an assignment naming only it asks it again.
+      const assigned = applicableAssignments(this.heldAssignments(), null, ["criteria-review", "review"]);
+      const rest = (list: typeof listed) => orderByAssignment(list, (c) => c.actor, assigned, (c) => c.refusal, FALLBACK.review);
+      let placed = rest(listed.filter((c) => !previous.includes(c)));
+      let kept = previous;
+      if (previous.length && placed.outcome.applied === null) {
+        const whole = rest(listed);
+        if (whole.outcome.applied !== null) { placed = whole; kept = []; }
+      }
+      const candidates = [...kept, ...placed.order];
       const first = candidates.find((c) => !c.refusal);
       // A standing assignment that applies is the developer's choice of
       // reviewer: its first available model is asked, as a request its runner
       // claims. With none applying the server still picks none.
-      if (first && placed.outcome.applied !== null && (previous.includes(first) || placed.promoted(first))) {
+      if (first && placed.outcome.applied !== null && (kept.includes(first) || placed.promoted(first))) {
         chosen = first.actor;
-        reasons = previous.includes(first) ? [`The previous reviewer of these criteria`] : placed.reasons(first);
+        reasons = kept.includes(first) ? [`The previous reviewer of these criteria`] : placed.reasons(first);
       } else {
       const none = !first && offersJudge(offers) && candidates.some((c) => c.refusal?.includes("no live runner offers")) ? `; no live runner offers an eligible reviewer, so none can be asked` : "";
       throw new RuleError("reviewer_needed", candidatesText(`${item.id}'s criteria review names no reviewer${none}`, candidates), 409, first ? `name one: atelier criteria-review ${item.id} --reviewer ${first.actor}, or another of the eligible` : `add a model with atelier models add, then atelier criteria-review ${item.id} --reviewer H/M`);
