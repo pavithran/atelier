@@ -65,6 +65,8 @@ import {
   type OutcomeNote, type PrereviewBinding, type PrereviewClaim, type PrereviewFence, type PrereviewOutcome, type PrereviewState, type PrereviewView,
 } from "./dispatch/prereview.ts";
 import { keepsStored } from "./models/usage-readings.ts";
+import { jobOf } from "./models/slate.ts";
+import { candidateOrder, effectivePicks, proposeToday, recordPickChanges, slateAt, standingRecord, writeSlate, type OrderRecord, type SlateLimits, type SlateRecord, type SlateStore, type SlateWorld, type SlateWrite } from "./models/slate-store.ts";
 import { crossings, type Thresholds, type UsageReport } from "./usage/report.ts";
 import type { RunReport } from "./models/reliability.ts";
 import { addDays, sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
@@ -1825,6 +1827,81 @@ export class Ledger extends DurableObject<Env> {
     return currentAssignments(this.assignmentStore.records());
   }
 
+  // ── model slate (src/models/slate-store.ts) ──────────────────────────────
+  // On the index instance, beside the assignments: records never changed, and
+  // each project's vendor limits. The slate is one for every project; a
+  // project's limits filter it when it is read.
+
+  private get slateStore(): SlateStore {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS model_slates (n INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, json TEXT NOT NULL)`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS slate_vendor_limits (project TEXT PRIMARY KEY, json TEXT NOT NULL)`);
+    return {
+      records: () => this.sql.exec(`SELECT json FROM model_slates ORDER BY n`).toArray().map((r) => JSON.parse(r.json as string) as SlateRecord),
+      insert: (record) => { this.sql.exec(`INSERT INTO model_slates (n, id, json) VALUES (?, ?, ?)`, Number(record.id.slice(1)), record.id, JSON.stringify(record)); },
+      log: (kind, data) => this.log(null, this.owner, kind, data, new Date().toISOString()),
+    };
+  }
+
+  private slateWorld(): SlateWorld {
+    return { pool: this.models(), reports: this.usage(), offers: this.runnerOffers(), pauses: this.providerPauses(0) };
+  }
+
+  slateRecords(): SlateRecord[] {
+    return this.slateStore.records();
+  }
+
+  writeSlateRecord(input: SlateWrite, now = new Date().toISOString()): OrderRecord & { retried?: true } {
+    return writeSlate(this.slateStore, input, now);
+  }
+
+  // The families each project's vendor limits allow; a project with no row is unfiltered.
+  slateVendorLimits(): SlateLimits {
+    this.slateStore;
+    return Object.fromEntries(this.sql.exec(`SELECT project, json FROM slate_vendor_limits ORDER BY project`).toArray().map((r) => [r.project as string, JSON.parse(r.json as string) as string[]]));
+  }
+
+  setSlateVendorLimits(project: string, families: readonly string[] | null): void {
+    this.slateStore;
+    if (families === null) this.sql.exec(`DELETE FROM slate_vendor_limits WHERE project = ?`, project);
+    else this.sql.exec(`INSERT OR REPLACE INTO slate_vendor_limits (project, json) VALUES (?, ?)`, project, JSON.stringify([...new Set(families)].sort()));
+  }
+
+  // The day's proposal: the first call of an Eastern day records one, the rest none.
+  proposeSlate(now: string): OrderRecord | null {
+    const store = this.slateStore;
+    return proposeToday(store, { order: candidateOrder(this.currentRoleAssignments(), standingRecord(store.records())), limits: this.slateVendorLimits() }, now);
+  }
+
+  // A project's slate from the order in force at `now`, its vendor limits applied, or null with none in force.
+  slateFor(project: string, now = new Date().toISOString(), authors: readonly string[] = []) {
+    return slateAt(this.slateStore, this.slateWorld(), Date.parse(now), { project, limits: this.slateVendorLimits(), authors });
+  }
+
+  // The slate job of a task: hard-round after two heads were rejected, small-build
+  // for a scope of one to five files, else build. A review record carries no
+  // role, so every rejection counts as the review role's.
+  slateJobOf(id: string): ReturnType<typeof jobOf> {
+    return jobOf(this.item(id), this.reviewsFor(id).map((r) => ({ head: r.head, approve: r.approve })));
+  }
+
+  // The pick of each job now, none for all with no approved record.
+  slatePicks(now = new Date().toISOString()) {
+    return effectivePicks(this.slateStore, this.slateWorld(), Date.parse(now));
+  }
+
+  // Runs a write that may change a pick and records the change in the same
+  // transaction: a throw in either leaves neither.
+  private watchSlate<T>(cause: string, at: number, write: () => T): T {
+    return this.ctx.storage.transactionSync(() => {
+      const store = this.slateStore;
+      if (!standingRecord(store.records())) return write();
+      const before = effectivePicks(store, this.slateWorld(), at);
+      const out = write();
+      recordPickChanges(store, before, effectivePicks(store, this.slateWorld(), at), cause, new Date(at).toISOString());
+      return out;
+    });
+  }
+
   // What a project's ledger is sent: the assignments bearing on the project
   // (its own, by its key, and every project's) at the record's version now.
   assignmentSnapshotFor(key: string): AssignmentSnapshot {
@@ -2118,6 +2195,10 @@ export class Ledger extends DurableObject<Env> {
   // usage.alert event (t533), which atelier status lists; nothing is sent.
   // The titles alerted now come back to the caller.
   putUsage(report: UsageReport, thresholds: Thresholds): { report: UsageReport; alerts: string[] } {
+    return this.watchSlate(`usage report of ${report.tool} from ${report.runner}`, Date.now(), () => this.putUsageRow(report, thresholds));
+  }
+
+  private putUsageRow(report: UsageReport, thresholds: Thresholds): { report: UsageReport; alerts: string[] } {
     // Compared and written in this one synchronous call, so a crash leaves
     // the old row or the new, and two reports sent at once keep the newer.
     const row = this.sql.exec(`SELECT json FROM usage WHERE tool = ? AND runner = ?`, report.tool, report.runner).toArray()[0];
@@ -2508,6 +2589,10 @@ export class Ledger extends DurableObject<Env> {
   // same limit. A later reset replaces an earlier one; a pause past its reset
   // is dropped when read.
   private mergePauses(pauses: readonly ProviderPause[], now: number): void {
+    this.watchSlate(`provider pause of ${pauses.map((p) => p.harness).join(", ")}`, now, () => this.mergePauseRows(pauses, now));
+  }
+
+  private mergePauseRows(pauses: readonly ProviderPause[], now: number): void {
     const row = this.sql.exec(`SELECT value FROM meta WHERE key = 'provider-pauses'`).toArray()[0];
     const kept: Record<string, ProviderPause> = row ? JSON.parse(row.value as string) : {};
     for (const p of pauses) {

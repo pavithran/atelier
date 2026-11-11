@@ -1,6 +1,6 @@
 import type { Item, ProjectPolicy } from "../rules.ts";
 import { actorFamily, assertEligible, DEFAULT_OWNER, modelKey, RuleError, singleFamily } from "../rules.ts";
-import { latestNote, noteLine, RECENT_MS, standingRefusal, type ModelEntry } from "./pool.ts";
+import { latestNote, noteLine, RECENT_MS, standingRefusal, type ModelEntry, type ModelRole } from "./pool.ts";
 import { buildReliability, isInfrastructureOutcome, outcomesOf, reliabilityLine, tiebreak, type ProjectEvents, type RunReport } from "./reliability.ts";
 import { buildPrecision, precisionWindow, type PrecisionRecord, type ReviewerPrecision } from "./precision.ts";
 import { paidPerToken, type Choice } from "../plans/route.ts";
@@ -83,11 +83,12 @@ function staleRefusal(entry: Pick<ModelEntry, "status">, now = new Date()): stri
 // judges it: standing (state, role), the offer check `offered` when given,
 // single-family mode, a provider's refusal, per-token spending and the rules'
 // own eligibility. The first that refuses gives its sentence; null when none
-// does. availabilityOf (usage-readings.ts) runs the same function.
-export function eligibilityRefusal(entry: ModelEntry, input: { policy: ProjectPolicy; owner?: string }, offered?: (entry: ModelEntry) => string | null, now = new Date()): string | null {
+// does. availabilityOf (usage-readings.ts) runs the same function. `role` is
+// the role the model is judged for, build unless a caller names another.
+export function eligibilityRefusal(entry: ModelEntry, input: { policy: ProjectPolicy; owner?: string }, offered?: (entry: ModelEntry) => string | null, now = new Date(), role: ModelRole = "build"): string | null {
   const actor = actorOf(entry);
   const single = singleFamily(input.policy);
-  const held = standingRefusal(entry, "build");
+  const held = standingRefusal(entry, role);
   if (held) return held;
   const unoffered = offered?.(entry);
   if (unoffered) return unoffered;
