@@ -172,11 +172,21 @@ export function formatSlots(status) {
   return [`Test slots: ${status.active.length}/${status.capacity} on ${status.host}${status.draining ? ` (draining excess: ${status.draining})` : ""}`, ...status.active.map(row), "Waiting (priority, FIFO):", ...status.waiters.map(row)].join("\n");
 }
 
+// A queued run is silent otherwise, and looks like a hang. Stderr only: the
+// command's stdout belongs to the command.
+const WAIT_NOTICE_AFTER_MS = 5000, WAIT_NOTICE_EVERY_MS = 60000;
+function waitNotice({ capacity, holders, place, queued }, waitedMs) {
+  const running = holders.map((e) => `${e.project ?? "?"}/${e.task ?? "?"}`).join(", ") || "none";
+  return `test slots: waiting ${Math.round(waitedMs / 1000)}s for a slot (capacity ${capacity}); running: ${running}; place ${place} of ${queued} in line`;
+}
+
 export async function acquireSlot(metadata = {}, options = {}) {
   const lease = metadata.lease ?? process.env[MARKER];
   if (!lease) throw new Error("test slots require the launch wrapper (missing process identity)");
   const priority = slotPriority(metadata.class ?? process.env.ATELIER_TEST_PRIORITY);
   const signal = options.signal;
+  const waitStart = now(options);
+  let lastNotice;
   try {
     for (;;) {
       if (signal?.aborted) throw new Error("test slot wait cancelled");
@@ -214,11 +224,18 @@ export async function acquireSlot(metadata = {}, options = {}) {
         // Reserve every eligible waiter in enqueue order in this transaction;
         // polling speed cannot reverse FIFO when multiple slots become free.
         for (const next of orderedWaiters(state).slice(0, free)) next.started = new Date().toISOString();
-        if (!entry.started) return null;
+        if (!entry.started) {
+          const line = orderedWaiters(state);
+          return { waiting: { capacity: state.capacity, holders: state.entries.filter((e) => e.started), place: line.indexOf(entry) + 1, queued: line.length } };
+        }
         entry.claimed = true;
         return { lease, reused: false };
       });
-      if (result) return result;
+      if (!result.waiting) return result;
+      if (now(options) - waitStart >= WAIT_NOTICE_AFTER_MS && (lastNotice === undefined || now(options) - lastNotice >= WAIT_NOTICE_EVERY_MS)) {
+        lastNotice = now(options);
+        (options.notice ?? console.error)(waitNotice(result.waiting, lastNotice - waitStart));
+      }
       await (options.wait ?? delay)(100);
     }
   } catch (error) {
