@@ -1,3 +1,4 @@
+import { toolOf as sharedToolOf } from "../models/usage-readings.ts";
 import { actorStanding, type ModelEntry } from "../models/pool.ts";
 import { actorFamily, familyRefusal } from "../rules.ts";
 import { offering, offersFor, type SeenOffer } from "../dispatch/rules.ts";
@@ -49,7 +50,9 @@ export function usageAdvice(value: UsageView | null, context: AdviceContext, now
   const warnings = fresh.flatMap((r) => crossings(r, thresholds, now).map((c) => ({ tool: r.tool, message: c.body })));
   if (!context.pool || !context.offers || !context.tasks) return [...warnings.map((w) => `Warning: ${plain(w.tool, 32)}: ${plain(w.message, 500)} Alternative builder/reviewer unknown; pool, runners or contributors could not be read.`), "Next models: unknown; pool, runners or contributors could not be read."];
   const held = new Set(warnings.map((w) => w.tool));
-  const toolOf = (m: ModelEntry) => m.harness === "opencode" && m.provider === "deepseek" ? "deepseek" : m.harness;
+  // The shared mapping first (GLM reads under zai); the rest keep their harness,
+  // except DeepSeek, which reads under its own tool.
+  const toolOf = (m: ModelEntry) => sharedToolOf(m) ?? (m.harness === "opencode" && m.provider === "deepseek" ? "deepseek" : m.harness);
   const remaining = (m: ModelEntry): number | null => {
     const windows = fresh.filter((r) => r.tool === toolOf(m)).flatMap((r) => r.windows).filter((w) =>
       (!w.at || now - Date.parse(w.at) <= STALE_MS) && w.resetsAt !== null && Date.parse(w.resetsAt) > now);

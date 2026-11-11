@@ -80,6 +80,20 @@ test("zai prints and reports its 5-hour and weekly windows, and never the key", 
   assert.equal(JSON.stringify(real.calls).includes(KEY), false);
 });
 
+test("zai reads the 5-hour and weekly windows from CREDIT_LIMIT limits, as today's reply labels them", async (t) => {
+  const credit = { code: 200, success: true, data: { limits: [
+    { type: "CREDIT_LIMIT", unit: 3, number: 5, percentage: 42, nextResetTime: NOW + 2 * 3_600_000 },
+    { type: "CREDIT_LIMIT", unit: 6, number: 1, percentage: 17, nextResetTime: NOW + 3 * 86_400_000 },
+    { type: "TIME_LIMIT", unit: 5, number: 1, percentage: 3, nextResetTime: NOW + 20 * 86_400_000 },
+  ] } };
+  const { io, calls } = setup(t, { io: { zaiFetch: answer(credit) } });
+  await runUsage(args("name=home:test"), io);
+  const body = posted(calls, "zai");
+  assert.deepEqual(names(body), ["5-hour", "weekly"]);
+  assert.deepEqual(body.windows.map((w) => [w.usedPercent, w.resetsAt]), [[42, new Date(NOW + 2 * 3_600_000).toISOString()], [17, new Date(NOW + 3 * 86_400_000).toISOString()]]);
+  assert.deepEqual(body.notes, []);
+});
+
 test("zai sends the key as a header and a refusal or HTTP error gives no windows and a note", async (t) => {
   const seen = [];
   const sent = setup(t, { io: { zaiFetch: async (url, init) => { seen.push([url, init.headers]); return answer(ZAI_OK)(); } } });

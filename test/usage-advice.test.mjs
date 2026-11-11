@@ -95,6 +95,15 @@ test("a single-family project never recommends another company's builder", () =>
   assert.match(advice(value, { single: "google" }), /Next models: build: none/);
 });
 
+test("advice finds a GLM model's reading under zai and a DeepSeek model's under deepseek", () => {
+  const glm = entry("opencode", "glm-5", { family: "zai" });
+  const deepseek = entry("opencode", "deepseek-flash", { provider: "deepseek", family: "deepseek" });
+  const only = (m) => ({ pool: [m], offers: [{ ...offers[0], agents: [{ agent: "opencode", models: [m.id] }] }] });
+  assert.match(advice({ reports: [report("zai", 30)] }, only(glm)), /build: opencode\/glm-5 \(70% left\)/);
+  assert.match(advice({ reports: [report("opencode", 30)] }, only(glm)), /build: opencode\/glm-5 \(quota unknown/);
+  assert.match(advice({ reports: [report("deepseek", 40)] }, only(deepseek)), /build: opencode\/deepseek-flash \(60% left\)/);
+});
+
 test("an opencode warning also holds its DeepSeek models", () => {
   const deepseek = entry("opencode", "deepseek-flash", { provider: "deepseek" });
   assert.match(advice({ reports: [report("opencode", 95)] }, { pool: [deepseek], offers: [{ ...offers[0], agents: [{ agent: "opencode", models: [deepseek.id] }] }] }), /Next models: build: none/);
