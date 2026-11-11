@@ -60,7 +60,7 @@ test("cleanAssignmentInput needs a role, ordered choices, a reason, the develope
   });
   assert.equal(cleanAssignmentInput({ ...body, scope: "atelier", replaces: "a3" }).scope, "atelier");
   assert.equal(cleanAssignmentInput({ ...body, replaces: "none" }).replaces, null);
-  refused(() => cleanAssignmentInput({ ...body, role: "tier" }), "bad_role", /build, review, security-review, claims-review, plan/);
+  refused(() => cleanAssignmentInput({ ...body, role: "tier" }), "bad_role", /build, review, security-review, claims-review, criteria-review, plan/);
   refused(() => cleanAssignmentInput({ ...body, choices: [] }), "bad_choices", /names its choices/);
   refused(() => cleanAssignmentInput({ ...body, reason: " " }), "bad_reason", /needs a reason/);
   refused(() => cleanAssignmentInput({ ...body, quote: undefined }), "bad_quote", /developer's words/);

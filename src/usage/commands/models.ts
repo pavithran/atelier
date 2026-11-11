@@ -66,7 +66,7 @@ const spec: CommandSpec = {
     {
       group: "Models", line: 1, slot: 90,
       form: "models assign ROLE H/M [H/M]... --reason TEXT --quote TEXT --evidence PROJECT/tN [--evidence REF]... [--scope PROJECT] [--replaces aN] [--as H/M]",
-      about: "Developer only: records which models take a role (build, review, security-review, claims-review or plan), in order, for every project or one, dated, with the reason, the developer's words and evidence as PROJECT/tN or PROJECT/tN#SEQ, each checked to exist. Routing, review requests, the planner and dispatch suggestions put its eligible choices first; an assignment never makes a model eligible. Superseding a standing one names it with `--replaces`.",
+      about: "Developer only: records which models take a role (build, review, criteria-review, security-review, claims-review or plan), in order, for every project or one, dated, with the reason, the developer's words and evidence as PROJECT/tN or PROJECT/tN#SEQ, each checked to exist. Routing, review requests, the planner and dispatch suggestions put its eligible choices first; an assignment never makes a model eligible. Superseding a standing one names it with `--replaces`.",
     },
     {
       group: "Models", line: 1, slot: 95,
