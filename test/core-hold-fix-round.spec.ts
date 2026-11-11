@@ -2,7 +2,7 @@
 // by a core-file hold; every other task is held as before.
 import { execFileSync } from "node:child_process";
 import { env, server } from "./support/workers.ts";
-import { expect, it } from "./support/vitest.ts";
+import { expect, it, vi } from "./support/vitest.ts";
 import worker from "../src/index.ts";
 
 type GitHost = { repo(key: string, branch: string): string };
@@ -36,7 +36,12 @@ async function setup(name: string, coreFiles: string[] = []) {
     await dispatch(id);
   };
   return {
-    L, dispatch, fixRound,
+    L, dispatch, fixRound, name,
+    // A second runner of the project with its own token.
+    otherToken: async () => {
+      const r = await api("/tokens", "POST", { runner: `home:${name}-2`, projects: [name] });
+      return (await r.json() as { token: string }).token;
+    },
     poll: async () => {
       const res = await api("/queue", "POST", { runner, agents, jobs: ["build"] }, token, A);
       expect(res.status, await res.clone().text()).toBe(200);
@@ -44,9 +49,10 @@ async function setup(name: string, coreFiles: string[] = []) {
     },
     // The project's repository has a commit on main, so a claim that passes
     // every check succeeds; a hold is 409 "held".
-    claim: async (id: string) => {
-      const res = await api(`/projects/${name}/items/${id}/claim`, "POST", {}, token, A);
-      return { status: res.status, error: ((await res.json()) as { error?: string }).error };
+    claim: async (id: string, as = token) => {
+      const res = await api(`/projects/${name}/items/${id}/claim`, "POST", {}, as, A);
+      const body = (await res.json()) as { error?: string; message?: string };
+      return { status: res.status, error: body.error, message: body.message };
     },
   };
 }
@@ -138,3 +144,33 @@ it("criterion 5: an unclaimed task stays offered on every poll; two claims at on
   expect([a.status, b.status].sort()).toEqual([200, 409]);
   expect(await claim("t2")).toMatchObject({ status: 200 });
 });
+
+it("criterion 5: two runners with their own tokens claim at once, one claim and one 409", async () => {
+  const w = await world("fh-two-runners", "reject");
+  const second = await w.otherToken();
+  // Both runners have polled, so the server holds a live offer for each.
+  expect(await w.poll()).toContain("t2");
+  const res = await api("/queue", "POST", { runner: `home:${w.name}-2`, agents, jobs: ["build"] }, second, A);
+  expect(res.status).toBe(200);
+  const [a, b] = await Promise.all([w.claim("t2"), w.claim("t2", second)]);
+  expect([a.status, b.status].sort()).toEqual([200, 409]);
+  expect((await w.L.item("t2")).owner).toBe(A);
+});
+
+// A claim that fails before it completes (the branch call is interrupted, or
+// times out) gives the task up: it stays dispatched and is offered again.
+for (const [how, message] of [["interrupted", "connection reset"], ["timed out", "request timed out"]] as const) {
+  it(`criterion 5: a claim ${how} leaves the task dispatched and offered on the next poll`, async () => {
+    const w = await world(`fh-${how.replace(" ", "-")}`, "reject");
+    const spy = vi.spyOn(git as unknown as { claimBranch(...a: unknown[]): Promise<unknown> }, "claimBranch").mockRejectedValueOnce(new Error(message));
+    try {
+      const failed = await w.claim("t2");
+      expect(failed.status).toBeGreaterThanOrEqual(400);
+    } finally { spy.mockRestore(); }
+    const item = await w.L.item("t2");
+    expect(item.owner ?? null).toBeNull();
+    expect(item.dispatch).toBeTruthy();
+    expect(await w.poll()).toContain("t2");
+    expect(await w.claim("t2")).toMatchObject({ status: 200 });
+  });
+}
