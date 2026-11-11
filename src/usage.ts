@@ -440,7 +440,12 @@ commits, process activity and check output before saying so.
 While work runs and you would sit idle, post one short update every 10 minutes
 (atelier-pulse). Give progress, the next action and any decision needed.
 Ask PAVI only for ship passwords, overrides and real decisions, always with a
-recommendation. Never override a review, check or block without PAVI's words.
+recommendation. Never override a review, check or block without PAVI's words. One block
+needs none: a review round cap lifts once, with \`atelier unblock ID --as H/M\`
+and no quote, when the task's criteria were revised after the capping
+rejection and another family than every contributor approved that revision's
+criteria review. The unblock records both. A second cap on the task goes to
+PAVI, as does every other block.
 Record a lasting decision with \`atelier decide "rule" --quote "PAVI's words"\`.
 
 Build and review evidence is detailed in docs/orchestrating.md. Return missing

@@ -74,6 +74,7 @@ import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, standingRoute, type Choice, type PartRoute } from "./plans/route.ts";
 import { conflictedParts, integrationFailures, partAttempts, partReviewers, planActions, planPhase, type IntegrationFailureKind } from "./plans/phase.ts";
+import { isRoundCapReason, roundCapRefusal, roundCapUnblock, type RoundCapDecision, type RoundCapFacts } from "./review/round-cap-unblock.ts";
 import { historyEntries, type HistoryRead } from "./review/history.ts";
 import { findingsSection, jobBrief as buildBrief, plannerBrief, type Dependency, type ReviewFindings } from "./plans/brief.ts";
 import {
@@ -5263,12 +5264,23 @@ export class Ledger extends DurableObject<Env> {
     });
   }
 
+  // Whether the task is blocked at a review round cap (t623).
+  heldAtRoundCap(id: string): boolean {
+    const blocked = this.item(id).blocked;
+    return blocked?.by === ORCHESTRATOR && isRoundCapReason(blocked.reason);
+  }
+
   private unblockIn(id: string, actor: string, proved: boolean, direction: OwnerDirection | PageDirection | null): Item {
     const item = this.item(id);
     const fence = this.prereviewFence(id);
-    const roundCap = item.blocked?.by === ORCHESTRATOR && /^\d+ review rounds were rejected and no further round starts on its own/.test(item.blocked.reason);
+    const roundCap = item.blocked?.by === ORCHESTRATOR && isRoundCapReason(item.blocked.reason);
+    // A round cap lifts on the developer's words, or once on a criteria
+    // revision another family approved (t623); the rule is round-cap-unblock.ts.
+    let viaCriteria: Extract<RoundCapDecision, { allowed: true }> | null = null;
     if (roundCap && (actor !== this.owner || !direction?.quote.trim() || !("factor" in direction || direction.acting))) {
-      throw new RuleError("direction_needed", "A review round cap needs the developer's words: unblock with --quote \"what the developer said\" --as H/M", 403, `atelier unblock ${id} --quote \"what the developer said\" --as H/M`);
+      const decision = actor === this.owner && !direction ? roundCapUnblock(this.roundCapFacts(item)) : null;
+      if (!decision?.allowed) throw new RuleError("direction_needed", roundCapRefusal(decision), 403, `atelier unblock ${id} --quote \"what the developer said\" --as H/M`);
+      viaCriteria = decision;
     }
     if (!fence && (item.state !== "blocked" || !item.blocked)) throw new RuleError("not_blocked", `${id} is ${item.state}, not blocked`, 409, "run atelier show ID");
     // A block that is a fact (G7: a run stopped at its limit) waits on no
@@ -5285,8 +5297,29 @@ export class Ledger extends DurableObject<Env> {
     }
     if (item.state !== "blocked" || !item.blocked) return this.item(id);
     this.update(id, { state: item.blocked.from, blocked: null }, at);
-    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from, ...(fact ? { fact } : {}), ...said }, at, proved);
+    const via = viaCriteria ? { via: "criteria-review", criteriaRevision: viaCriteria.revision, criteriaReview: viaCriteria.review, criteriaReviewer: viaCriteria.reviewer } : {};
+    this.log(id, actor, "item.unblocked", { reason: item.blocked.reason, to: item.blocked.from, ...(fact ? { fact } : {}), ...said, ...via }, at, proved);
     return this.item(id);
+  }
+
+  // What round-cap-unblock.ts judges: the sequence of the cap, each criteria
+  // revision's event, the criteria reviews, who contributed, and how many
+  // round-cap blocks this task already had lifted on a criteria review.
+  private roundCapFacts(item: Item): RoundCapFacts {
+    const capSeq = (this.sql.exec(`SELECT MAX(seq) AS seq FROM events WHERE item_id = ? AND kind = 'review.round_cap'`, item.id).one().seq as number | null) ?? 0;
+    const revised = new Map<number, number>();
+    for (const row of this.sql.exec(`SELECT seq, data FROM events WHERE item_id = ? AND kind = 'criteria.revised'`, item.id).toArray()) revised.set((JSON.parse(row.data as string) as { rev: number }).rev, row.seq as number);
+    const earlierUses = this.sql.exec(`SELECT data FROM events WHERE item_id = ? AND kind = 'item.unblocked'`, item.id).toArray()
+      .filter((row) => (JSON.parse(row.data as string) as { via?: string }).via === "criteria-review").length;
+    return {
+      capSeq,
+      revisions: this.criteriaRevisions(item.id).map((r) => ({ rev: r.rev, seq: revised.get(r.rev) ?? 0, by: r.by })),
+      reviews: this.criteriaReviewsFor(item.id).map((r) => ({ id: r.id, rev: r.rev, state: r.state, reviewer: r.reviewer, claimedBy: r.claimedBy })),
+      contributors: contributorsOf(item),
+      owner: this.owner,
+      single: singleFamily(this.project().policy),
+      earlierUses,
+    };
   }
 
   // The developer's newest words that lifted a block (an Answer on the page,
@@ -6806,6 +6839,11 @@ export class Ledger extends DurableObject<Env> {
     this.update(item.id, { state: "claimed" }, at);
     this.log(item.id, ORCHESTRATOR, "prereview.rework", { builder, head: item.head, runner: item.runner }, at);
     return { builder, ownerAction: null };
+  }
+
+  // Whether a blocking pre-review fences the task's landing (t623).
+  hasPrereviewFence(id: string): boolean {
+    return this.prereviewFence(id) !== null;
   }
 
   private prereviewFence(id: string): PrereviewFence | null {
