@@ -36,7 +36,7 @@ import {
   type Block, type SecretFlag, type SecretClearance, type ItemFields, type UnparsableReply,
   CHECK_BY, type PostDeployCheck,
   projectMode, modeSwitch, modeLine, fastReceipt, assertFastModeAllowed, assertFastModeConfirmed, ownerDirection, type OwnerDirection, type PageDirection,type FastModeConfirmation, postMergeIndependence, postMergeOwed, postMergeNotes, fixTaskFromNote, reviewNotes, openNotes, noteKey, type GoalNote, rejectedRounds, roundCapHold, FINDING_LABELS, reviewAuthorized, type FindingLabel, type ProjectMode, type FastReceipt,
-  standingFastReady, stageOf, crossCompanyApproval, FAST_READY_STALE, type FastReady,
+  standingFastReady, stageOf, crossCompanyApproval, landOfferApproval, landWaitsText, FAST_READY_STALE, type FastReady,
   recordedMerge, recordedMergeRefusal, recordedMergeIndependence, type RecordedMerge,
   riskNeed,
 } from "./rules";
@@ -11750,9 +11750,31 @@ export class Ledger extends DurableObject<Env> {
       // task's head is not tried again until the head changes or the
       // developer queues it again (G1): the job stays queued, unoffered.
       if (item.state === "blocked" || item.blocked || this.landingStopped(item)) continue;
+      // A landing no approval at the head backs is queued but not offered
+      // (t632); a merged task's post-merge work needs none.
+      if (!this.landApproved(item)) continue;
       jobs.push({ ...item, dispatch: { to: "home", agent: "atelier", model: "lander", by: r.by as string, at: r.at as string, note: `land ${item.id}`, job: "land" } });
     }
     return jobs;
+  }
+
+  // Whether the task's head has an approval the gate counts (landOfferApproval).
+  // Reads only; a merged task is past the approval.
+  private landApproved(item: Item): boolean {
+    if (item.state === "merged") return true;
+    return !!landOfferApproval(item, this.project().policy, this.evidenceFor(item.id), this.reviewsFor(item.id), this.owner);
+  }
+
+  // The queued landings landJobs withholds, for the owner's queue listing,
+  // each with the reason it waits. Reads only.
+  withheldLandings(): (Item & { why: { kind: "held"; line: string }[] })[] {
+    const out: (Item & { why: { kind: "held"; line: string }[] })[] = [];
+    for (const r of this.sql.exec(`SELECT item, by, at FROM land_jobs ORDER BY at, item`).toArray()) {
+      const item = this.item(r.item as string);
+      if (item.state === "abandoned" || item.state === "merged" || item.state === "blocked" || item.blocked || this.landApproved(item)) continue;
+      out.push({ ...item, dispatch: { to: "home", agent: "atelier", model: "lander", by: r.by as string, at: r.at as string, note: `land ${item.id}`, job: "land" }, why: [{ kind: "held", line: landWaitsText(item) }] });
+    }
+    return out;
   }
 
   // The resolver for a task's mechanical conflicts among `candidates`

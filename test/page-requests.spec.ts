@@ -188,6 +188,9 @@ it("a job queued at H whose task moves to H2 is not offered: its row is dropped 
   const name = "pr-moved";
   const { L, id } = await project(name);
   await L.requestLand(id, OWNER, undefined, { head: H1, criteria: C, requestId: uuid() });
+  // Withheld until an approval stands at its head (t632), then offered.
+  expect(await L.landJobs(offer(name), [name])).toEqual([]);
+  await L.addReview({ itemId: id, by: "codex/gpt-6-astra", head: H1, criteria: await L.criteria(id), approve: true, note: "Works", at: new Date().toISOString() }, undefined, true);
   expect((await L.landJobs(offer(name), [name])).map((j) => j.id)).toEqual([id]);
   await L.recordPush(id, AGENT, H2, H2);
   expect(await L.landJobs(offer(name), [name])).toEqual([]);
@@ -203,6 +206,7 @@ it("a job the command line queued, with no head, is offered whatever the head be
   const { L, id } = await project(name);
   await L.requestLand(id, OWNER);
   await L.recordPush(id, AGENT, H2, H2);
+  await L.addReview({ itemId: id, by: "codex/gpt-6-astra", head: H2, criteria: await L.criteria(id), approve: true, note: "Works", at: new Date().toISOString() }, undefined, true);
   expect((await L.landJobs(offer(name), [name])).map((j) => j.id)).toEqual([id]);
   expect(await events(L, id, "land.stopped")).toEqual([]);
 });
