@@ -435,3 +435,41 @@ test("idle grace preserves fractional milliseconds through its exact boundary", 
   clock = 6000.75;
   assert.equal((await slotStatus(f.options)).usage, 0);
 });
+
+// t693: a queued test run printed nothing, and a builder took it for a hang.
+function waitingFixture(t, capacity = 1) {
+  const f = fixture(t, capacity);
+  const clock = { at: 1000 };
+  const lines = [];
+  const options = (extra = {}) => ({ ...f.options, now: () => clock.at, notice: (line) => lines.push(line), ...extra });
+  return { ...f, clock, lines, options };
+}
+
+test("a slot wait prints one line at 6 s naming capacity, holders and place, and nothing at 4 s", async (t) => {
+  const w = waitingFixture(t), held = w.owner("ordinary", "xray"), ahead = w.owner("ordinary", "ourai"), me = w.owner("ordinary", "atelier");
+  await acquireSlot(held, w.options());
+  await poolTransaction(w.options(), (state) => state.entries.push({ ...ahead, sequence: ++state.sequence, priority: 2, queued: new Date().toISOString() }));
+  const waitUntil = async (seconds) => {
+    const stop = new AbortController(), start = w.clock.at;
+    await acquireSlot(me, w.options({ signal: stop.signal, wait: async () => { w.clock.at += 1000; if (w.clock.at - start >= seconds * 1000) stop.abort(); } })).catch(() => {});
+  };
+  await waitUntil(4);
+  assert.deepEqual(w.lines, []);
+  w.clock.at = 1000;
+  await waitUntil(6);
+  assert.equal(w.lines.length, 1);
+  assert.match(w.lines[0], /capacity 1/);
+  assert.match(w.lines[0], /xray\/t1/);
+  assert.match(w.lines[0], /place 2 of 2/);
+});
+
+test("a 3 minute wait prints at most one more line per minute; an immediate slot prints nothing", async (t) => {
+  const w = waitingFixture(t), held = w.owner(), me = w.owner();
+  await acquireSlot(held, w.options());
+  const stop = new AbortController();
+  await acquireSlot(me, w.options({ signal: stop.signal, wait: async () => { w.clock.at += 100; if (w.clock.at >= 1000 + 180000) stop.abort(); } })).catch(() => {});
+  assert.ok(w.lines.length >= 3 && w.lines.length <= 4, `${w.lines.length} lines`);
+  const free = waitingFixture(t);
+  await acquireSlot(free.owner(), free.options());
+  assert.deepEqual(free.lines, []);
+});
