@@ -326,3 +326,21 @@ test("recovery keeps the journal entries it has not swept yet when a sweep befor
   assert.deepEqual(counts, [2, 2], "both entries stay on file while each is swept");
   assert.equal(Object.keys(JSON.parse(readFileSync(file, "utf8")).runs).length, 2, "both incomplete entries remain");
 });
+
+test("children that start 1 s late are waited for by pid, then swept", async (t) => {
+  const s = setup(t, "home:sweep-late", "exit");
+  // The launcher is outside the workspace; a second after it starts, it starts the idle child inside it and prints its pid.
+  const child = `setTimeout(() => { const k = require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: process.argv[1], stdio: "ignore", detached: true }); k.unref(); console.log(k.pid); }, 1000)`;
+  const launcher = spawn(process.execPath, ["-e", child, s.workspace], { stdio: ["ignore", "pipe", "ignore"] });
+  t.after(() => launcher.kill("SIGKILL"));
+  let out = "";
+  launcher.stdout.on("data", (d) => { out += d; });
+  assert.deepEqual(processesOf({ workspace: s.workspace }), [], "nothing is up yet");
+  assert.equal(await until(() => /\n$/.test(out), 30_000), true, "the launcher printed the child's pid");
+  const pid = Number(out.trim());
+  s.track(pid);
+  await running([pid], s.workspace);
+  const { ended } = await sweepRun({ workspace: s.workspace }, { log: () => {} });
+  assert.equal(ended.length, 1);
+  assert.equal(await until(() => !alive(pid), 5000), true);
+});
