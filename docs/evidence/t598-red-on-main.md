@@ -6,13 +6,33 @@ Run from the workspace root, each through the host slot wrapper:
 
 Typecheck: `npm run typecheck` (`tsc -p . && tsc -p test`), clean at this head.
 
-## Red on main
+## Red on main (observed run)
 
-The brief says nothing on main builds a slate: `src/models/slate.ts`,
-`src/models/slate-store.ts` and the two tables are new, so every test file
-below imports a module main does not have and fails to load there. I could
-not query `main` from this workspace (the sandbox refused git commands that
-name it), so that red is from the brief and the file list, not a run on main.
+Main SHA: a9d4e4c2823eee87a8993138c00787927c37ba89. I checked it out as a
+detached worktree under .scratch, copied in `test/slate.test.ts` and
+`test/slate-store.spec.ts` (no source file), and ran the command above there.
+`src/models/slate.ts` and `src/models/slate-store.ts` do not exist on main, so
+both files fail to load. That import error is the red for criteria 1 to 12,
+since every test of them imports one of the two modules; no test of them can
+fail any other way on main.
+
+    code: 'ERR_MODULE_NOT_FOUND',
+    url: 'file:///.../.scratch/main/src/models/slate.ts'
+    ✖ test/slate.test.ts (55.2ms)
+    ✖ test/slate-store.spec.ts (240.9ms)
+    ℹ tests 2
+    ℹ pass 0
+    ℹ fail 2
+
+The same command at the head (e03675ba plus this file) is green:
+
+    ℹ tests 21
+    ℹ pass 21
+    ℹ fail 0
+
+`npm run typecheck` is clean at the head. The per-criterion test names are in
+the table below; all of them are in the two files above, so one command covers
+every criterion.
 
 ## Red on 47438548 for the fix round (observed)
 
