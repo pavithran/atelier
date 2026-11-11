@@ -255,5 +255,6 @@ test('atelier guide --role build says browser tests run with PLAYWRIGHT_MODULE a
     { cwd: dir, encoding: 'utf8', env: { ...process.env, ATELIER_CONFIG_DIR: dir } });
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /PLAYWRIGHT_MODULE/);
-  assert.match(r.stdout, /-browser\.cjs/);
+  assert.match(r.stdout, /the project's own instructions/);
+  assert.doesNotMatch(r.stdout, /-browser\.cjs/);
 });
