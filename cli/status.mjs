@@ -1,4 +1,4 @@
-import { submissionWaits } from "./submission-review.mjs";
+import { submissionWaits, secondRejectionUnknown } from "./submission-review.mjs";
 import { actedLine } from "./commands/show.mjs";
 // The owner's queue as plain text. Pure: the caller fetches, this only formats.
 // A view is { name, title?, items, inbox }, where items are the project's items
@@ -108,6 +108,10 @@ export function taskLink(server, project, id) {
   return `${server ? String(server).replace(/\/+$/, "") : ""}/p/${encodeURIComponent(project)}/${encodeURIComponent(id)}`;
 }
 
+// Every wait on the orchestrator a view carries: submitted tasks with no
+// review asked, then those left at their second rejection (v.secondRejection).
+const allWaits = (v) => [...submissionWaits(v.items, v.name), ...(v.secondRejection?.waits ?? [])];
+
 // An item as `ls --json` and `status --json` print it: what the text listings
 // show, with the times a machine reader such as Observatory draws on.
 export function itemJson(i) {
@@ -130,7 +134,8 @@ export function statusJson(views, server = "", offers = null, now = new Date()) 
     const a = attentionFor(v.name, v.items, v.inbox, offers, now);
     return {
       name: v.name,
-      ...(submissionWaits(v.items, v.name).length ? { orchestratorWaits: submissionWaits(v.items, v.name) } : {}),
+      ...(allWaits(v).length ? { orchestratorWaits: allWaits(v) } : {}),
+      ...(v.secondRejection?.unknown ? { orchestratorWaitsUnknown: secondRejectionUnknown } : {}),
       ...(v.developerDecisions?.length ? { developerDecisions: v.developerDecisions } : {}),
       ...(shipWaitOf(v.shipWait, now) ? { shipWait: shipWaitOf(v.shipWait, now) } : {}),
       ...(v.wayBack ? { wayBack: v.wayBack } : {}),
@@ -432,8 +437,8 @@ export function formatStatus(views, waiting = {}) {
     lines.push(...deployGateLines(v.policy, v.scripts, v.checkout ?? null).map((l) => `  ${l}`));
     lines.push(...criteriaLines(v));
     lines.push(...stuckLines(v.stuck, "  ", false));
-    const unasked = submissionWaits(items, v.name);
-    if (unasked.length) lines.push("  Waiting on the orchestrator", ...unasked.map(w => `    ${w.id}  ${w.reason}; ${w.command}`));
+    const unasked = allWaits(v);
+    if (unasked.length || v.secondRejection?.unknown) lines.push("  Waiting on the orchestrator", ...unasked.map(w => `    ${w.id}  ${w.reason}; ${w.command}`), ...(v.secondRejection?.unknown ? [`    ${secondRejectionUnknown}`] : []));
     if (!owner.length) {
       // With nothing else following, the bare line; otherwise it is worded
       // for the owner, so it does not read against what is listed under it.
@@ -533,8 +538,8 @@ export function formatStatusBrief(b) {
   const reviewing = requests.map((q) => `${q.item.id} by ${oneLine(q.item.dispatch.agent ?? "any")}/${oneLine(q.item.dispatch.model ?? "any")}`);
   const asked = !b.queue ? "the review queue could not be read" : reviewing.length ? `${reviewing.length} waiting for a runner (${named(reviewing)})` : "none waiting for a runner";
   lines.push(`Reviews: ${submitted.length} submitted or accepted${submitted.length ? ` (${named(submitted.map((i) => `${i.id} ${i.state}`))})` : ""}; ${asked}.`);
-  const unasked = submissionWaits(s.live, s.project.name);
-  if (unasked.length) lines.push(`Waiting on the orchestrator: ${unasked.map(w => `${w.id}; ${w.command}`).join("; ")}.`);
+  const unasked = [...submissionWaits(s.live, s.project.name), ...(b.secondRejection?.waits ?? [])];
+  if (unasked.length || b.secondRejection?.unknown) lines.push(`Waiting on the orchestrator: ${[...submissionWaits(s.live, s.project.name).map(w => `${w.id}; ${w.command}`), ...(b.secondRejection?.waits ?? []).map(w => `${w.id} (${w.reason}); ${w.command}`), ...(b.secondRejection?.unknown ? [secondRejectionUnknown] : [])].join("; ")}.`);
   const lease = b.lease;
   lines.push(!lease ? "Landing: none running."
     : lease.unreadable ? `Landing: the lease could not be read (${oneLine(lease.unreadable)}).`

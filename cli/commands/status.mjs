@@ -7,6 +7,7 @@ import { CACHE, OWNER, OWNER_NAME, P, actor, args, call, cfg, checkoutStatus, di
 import { cleanableCount } from "../gc.mjs";
 import { mainOf } from "./gc.mjs";
 import { expiredBlocks } from "../../src/rules.ts";
+import { secondRejectionUnknown, secondRejectionWaits } from "../submission-review.mjs";
 import { serverFetch } from "../server-fetch.mjs";
 
 import { bookmarkKey, formatNew, newSince, parseSince, readBookmark, writeBookmark, FIRST_RUN_MS } from "../new-since.mjs";
@@ -25,6 +26,10 @@ const withUsage = (text, lines) => (lines.length ? `${lines.join("\n")}\n\n${tex
 // are read here, in chat. A server that cannot answer leaves the text as it was.
 const noticesText = (as) => request("GET", "/notices", undefined, as).then((r) => noticeLines(r).join("\n"), () => "");
 const withNotices = (text, notices) => (notices ? `${notices}\n\n${text}` : text);
+
+// The second-rejection waits of a project's submitted tasks, read from its
+// events (owner route); a failed read is returned as unknown.
+const secondRejections = (name, items, as) => secondRejectionWaits(items, name, (before) => request("GET", `${P(name)}/events${before === undefined ? "" : `?before=${before}`}`, undefined, as));
 
 // The owner's queue: decisions waiting, tasks in progress, tasks waiting for a runner.
 export default async function statusCommand() {
@@ -46,7 +51,8 @@ export default async function statusCommand() {
       soft(request("GET", "/usage", undefined, as)),
       landingLease(name, as),
     ]);
-    const text = formatStatusBrief({ standing, version, queue, lease, usage });
+    const secondRejection = await secondRejections(name, standing.live, as);
+    const text = formatStatusBrief({ standing, version, queue, lease, usage, secondRejection });
     if (args.json) return console.log(JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), brief: text.split("\n") }, null, 2));
     console.log(text);
     pointToGuide([name]);
@@ -75,6 +81,7 @@ export default async function statusCommand() {
     // Open stuck episodes come first (t198); needs the tasks, so they are read here.
     record ??= await request("GET", P(name), undefined, as).catch(() => null);
     // The stuck routes are the developer's alone, like the branches: an agent is not shown them and the server is not asked.
+    const secondRejection = await secondRejections(name, standing.live, as);
     const stuck = mine ? await readStuck((path) => request("GET", path, undefined, as).catch(() => null), P(name), name, Array.isArray(record?.items) ? record.items : null) : null;
     // The criteria review's state (t179), read with the mode: skipped under fast mode, or held by a deadlock.
     const modeRead = await request("GET", `${P(name)}/mode`, undefined, as).catch(() => null);
@@ -83,7 +90,7 @@ export default async function statusCommand() {
     // Planned tasks not yet filed (t601). An agent's token is refused the route and the section is left out.
     const planned = await request("GET", `${P(name)}/designs`, undefined, as).catch(() => null);
     const designText = designLines(planned?.designs).join("\n");
-    if (args.json) return console.log(JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), project: standing, developerDecisions: developerDecisionLines(record?.events), ...(shipWaitOf(record?.shipWait, new Date()) ? { shipWait: shipWaitOf(record?.shipWait, new Date()) } : {}), stuck, ...(designText ? { unfiledDesigns: designLines(planned.designs) } : {}), ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
+    if (args.json) return console.log(JSON.stringify({ ...(mainSuite ? { mainSuite } : {}), project: standing, ...(secondRejection.waits.length ? { orchestratorWaits: secondRejection.waits } : {}), ...(secondRejection.unknown ? { orchestratorWaitsUnknown: secondRejectionUnknown } : {}), developerDecisions: developerDecisionLines(record?.events), ...(shipWaitOf(record?.shipWait, new Date()) ? { shipWait: shipWaitOf(record?.shipWait, new Date()) } : {}), stuck, ...(designText ? { unfiledDesigns: designLines(planned.designs) } : {}), ...(criteriaJson(criteria) ? { criteriaReview: criteriaJson(criteria) } : {}), checkout, testSlots, processes: live, ...(mine && branches ? { branches } : {}), ...(mismatches.length ? { mismatches } : {}), ...(local ? { local } : {}), ...(strays.length ? { strayTests: strays } : {}) }, null, 2));
     const offers = await request("GET", "/runners", undefined, as).catch(() => null);
     const runners = Array.isArray(offers) ? "\n\n" + formatRunners(offers, Date.now(), args["all-runners"]).join("\n") : "";
     // The project's tasks, for expired blocks and the clean-up count.
@@ -98,7 +105,7 @@ export default async function statusCommand() {
     // warning's init names the checkout to run it in, for status runs from
     // anywhere and init reads the project from the checkout alone.
     const gate = deployGateLines(record?.project?.policy, packageScripts(path), path);
-    console.log(withOverdueTick(withNotices(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (shipWaitLines(record?.shipWait, new Date()).length ? "\n\n" + shipWaitLines(record?.shipWait, new Date()).join("\n") : "") + (designText ? "\n\n" + designText : "") + (criteriaText ? "\n\n" + criteriaText : "") + (gate.length ? "\n\n" + gate.join("\n") : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), mine ? await noticesText(as) : ""), overdueTick(stuck)));
+    console.log(withOverdueTick(withNotices(withUsage(tokenExpiryWarningsText(withStuck(formatStanding(standing, OWNER_NAME, server(), expired), stuckText) + orchestratorSection(secondRejection) + (developerDecisionLines(record?.events).length ? "\n\n" + developerDecisionLines(record?.events).join("\n") : "") + (shipWaitLines(record?.shipWait, new Date()).length ? "\n\n" + shipWaitLines(record?.shipWait, new Date()).join("\n") : "") + (designText ? "\n\n" + designText : "") + (criteriaText ? "\n\n" + criteriaText : "") + (gate.length ? "\n\n" + gate.join("\n") : "") + runners + "\n\n" + checkout + (mine ? "\n\n" + formatDeveloperBranches(branches) : "") + (local ? "\n\n" + formatLocal(local) : "") + (stages.length ? "\n\n" + stageLines(stages, "").join("\n") : "") + (strays.length ? "\n\n" + formatStrays(strays) : "") + (mismatches.length ? "\n\n" + formatPolicyDisagreements(mismatches) : "") + "\n\n" + formatSlots(testSlots) + "\n\n" + liveText(live)), await usageWarnings(as)), mine ? await noticesText(as) : ""), overdueTick(stuck)));
     pointToGuide([name]);
     printCleanLines([{ project: name, count: await cleanableCount({ cache: CACHE, name, items, main: mainOf(name) }) }]);
     return;
@@ -138,7 +145,7 @@ export default async function statusCommand() {
     // beside the instructions read above.
     const items = Array.isArray(read?.items) ? read.items : null;
     const stuck = await readStuck((path) => request("GET", path, undefined, OWNER).catch(() => null), P(p.name), p.name, items);
-    return { developerDecisions: developerDecisionLines(read?.events), shipWait: read?.shipWait ?? null, stuck, wayBack: read?.wayBack ?? null, name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, scripts: packageScripts(path), checkout: path, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
+    return { developerDecisions: developerDecisionLines(read?.events), shipWait: read?.shipWait ?? null, stuck, wayBack: read?.wayBack ?? null, secondRejection: await secondRejections(p.name, items ?? [], OWNER), name: p.name, title: p.title, items, inbox: projectInbox(notices, p.name), mismatches, policy: p.policy ?? null, scripts: packageScripts(path), checkout: path, mode: mode?.mode === "fast" ? mode.line : null, ready: readyOf(mode), criteriaDeadlocks: Array.isArray(mode?.criteriaDeadlocks) ? mode.criteriaDeadlocks : [], branches };
   }));
   if (args.json) return console.log(JSON.stringify(statusJson(views, server(), Array.isArray(offers) ? offers : null).map(view => ({ ...view, ...(mainSuite ? { mainSuite } : {}) })), null, 2));
   const strays = formatStrays(localStrays());
@@ -226,4 +233,10 @@ async function say(outcome, { name, as, how, after = false }) {
   });
   if (!written) process.exitCode = 1;
   return written && !unread;
+}
+
+// status --project's section for the waits read from events; empty when none.
+function orchestratorSection({ waits, unknown }) {
+  if (!waits.length && !unknown) return "";
+  return "\n\nWaiting on the orchestrator\n" + [...waits.map((w) => `  ${w.id}  ${w.reason}; ${w.command}`), ...(unknown ? [`  ${secondRejectionUnknown}`] : [])].join("\n");
 }
