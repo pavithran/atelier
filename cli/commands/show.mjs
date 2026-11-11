@@ -88,6 +88,7 @@ export default async function showCommand() {
   if (reviewState) blocks.push(reviewStateText(reviewState));
   blocks.push(...repairLines(d.repairs));
   if (stage) blocks.push(`Stage: ${stageText(stage)}`);
+  if (d.item?.priority !== undefined) blocks.push(`Priority: ${d.item.priority}`);
   // The tasks it waits on (G3), each with its state: it is not offered,
   // claimed or accepted until every one is merged.
   if (d.blockers?.length) blocks.push(`Blocked by: ${d.blockers.map((b) => `${b.id} (${b.state})`).join(", ")}${d.blockers.every((b) => b.state === "merged") ? "; every one is merged" : d.blockers.some((b) => b.state === "abandoned") ? `; an abandoned blocker never merges, so it waits until the developer drops it: atelier edit ${id} --blocked-by` : "; it waits until each is merged"}`);
