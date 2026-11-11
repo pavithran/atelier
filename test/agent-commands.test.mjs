@@ -378,7 +378,11 @@ test("accept --head takes the short head that show prints, and refuses a stale o
     globalThis.fetch = async (url, options) => {
       const path = new URL(url).pathname;
       if (options.method === "GET") return Response.json({ item: { id: "t1", head: ${JSON.stringify(full)} }, events: [], reviews: [] });
-      if (path.endsWith("/accept")) return Response.json({ acceptedHead: JSON.parse(options.body).head });
+      if (path.endsWith("/accept")) {
+        const head = JSON.parse(options.body).head;
+        if (head !== ${JSON.stringify(full)}) return Response.json({ error: "stale_head" }, { status: 409 });
+        return Response.json({ acceptedHead: head });
+      }
       throw new Error("unexpected route: " + path);
     };
   `);
@@ -392,9 +396,11 @@ test("accept --head takes the short head that show prints, and refuses a stale o
     } catch (e) { return { status: e.status, output: `${e.stdout}${e.stderr}` }; }
   };
   for (const n of [7, 8, 39]) {
-    const r = run(full.slice(0, n));
-    assert.equal(r.status, 0, r.output);
-    assert.ok(r.output.includes(`accepted at ${full.slice(0, 8)}`), r.output);
+    await t.test(`${n} characters`, () => {
+      const r = run(full.slice(0, n));
+      assert.equal(r.status, 0, r.output);
+      assert.ok(r.output.includes(`accepted at ${full.slice(0, 8)}`), r.output);
+    });
   }
   const stale = run("abcdef9");
   assert.notEqual(stale.status, 0);
