@@ -40,3 +40,16 @@ test("the handbook check rejects removed commands, flags and subcommands", () =>
   assert.throws(() => checkCommands("`atelier ship --vanished`"), /unknown flag/);
   assert.throws(() => checkCommands("`atelier plan vanished`"), /unknown subcommand/);
 });
+
+test("the orchestrator guide and the reference say when to record evidence instead of sending a builder round", () => {
+  const guide = rolePrompt("orchestrate");
+  assert.ok(guide.split("\n").length <= 200);
+  checkCommands(guide);
+  assert.match(guide, /`atelier evidence ID --head SHA --note/);
+  assert.match(guide, /do not send a builder round\s+to\s+copy it/);
+  assert.match(guide, /never a required check/);
+  const reference = readFileSync(new URL("../docs/orchestrating.md", import.meta.url), "utf8");
+  assert.match(reference, /## Evidence you record yourself/);
+  assert.match(reference, /Record it instead of sending a builder round/);
+  assert.match(reference, /atelier evidence ID --head SHA --note/);
+});

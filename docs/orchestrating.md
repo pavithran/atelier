@@ -49,6 +49,44 @@ The orchestrator requires the fix report's covering tests, commands and output
 before requesting that re-review. Existing review and escalation rules still
 apply.
 
+## Evidence you record yourself
+
+A reviewer weighs the diff, the checks Atelier recorded and what the brief
+carries. Some evidence only you can produce: a full suite run the builder's
+machine cannot finish, journey counts, captures beside the mockup, budget
+output, or the developer's look at a render. Before this command, each copy of
+it into the builder's commit cost a builder round (miqra t105: four rejections
+in 20 hours, three citing evidence the orchestrator already had).
+
+Record it instead of sending a builder round:
+
+```sh
+atelier evidence ID --head SHA --note "Journey suite: 226 passed, 0 failed" \
+  --file .scratch/journey.log --quote "that matches the mockup" --as H/M
+```
+
+- It needs the developer token with the acting model (`--as` or
+  `ATELIER_ACTING`). An agent's own token is refused.
+- `--head` must be the task's recorded head. After the builder pushes again,
+  record it again; a merged or abandoned task takes nothing.
+- The note is at most 500 characters and is refused, not cut. `--file` keeps
+  the file's last 4000 characters and says when it was cut. `--quote` keeps the
+  developer's words, shown as a decision's words are. Text only: images belong
+  to attachments.
+- The review brief at that head lists it under its own heading, apart from
+  Reports, with the note, output, words, who recorded it and when. A reviewer
+  may count it toward a criterion that names the run or result it describes.
+  A criterion that says "the commit contains" still needs the commit.
+- It is never a required check. It changes no gate result, stage or review
+  need; a required check still needs its own run.
+- Sending the same head, note, words and file again, as a retry after a lost
+  answer, records nothing new and says it is already recorded. A different note
+  is a second entry.
+
+Write the criterion to name the run or result ("the journey suite passes, as
+recorded by the orchestrator at the head") so the reviewer knows the evidence
+is meant for it.
+
 ## No load on shared machines
 
 Criteria and briefs never ask for load on the machine (busy loops, stress

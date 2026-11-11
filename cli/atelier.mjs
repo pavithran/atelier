@@ -1069,6 +1069,9 @@ export const REPEATABLE_WRITES = [
   // A check result: the same result posted again is recorded once
   // (addEvidence in src/ledger.ts), and one for an older head is refused.
   /^POST \/projects\/[^/]+\/items\/[^/]+\/evidence$/,
+  // Evidence the orchestrator records (t497): the same entry sent again is
+  // answered "already recorded" and writes nothing.
+  /^POST \/projects\/[^/]+\/items\/[^/]+\/evidence-note$/,
   // The checkout lease (G9): a take, renewal or release names the lease's
   // id, and the same id again is the same call; a deploy record is kept once
   // per ship id.

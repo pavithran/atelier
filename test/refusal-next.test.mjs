@@ -168,11 +168,12 @@ test("the counts: strict codes, codes with a next, exempt codes", () => {
   // t523 adds five guided refusals: four review-proof codes and bad_tests.
   // t594 adds three guided refusals: bad_page_request, owner_session_required and request_id_reused.
   // t601 adds two guided refusals for atelier design.
-  assert.equal(withNext, 244);
+  // t497 adds one guided refusal: bad_output.
+  assert.equal(withNext, 245);
   // t536 adds four guided refusals: bad_cause, bad_failure, no_failure and not_blocking.
 
   assert.equal(exempt.size, 124);
-  assert.equal(sites.size, 368);
+  assert.equal(sites.size, 369);
   assert.equal(withNext + exempt.size, sites.size);
   assert.equal(new Set(STRICT).size, STRICT.length);
 });
