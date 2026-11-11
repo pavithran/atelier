@@ -3234,7 +3234,14 @@ export class Ledger extends DurableObject<Env> {
     return out;
   }
 
+  // The head each task's latest standing review rejected, for the tasks whose
+  // current head that is (isFixRound).
+  private rejectedHeads(): Map<string, string> {
+    return new Map(this.sql.exec(`SELECT i.id, i.head FROM items i WHERE i.head IS NOT NULL AND i.state NOT IN ('merged', 'abandoned') AND (SELECT r.approve FROM reviews r WHERE r.item_id = i.id AND r.head = i.head AND json_extract(r.json, '$.withdrawn') IS NULL ORDER BY r.id DESC LIMIT 1) = 0`).toArray().map((r) => [r.id as string, r.head as string]));
+  }
+
   items(): Item[] {
+    const rejectedAt = this.rejectedHeads();
     const asked = new Map(this.sql.exec(`SELECT DISTINCT r.item, r.head FROM review_requests r JOIN items i ON i.id = r.item AND i.head = r.head WHERE r.tier IS NULL AND r.superseded IS NULL AND r.state IN ('open', 'claimed', 'answered')`).toArray().map(r => [r.item as string, r.head as string]));
     const actors = this.itemActors();
     // A blocking finding on a file a live item's scope lacks (t270) rides on
@@ -3252,7 +3259,7 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(rejectedAt.has(item.id) ? { rejectedAt: rejectedAt.get(item.id) } : {}),...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -4198,7 +4205,8 @@ export class Ledger extends DurableObject<Env> {
     // A task claimed before (a fix round) comes ahead of one never built,
     // oldest dispatch first within each group (t539).
     const built = rows.length ? new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string)) : new Set<string>();
-    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id) })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
+    const rejected = rows.length ? this.rejectedHeads() : new Map<string, string>();
+    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id), ...(rejected.has(i.id) ? { rejectedAt: rejected.get(i.id) } : {}) })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];

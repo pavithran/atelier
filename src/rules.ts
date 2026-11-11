@@ -35,6 +35,9 @@ export interface Item {
   acceptedHead: string | null;
   // Current head with a live or answered gate review; null means none.
   reviewAskedHead?: string | null;
+  // The head the latest standing review of the task rejected, set by the
+  // Ledger only when that is the task's current head (isFixRound).
+  rejectedAt?: string | null;
   pushActors?: string[];     // holders and recorded push contributors
   createdAt: string;
   updatedAt: string;
