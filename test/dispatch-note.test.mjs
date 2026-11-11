@@ -261,3 +261,34 @@ test("the form handler folds CRLF to LF for a dispatch note only, and the rules 
   assert.equal(makeDispatch({ note: folded }, "owner", AT).note, folded);
   assert.throws(() => makeDispatch({ note: typed }, "owner", AT), /limit is 2000/);
 });
+
+// t699: --builder H/M names the agent and model as --reviewer H/M names a reviewer.
+test("--builder H/M sends the same body as --agent H --model M", async (t) => {
+  const f = await server(t);
+  const a = await f.run(["dispatch", "t1", "--to", "home", "--builder", "claude-code/sonnet-5.5", "--project", "demo"]);
+  assert.equal(a.status, 0, a.output);
+  const b = await f.run(["dispatch", "t1", "--to", "home", "--agent", "claude-code", "--model", "sonnet-5.5", "--project", "demo"]);
+  assert.equal(b.status, 0, b.output);
+  assert.equal(f.requests.length, 2);
+  assert.deepEqual(f.requests[0].body, f.requests[1].body);
+  assert.equal(f.requests[0].body.agent, "claude-code");
+  assert.equal(f.requests[0].body.model, "sonnet-5.5");
+  assert.equal(f.requests[0].body.suggest, undefined);
+});
+
+for (const [label, argv, pattern] of [
+  ["no slash", ["--builder", "claude-code"], /--builder takes H\/M/],
+  ["two slashes", ["--builder", "a/b/c"], /--builder takes H\/M/],
+  ["an empty side", ["--builder", "/m"], /--builder takes H\/M/],
+  ["no value", ["--builder"], /--builder needs a value/],
+  ["with --agent", ["--builder", "a/b", "--agent", "a"], /--builder.*--agent/],
+  ["with --model", ["--builder", "a/b", "--model", "b"], /--builder.*--model/],
+]) {
+  test(`--builder ${label} is refused naming the flags and nothing is sent`, async (t) => {
+    const f = await server(t);
+    const r = await f.run(["dispatch", "t1", "--to", "home", ...argv, "--project", "demo"]);
+    assert.equal(r.status, 1, r.output);
+    assert.match(r.output, pattern);
+    assert.deepEqual(f.requests, []);
+  });
+}
