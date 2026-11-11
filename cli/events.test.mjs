@@ -45,3 +45,62 @@ test('events filters by kind and by date, a bare --to date covering that day', a
   const day = await collectEvents(read, filterOf({ from: bound('2026-10-05', 'from', false), to: bound('2026-10-05', 'to', true), kinds: [] }));
   assert.ok(day.length > 0 && day.every((e) => e.at.startsWith('2026-10-05')));
 });
+
+// 950 events, one a minute from 2026-10-01T00:00Z, seq 1..1000, in pages of 100 (newest first).
+const minute = (n) => Date.UTC(2026, 9, 1) + (n - 1) * 60_000;
+const timed = () => {
+  const all = Array.from({ length: 950 }, (_, i) => ({ seq: i + 1, kind: 'item.pushed', at: new Date(minute(i + 1)).toISOString(), data: {} }));
+  const calls = [];
+  const read = async (before) => {
+    calls.push(before);
+    const page = all.filter((e) => before === undefined || e.seq < before).reverse().slice(0, 100);
+    return { events: page, next: page.length === 100 ? page.at(-1).seq : null };
+  };
+  return { all, calls, read };
+};
+const pagesRead = async (from) => {
+  const { calls, read } = timed();
+  const got = await collectEvents(read, filterOf({ from, kinds: [] }), from);
+  const { read: readAll } = timed();
+  const full = await collectEvents(readAll, filterOf({ from, kinds: [] }));
+  assert.deepEqual(got.map((e) => e.seq), full.map((e) => e.seq));
+  return calls.length;
+};
+
+test('events --from reads one page when the time is inside page 1', async () => {
+  assert.equal(await pagesRead(minute(900)), 1);
+});
+
+test('events --from reads three pages when the time is inside page 3', async () => {
+  assert.equal(await pagesRead(minute(700)), 3);
+});
+
+test('events --from older than every event reads every page', async () => {
+  assert.equal(await pagesRead(minute(1) - 1), 10);
+});
+
+test('events without --from reads every page', async () => {
+  const { calls, read } = timed();
+  await collectEvents(read, filterOf({ kinds: [] }), undefined);
+  assert.equal(calls.length, 10);
+});
+
+test('events --from on an empty record reads one page', async () => {
+  const { calls, read } = ledger(0, 500);
+  assert.deepEqual(await collectEvents(read, filterOf({ from: 5, kinds: [] }), 5), []);
+  assert.equal(calls.length, 1);
+});
+
+test('events --from equal to a page\'s oldest event reads the next page and keeps events at that time', async () => {
+  // Page 1 holds seq 851..950; its oldest is seq 851. T = that time is not strictly older, so page 2 is read.
+  assert.equal(await pagesRead(minute(851)), 2);
+  const { read } = timed();
+  const got = await collectEvents(read, filterOf({ from: minute(851), kinds: [] }), minute(851));
+  assert.equal(got.length, 100);
+  // Events sharing T across the page boundary are both kept.
+  const same = (n) => ({ seq: n, kind: 'k', at: new Date(minute(5)).toISOString(), data: {} });
+  const pages = [{ events: [same(3), same(2)], next: 2 }, { events: [same(1)], next: null }];
+  let i = 0;
+  const out = await collectEvents(async () => pages[i++], filterOf({ from: minute(5), kinds: [] }), minute(5));
+  assert.deepEqual(out.map((e) => e.seq), [1, 2, 3]);
+});

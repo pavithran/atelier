@@ -12,12 +12,15 @@ export function bound(text, flag, end) {
 
 // Every event of the project, oldest first, read a page at a time with `read`
 // (a page is { events, next }, newest first) and kept when `keep` accepts it.
-export async function collectEvents(read, keep = () => true) {
+// With `from` (ms) it stops after the first page whose oldest event is strictly
+// older than `from`; a page whose oldest is at `from` is followed by the next.
+export async function collectEvents(read, keep = () => true, from) {
   const out = [];
   let before;
   for (;;) {
     const page = await read(before);
     for (const e of page.events) if (keep(e)) out.push(e);
+    if (from !== undefined && page.events.some((e) => Date.parse(e.at) < from)) break;
     if (page.next === null || page.next === undefined || page.next === before) break;
     before = page.next;
   }
@@ -40,6 +43,7 @@ export default async function eventsCommand() {
   const events = await collectEvents(
     (before) => call("GET", `${P(name)}/events${before === undefined ? "" : `?before=${before}`}`, undefined, OWNER),
     filterOf({ from, to, kinds }),
+    from,
   );
   // The same array with or without --json: {seq, at, item, actor, kind, stage, data}.
   console.log(JSON.stringify(events.map((e) => ({ seq: e.seq, at: e.at, item: e.itemId, actor: e.actor, kind: e.kind, stage: e.stage ?? null, data: e.data })), null, 2));
