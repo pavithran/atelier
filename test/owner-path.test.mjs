@@ -10,9 +10,11 @@ for (const role of ROLES) {
   test(`built-in ${role} guide snapshot`, (t) => {
     const text = rolePrompt(role);
     t.assert.snapshot(text);
-    assert.match(text, /The developer runs `atelier land ID --reviewer H\/M`/);
-    assert.match(text, /Manual fallback:/);
-    assert.match(text, /Builders and reviewers do not accept or merge their own work/);
+    // t669: only the orchestrate guide carries owner commands.
+    if (role === "orchestrate") {
+      assert.match(text, /atelier land ID --reviewer H\/M/);
+      assert.match(text, /Manual fallback:/);
+    } else assert.doesNotMatch(text, /atelier land ID --reviewer/);
   });
 }
 test("init offer and general project guide snapshots", (t) => {
