@@ -31,7 +31,7 @@ test("a stub that ignores SIGTERM exits once the process it watches is gone", { 
 test("parseConfig accepts supported harnesses and copies their arrays", () => {
   const value = { agents: ["opencode", "claude-code", "codex", "zcode"].map((agent) => ({ ...entry, agent })) };
   const parsed = parseConfig(JSON.stringify(value));
-  assert.deepEqual(parsed, { ...value, errors: [], taskTimeoutMs: DEFAULT_TASK_TIMEOUT_MS, finishTimeoutMs: DEFAULT_FINISH_TIMEOUT_MS });
+  assert.deepEqual(parsed, { ...value, errors: [], taskTimeoutMs: DEFAULT_TASK_TIMEOUT_MS, finishTimeoutMs: DEFAULT_FINISH_TIMEOUT_MS, loadLimit: 1 });
   const direct = parseConfig(config);
   direct.agents[0].models.push("extra");
   assert.equal(entry.models.length, 2);
@@ -1990,4 +1990,107 @@ test("a failure marker does not let an unchanged rejected head be submitted", as
   assert.equal(state.phase, "failed", f.logs.join("\n"));
   assert.ok(!f.calls.some((c) => c.argv?.[0] === "finish"), "nothing is submitted");
   assert.equal(failureCount(0, state), 1);
+});
+
+// A build runner takes no build while its host is overloaded (t662).
+const loadRig = (t, extra = {}) => {
+  const dir = mkdtempSync(join(tmpdir(), "atelier-load-gate-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, "runner.json");
+  writeFileSync(path, JSON.stringify({ ...config, ...extra }));
+  return { _: ["runner"], multi: {}, name: "home:studio", config: path, once: true };
+};
+const reading = (load, cores = 8) => () => ({ load, cores });
+const loadLines = (logs) => logs.filter((s) => s.includes("claiming no build"));
+// The runner's own log goes to the console, which the test reads.
+const said = (t) => { const out = []; t.mock.method(console, "log", (s) => out.push(String(s))); return out; };
+const claims = (calls) => calls.filter((c) => c.argv?.[0] === "claim").length;
+
+test("an overloaded host claims no build and logs the load and the limit once; the next poll under the limit claims", async (t) => {
+  const args = loadRig(t);
+  const out = said(t);
+  const over = fixture();
+  await runRunner(args, { workspacePath: over.io.workspacePath, taskIO: over.io, wait: async () => {}, load: reading(8), queue: async () => [assignment] });
+  assert.equal(claims(over.calls), 0);
+  assert.equal(loadLines(out).length, 1);
+  assert.match(loadLines(out)[0], /load average 8\.00.*limit 1 x 8 cores = 8/);
+  const under = fixture();
+  await runRunner(args, { workspacePath: under.io.workspacePath, taskIO: under.io, wait: async () => {}, load: reading(7.99), queue: async () => [assignment] });
+  assert.equal(claims(under.calls), 1);
+  assert.equal(loadLines(out).length, 1, "the poll under the limit says nothing more");
+});
+
+test("repeated overloaded polls log once, until the runner claims or the reason changes", async (t) => {
+  const { once: _once, ...args } = loadRig(t);
+  const logs = said(t);
+  const { io, calls } = fixture();
+  let polls = 0, load = 20;
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, load: () => ({ load, cores: 8 }),
+    queue: async () => { polls++; return [assignment]; },
+    // The runner waits between polls: the test steps its host's load there.
+    wait: async () => {
+      if (polls === 3) load = 1;
+      if (polls === 5) load = 30;
+      if (polls === 7) process.emit("SIGINT");
+    },
+  });
+  process.exitCode = 0;
+  assert.ok(claims(calls) >= 1);
+  assert.equal(loadLines(logs).length, 2, logs.join("\n"));
+});
+
+test("a review runner at the same load is not held", async (t) => {
+  const args = loadRig(t, { jobs: ["review"], agents: [{ ...entry, command: [...entry.command, "{verdict_file}"] }], tokens: { [entry.models[0]]: "agent.glm" } });
+  const logs = said(t);
+  const { io, calls } = fixture();
+  io.readSecret = () => "atl_" + "f".repeat(64);
+  const review ={ ...assignment, item: { id: "t21", dispatch: { job: "review" } } };
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: reading(80), queue: async () => [review] });
+  assert.ok(calls.some((c) => c.argv?.[0] === "review-claim"), logs.join("\n"));
+  assert.equal(loadLines(logs).length, 0);
+});
+
+test("loadLimit replaces the default ratio", async (t) => {
+  const args = loadRig(t, { loadLimit: 2.5 });
+  const free = fixture();
+  await runRunner(args, { workspacePath: free.io.workspacePath, taskIO: free.io, wait: async () => {}, load: reading(19, 8), queue: async () => [assignment] });
+  assert.equal(claims(free.calls), 1, "19 is under 2.5 x 8");
+  const held = fixture();
+  await runRunner(args, { workspacePath: held.io.workspacePath, taskIO: held.io, wait: async () => {}, load: reading(20, 8), queue: async () => [assignment] });
+  assert.equal(claims(held.calls), 0);
+});
+
+test("loadLimit must be a positive number, and the refusal names the field", () => {
+  assert.equal(parseConfig(config).loadLimit, 1);
+  assert.equal(parseConfig({ ...config, loadLimit: 0.5 }).loadLimit, 0.5);
+  for (const bad of [0, -1, "2", null, NaN, Infinity, true, []]) {
+    const { errors } = parseConfig({ ...config, loadLimit: bad });
+    assert.ok(errors.some((e) => e.includes("loadLimit")), String(bad));
+  }
+});
+
+test("a build that times out reports the host's load and cores", async (t) => {
+  const args = loadRig(t);
+  const reports = [];
+  const { io } = fixture({ head: "before", timedOut: true });
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: reading(3.5, 8), queue: async () => [assignment],
+    reportRun: async (body) => reports.push(body),
+  });
+  assert.equal(reports.length, 1);
+  assert.equal(reports[0].outcome, "timed-out");
+  assert.deepEqual(reports[0].load, { average: 3.5, cores: 8 });
+});
+
+test("a build that ends another way carries no load", async (t) => {
+  const args = loadRig(t);
+  const reports = [];
+  const { io } = fixture({ head: "before", code: 1 });
+  await runRunner(args, {
+    workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load: reading(3.5, 8), queue: async () => [assignment],
+    reportRun: async (body) => reports.push(body),
+  });
+  assert.equal(reports[0].outcome, "refused");
+  assert.equal("load" in reports[0], false);
 });

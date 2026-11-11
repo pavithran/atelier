@@ -1,4 +1,4 @@
-import { cpus, hostname } from "node:os";
+import { cpus, hostname, loadavg } from "node:os";
 import { spawn, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,13 @@ const delay = (ms) => new Promise((done) => setTimeout(done, ms));
 // per pool in this process, including when capacity changes during its wait.
 const warnedPools = new Set();
 export const coreCount = () => cpus().length || 1;
+
+// The host's 1-minute load average and core count (t662), which a build
+// runner weighs against its loadLimit and a timed-out run reports.
+export const hostLoad = () => ({ load: loadavg()[0], cores: coreCount() });
+
+// Whether a reading is at or above `ratio` times the cores.
+export const overloaded = ({ load, cores }, ratio) => load >= ratio * cores;
 
 // One slot unless told otherwise (t161): on 2026-10-21 three clean-clone suites
 // ran at once on one Mac under the old default of a quarter of the cores, and
@@ -308,7 +315,8 @@ process environments; when inspection is unavailable, commands run without
 process-tree accounting and warn on stderr. This fallback never frees slots.
 The inherited ATELIER_TEST_LEASE must be preserved by descendants, including
 commands that detach. This is cooperative scheduling, not a security sandbox.
-ATELIER_LOAD, ATELIER_LOAD_LIMIT and runner loadLimit are retired and ignored.
+ATELIER_LOAD and ATELIER_LOAD_LIMIT are retired and ignored. A runner config's
+loadLimit is a different setting: it holds a build runner's claims.
 `;
 
 async function main(argv) {

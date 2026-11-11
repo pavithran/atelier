@@ -14,12 +14,16 @@ import { checkEnv } from "./check-env.mjs";
 import { killTree, runGroup, treeGroups } from "./group.mjs";
 import { MARK_VARIABLE, sweepJournal } from "./sweep.mjs";
 import { describeConflicts, installMergeConfig, mergeThrough } from "./merge-pipeline.mjs";
-import { HOST_POOL, SLOT_WRAPPER, slotStatus } from "./load.mjs";
+import { HOST_POOL, SLOT_WRAPPER, slotStatus, hostLoad, overloaded } from "./load.mjs";
 import { pairedProjectCommit } from "./fresh.mjs";
 import { runLandJob } from "./land-queue.mjs";
 import { failedExitOf, failureReason, harnessExitOf, harnessOutcome, MAX_HARNESS_RERUNS, runKeyOf, runResultHolds } from "./runner-failure.mjs";
 import { runnerChildEnv, envNameFor, isOwnerSecretName, readSecret } from "./credentials.mjs";
-import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, parseConfig, readConfig } from "./runner-config.mjs";
+import { DEFAULT_TASK_TIMEOUT_MS, DEFAULT_FINISH_TIMEOUT_MS, DEFAULT_JOBS, DEFAULT_LOAD_LIMIT, parseConfig, readConfig } from "./runner-config.mjs";
+
+// The jobs a high host load holds back: every job that starts a build harness.
+// Reviews, criteria reviews and lands are not among them (t662).
+const LOAD_GATED_JOBS = new Set([...DEFAULT_JOBS, "task-resolve"]);
 import { REVIEW_RENEW_MS, VALIDATION_BLOCKED as BLOCKED_NOTE, applyVerification, contributorsOf, dropSettled, reReviewDiff, reviewedSince } from "../src/rules.ts";
 import { ownerVerdicts, settledFindings } from "../src/review/needed.ts";
 import { TEST_RUNS_MAX, parseVerification, pickVerifier, verifierBrief } from "../src/review/verify.ts";
@@ -4649,7 +4653,7 @@ export async function machineReading({ os = { hostname, cpus, loadavg, freemem, 
   };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, machine = machineReading, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, machine = machineReading, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy, load = hostLoad }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -5330,6 +5334,24 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
       for (const r of reasons) line(`  ${r.task}  ${r.line}`);
       if (unread) line(`found nothing to claim; the server's reasons for the dispatches waiting could not be read (${unread}), so atelier status names them.`);
     };
+    // A build runner takes no build while its host's 1-minute load average is
+    // at or above loadLimit times its cores (t662). Reviews, criteria reviews
+    // and lands are never held. The reason is logged once, until a claim or a
+    // different limit.
+    let lastLoadHold = null;
+    const loadHeld = (task) => {
+      if (integrating || !LOAD_GATED_JOBS.has(task.item.dispatch?.job ?? "build")) return false;
+      let reading;
+      try { reading = load(); } catch { return false; }
+      const limit = config.loadLimit ?? DEFAULT_LOAD_LIMIT;
+      if (!overloaded(reading, limit)) { lastLoadHold = null; return false; }
+      const reason = `load limit ${limit} x ${reading.cores} cores = ${limit * reading.cores}`;
+      if (reason !== lastLoadHold) {
+        lastLoadHold = reason;
+        line(`claiming no build: the host's 1-minute load average ${reading.load.toFixed(2)} is at or above the limit (${reason}); polling again`);
+      }
+      return true;
+    };
     legacyHandoffReady();
     await sweeps.recover();
     // A runner none of whose harnesses can run a job has nothing to offer.
@@ -5384,7 +5406,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         const ordered = orderJobs(tasks);
         await recheckMissing(ordered);
         if (controller.signal.aborted) break;
-        let ranTask = false;
+        let ranTask = false, heldByLoad = false;
         for (const task of ordered) {
           if (clearSkipAtNewHead(task, { failures, infrastructureFailures, gaveUpTasks, skipHeads })) io.log(`${task.project}/${task.item.id} has a new head; its skip is cleared and it is tried again`);
         }
@@ -5401,8 +5423,10 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           // one by: several requests for one missing merge (t591, second
           // review, finding 2) are claimed once, not once each.
           if (passBy(task) !== null) continue;
+          if (loadHeld(task)) { heldByLoad = true; continue; }
           // A task this runner may take is not an idle poll.
           ranTask = true;
+          lastLoadHold = null;
           // A dispatch carrying job: "plan" asks for the plan job, one
           // carrying "review" for the review job, "integrate" for the
           // integrate job and "refresh" for the refresh job
@@ -5462,7 +5486,11 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
               const role = task.item.dispatch?.job === "plan" || task.item.dispatch?.job === "review" ? task.item.dispatch.job : (task.item.dispatch?.job === "criteria-review" || task.item.dispatch?.job === PREREVIEW_JOB) ? "review" : "build";
               const exit = SAME_EXIT_JOBS.has(task.item.dispatch?.job) && state.harnessExit?.kind !== "timed-out" ? state.harnessExit : null;
               const detail = exit && outcome === "refused" ? exitDetail(exit) : state.detail ?? state.reason;
-              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, facts: factsOf(task, exit && outcome === "refused" ? { ...state, detail } : state) }, offer.runner, controller.signal);
+              // A build's timeout carries the host's load and cores as they
+              // read then, so a later count tells contention from a long task.
+              let host = {};
+              if (role === "build" && outcome === "timed-out") { try { const r = load(); host = { load: { average: r.load, cores: r.cores } }; } catch { /* no reading */ } }
+              await reportRun({ actor: task.actor, role, outcome, project: task.project, item: task.item.id, ...host, facts: factsOf(task, exit && outcome === "refused" ? { ...state, detail } : state) }, offer.runner, controller.signal);
               io.log(`reported ${task.project}/${task.item.id} as ${outcome}`);
             } catch (error) { io.log(`could not report ${task.project}/${task.item.id} as ${outcome}: ${error.message}`); }
           }
@@ -5569,7 +5597,7 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
           else if (state.claimRefused && !lostToHold(state) || state.skipped) refused.add(refusedKey(task));
           else if (args.once || state.phase !== "failed" || state.taskFailure) break;
         }
-        if (!ranTask && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
+        if (!ranTask && !heldByLoad && !controller.signal.aborted) await sayIdleWhy(ordered.flatMap((task) => { const why = passBy(task); return why ? [{ task: `${task.project}/${task.item.id}`, line: why }] : []; }));
         // Idle, after a poll that claimed nothing, and only then: no claim,
         // review, merge, refresh or check of a job is held (t265).
         if (!ranTask && reloading && !controller.signal.aborted) await reloadIfDeployed();
