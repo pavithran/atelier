@@ -111,6 +111,28 @@ a606360f. `GET /api/version` now reports `version`.
 - Findings and failed checks are tagged with their criterion and cause
   (t536).
 
+### Commands
+
+- `atelier flow --bars` reports the redesign's bars over the last 7 days,
+  for one project or all, with how criteria were written (t527).
+- `atelier slots trial FILE` reads a slot-capacity trial and reports
+  whether a second test slot keeps landings fast; with `--apply` it sets
+  the capacity when the trial qualifies (t528).
+- `atelier check` and `submit` find declaration problems that land would
+  refuse, and warn when a task is over five criteria or 15 files, or a
+  deploy gate is not among the required checks (t509, t440, t293).
+- `atelier runner --usage` posts its summaries with the acting model
+  (t506). `atelier unwrap` names the models a project plans to use and
+  leaves out runners no longer live (t433, t430, t508).
+- `atelier init` registers a large repository (t417). `atelier land`
+  reviews first when a fast-mode project asks for review before merge
+  (t455). `atelier ship` warns on unreviewed merges (t431).
+- A review's effort setting is honoured (t445), and a review by hand is
+  the plain path when no runner serves reviews (t421). Overlap refusals
+  name stale unscoped holders (t419). `stuck` shows a deploy or ship
+  running far too long and skips work nobody is expected to move (t461,
+  t427).
+
 ### Smaller changes
 
 - `atelier report`'s help states its length limit (t553).
