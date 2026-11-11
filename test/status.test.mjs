@@ -661,3 +661,24 @@ test("the notice is found on an older events page", async (t) => {
   const r = await runLocal(t, () => ({ standing: standingOf([submitted()]), eventPages: [[later(30, "review.rejected", "t9")], [notice(8)]] }), ["status", "--brief", "--project", "demo"]);
   assert.match(r.output, /t5 \(second rejection at 9c0c686d.*atelier dispatch t5/);
 });
+
+// t690 fix round: the reader pages back to the earliest push, not to a fixed page count.
+const dayAt = (n) => `2026-11-${String(n).padStart(2, "0")}T12:00:00Z`;
+const filler = (seq, n) => ({ seq, itemId: "t9", kind: "review.rejected", at: dayAt(n), data: {} });
+
+test("a notice behind twenty newer pages is still found", async (t) => {
+  const pages = Array.from({ length: 21 }, (_, k) => [filler(100 - k, 10)]);
+  pages.push([{ ...notice(10), at: dayAt(10) }]);
+  const r = await runLocal(t, () => ({ standing: standingOf([submitted({ lastPushAt: dayAt(5) })]), eventPages: pages }), ["status", "--brief", "--project", "demo"]);
+  assert.match(r.output, /t5 \(second rejection at 9c0c686d.*atelier dispatch t5/);
+  assert.doesNotMatch(r.output, /unknown/);
+});
+
+test("no events page older than the earliest push of a submitted task is read", async (t) => {
+  const pages = [[filler(40, 10)], [filler(30, 8)], [filler(20, 3)], [filler(10, 2)]];
+  const r = await runLocal(t, () => ({ standing: standingOf([submitted({ lastPushAt: dayAt(5) }), submitted({ id: "t6", lastPushAt: dayAt(7) })]), eventPages: pages }), ["status", "--brief", "--project", "demo"]);
+  const reads = r.seen.filter((s) => s.includes("/events"));
+  assert.equal(reads.length, 3, reads.join("\n"));
+  assert.ok(!reads.some((s) => s.includes("before=20")), reads.join("\n"));
+  assert.doesNotMatch(r.output, /unknown/);
+});
