@@ -3259,7 +3259,7 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), rejectedAt: rejectedAt.get(item.id) ?? null, ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(rejectedAt.has(item.id) ? { rejectedAt: rejectedAt.get(item.id) } : {}),...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -4206,7 +4206,7 @@ export class Ledger extends DurableObject<Env> {
     // oldest dispatch first within each group (t539).
     const built = rows.length ? new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string)) : new Set<string>();
     const rejected = rows.length ? this.rejectedHeads() : new Map<string, string>();
-    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id), rejectedAt: rejected.get(i.id) ?? null })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
+    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id), ...(rejected.has(i.id) ? { rejectedAt: rejected.get(i.id) } : {}) })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
