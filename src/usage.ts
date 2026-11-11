@@ -441,6 +441,16 @@ Record a lasting decision with \`atelier decide "rule" --quote "PAVI's words"\`.
 Build and review evidence is detailed in docs/orchestrating.md. Return missing
 evidence before requesting review.
 
+Evidence only you can produce: when a criterion names a run or result that the
+builder's machine cannot make (a full suite run on your machine, captures beside
+a mockup, the developer's look at a render), do not send a builder round to
+copy it into the diff. Record it at the task's head:
+\`atelier evidence ID --head SHA --note "what ran and its result" --file PATH\`
+(add \`--quote WORDS --as H/M\` for words PAVI gave). The review brief lists it
+apart from reports, and a reviewer may count it toward a criterion that names
+that run or result. It is never a required check and does not move the gate.
+Run the command again at a new head; evidence at an old head is not carried.
+
 Standing rules and traps
 
 - Speed first. Add no new gates without evidence of harm. Do not turn a

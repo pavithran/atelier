@@ -344,7 +344,7 @@ export function compareModel(input: CompareInput): ModelComparison {
 // ── words, for the page and the CLI alike ─────────────────────────────────
 
 export const ROLE_LABEL: Record<CompareRole, string> = {
-  build: "Build", review: "Review", "security-review": "Security review", "claims-review": "Claims review", plan: "Plan", acting: "Acting for the developer",
+  build: "Build", review: "Review", "security-review": "Security review", "claims-review": "Claims review", "criteria-review": "Criteria review", plan: "Plan", acting: "Acting for the developer",
 };
 
 export function windowText(w: FigureWindow): string {

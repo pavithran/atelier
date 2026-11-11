@@ -35,6 +35,9 @@ export interface Item {
   acceptedHead: string | null;
   // Current head with a live or answered gate review; null means none.
   reviewAskedHead?: string | null;
+  // The head the latest standing review of the task rejected, set by the
+  // Ledger only when that is the task's current head (isFixRound).
+  rejectedAt?: string | null;
   pushActors?: string[];     // holders and recorded push contributors
   createdAt: string;
   updatedAt: string;
@@ -354,7 +357,9 @@ export type Grade = "observed" | "reported" | "pending";
 export interface Evidence {
   itemId: string;
   claim: string;            // a required check's command, or a free-text report
-  grade: Exclude<Grade, "pending">;
+  // "relayed" is text the orchestrator recorded for the developer
+  // (src/relayed-evidence.ts): shown, never a check, and the gate does not read it.
+  grade: Exclude<Grade, "pending"> | "relayed";
   head: string;
   passed: boolean | null;   // null for reports
   by: string;
@@ -395,6 +400,12 @@ export interface Evidence {
   // (evidenceFor in src/ledger.ts), never posted: what `atelier show` and
   // `atelier check-log` name a result by (t436).
   id?: number;
+  // A relayed entry's file: the whole file's length when outputTail is its
+  // last OUTPUT_MAX characters, and the developer's words with the model that
+  // relayed them (t497).
+  outputLength?: number;
+  quote?: string;
+  acting?: string;
   // The container run that made an observed result recorded before t768
   // removed the container check; a run on someone's machine records none.
   run?: string;

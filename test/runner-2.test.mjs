@@ -756,11 +756,12 @@ test("a run that timed out, stalled or was refused is reported under the runner'
     const { io, logs } = fixture(options);
     const reports = [];
     await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment],
+      workspacePath: io.workspacePath, taskIO: io, wait: () => tick(), queue: async () => [assignment], load: () => ({ load: 0.5, cores: 8 }),
       async reportRun(body, runner, signal) { reports.push({ body, runner, signalled: signal instanceof AbortSignal }); },
     });
     // Round 10: the report carries facts, its text (the reason) kept in the runner's own log.
-    assert.deepEqual(reports.map(({ body, runner, signalled }) => ({ body: { ...body, facts: undefined }, runner, signalled })), outcome ? [{ body: { actor: assignment.actor, role: "build", outcome, project: "atelier", item: "t13", facts: undefined }, runner: "home:studio", signalled: true }] : [], JSON.stringify(options));
+    // A timeout also carries the host's load and cores (t662).
+    assert.deepEqual(reports.map(({ body, runner, signalled }) => ({ body: { ...body, facts: undefined }, runner, signalled })), outcome ? [{ body: { actor: assignment.actor, role: "build", outcome, project: "atelier", item: "t13", facts: undefined, ...(outcome === "timed-out" ? { load: { average: 0.5, cores: 8 } } : {}) }, runner: "home:studio", signalled: true }] : [], JSON.stringify(options));
     if (outcome) assert.ok(readFileSync(reports[0].body.facts.log, "utf8").includes(detail), JSON.stringify(options));
     assert.equal(logs.includes(`reported atelier/t13 as ${outcome}`), !!outcome, JSON.stringify(options));
   }
@@ -973,23 +974,7 @@ test("runner records blocked validation as a harness limitation", async (t) => {
 });
 
 
-// Test-slot admission replaces the retired runner load gate.
-test("retired loadLimit never gates runner admission", async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "atelier-retired-load-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const path = join(dir, "runner.json");
-  writeFileSync(path, JSON.stringify({ ...config, loadLimit: 0 }));
-  assert.equal("loadLimit" in parseConfig({ ...config, loadLimit: "retired" }), false);
-  const { io, calls, logs } = fixture();
-  await runRunner({ _: ["runner"], multi: {}, name: "home:studio", config: path, once: true }, {
-    workspacePath: io.workspacePath, taskIO: io, wait: async () => {},
-    load: () => { throw new Error("must not consult load"); },
-    queue: async () => [assignment],
-  });
-  assert.ok(calls.some((c) => c.argv?.[0] === "claim"));
-  assert.ok(logs.includes("submitted"));
-  assert.ok(!logs.some((s) => s.includes("waiting before taking a job")));
-});
+// The runner's load gate is tested in runner.test.mjs (t662).
 
 test('build preparation runs after reset and before its harness, and failures use commit preservation', async () => {
   const f = fixture();

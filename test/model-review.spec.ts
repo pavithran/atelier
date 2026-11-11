@@ -51,7 +51,7 @@ it("the developer reads the review; it is repeatable as of a time, refuses a bad
   expect(now.status, await now.clone().text()).toBe(200);
   expect(now.headers.get("cache-control")).toBe("no-store");
   const review = await now.json() as ModelReview;
-  expect(review.roles.map((r) => r.role)).toEqual(["build", "review", "security-review", "claims-review", "plan"]);
+  expect(review.roles.map((r) => r.role)).toEqual(["build", "review", "security-review", "claims-review", "criteria-review", "plan"]);
   expect(review.models.find((m) => m.model === "gpt-6-astra")!.cards.active).toBe(1);
   expect(review.partial).toBe(false);
   expect(review.roles.find((r) => r.role === "review")!.proposals.map((p) => p.decisions)).toEqual([["a1"]]);

@@ -37,7 +37,8 @@ import { submission } from "../brief.ts";
 import type { LedgerEvent } from "../ledger.ts";
 import type { PoolFamily } from "../models/pool.ts";
 import type { PlanPart } from "../plans/schema.ts";
-import { DEFAULT_OWNER, findingKey, type ChangeClass, type Evidence, type Item } from "../rules.ts";
+import { isRelayed } from "../relayed-evidence.ts";
+import { DEFAULT_OWNER, directionText, findingKey, type ChangeClass, type Evidence, type Item } from "../rules.ts";
 import type { LargeRef } from "../large.ts";
 import { DIFF_INLINE_MAX, TEXT_CONTROLS } from "../text.ts";
 import { DECISIONS_HEADING, DECISIONS_RULE, NO_DECISIONS, decisionLines, type Decision } from "../decisions.ts";
@@ -630,7 +631,7 @@ function canonical(e: RecordedEvidence): string {
   return JSON.stringify(sorted(e));
 }
 
-export function evidenceGroups(evidence: ReviewEvidence, head: string): { groups: EvidenceGroup[]; reports: RecordedEvidence[]; elsewhere: number } {
+export function evidenceGroups(evidence: ReviewEvidence, head: string): { groups: EvidenceGroup[]; reports: RecordedEvidence[]; relayed: RecordedEvidence[]; elsewhere: number } {
   const required = new Set(evidence.required);
   const atHead = evidence.runs.filter((e) => e.head === head);
   const groups = new Map<string, RecordedEvidence[]>();
@@ -656,6 +657,7 @@ export function evidenceGroups(evidence: ReviewEvidence, head: string): { groups
   return {
     groups: out,
     reports: atHead.filter((e) => e.grade === "reported").sort(byTime),
+    relayed: atHead.filter(isRelayed).sort(byTime),
     elsewhere: evidence.runs.length - atHead.length,
   };
 }
@@ -725,9 +727,31 @@ function logRef(ref: LargeRef): string[] {
   return [`The whole output is kept in R2 by reference — ${ref.bytes} bytes, sha256 ${inline(ref.sha256.slice(0, 12))}, key ${code(ref.key)}${route ? `; the review runner reads it with ${code(route)}` : ""}.`];
 }
 
+// Evidence the orchestrator recorded at this head for the developer (t497):
+// text from a run or a look the builder's machine could not make. It may count
+// toward a criterion that names the run or result it describes, as a run of
+// the command would; it never counts as a required check.
+function relayedLines(entries: readonly RecordedEvidence[]): string[] {
+  const lines = [
+    "", "### Recorded by the orchestrator for the developer", "",
+    "Not a report and not an Observed run: the orchestrator, acting for the developer, recorded each at this head from a run or a look made outside the builder's workspace, and Atelier ran nothing to record it. It may count toward an acceptance criterion that names the run or result it describes. It is never a required check, and it changes no gate result.",
+  ];
+  for (const e of entries) {
+    lines.push("", `- Recorded at ${inline(e.at)} by ${code(e.by)}, acting ${e.acting ? code(e.acting) : "with no model named"}${e.quote ? `, on ${inline(directionText({ quote: e.quote, acting: e.acting }))}` : ""}:`, block(e.claim));
+    const out = (e.outputTail ?? "").replace(/\r\n/g, "\n");
+    if (out.trim()) {
+      let kept = out.length > EVIDENCE_OUTPUT_MAX ? out.slice(-EVIDENCE_OUTPUT_MAX) : out;
+      if (kept.length < out.length && /^[\udc00-\udfff]/.test(kept)) kept = kept.slice(1);
+      const whole = Math.max(e.outputLength ?? out.length, out.length);
+      lines.push(whole > kept.length ? `Its file is cut: these are the last ${kept.length} of ${whole} characters.` : "Its file, whole:", block(kept, "text"));
+    }
+  }
+  return lines;
+}
+
 function evidenceLines(evidence: ReviewEvidence | null, head: string): string[] {
   if (!evidence) return ["Atelier sent no evidence with this review, so none is shown here; that says nothing of what was run."];
-  const { groups, reports, elsewhere } = evidenceGroups(evidence, head);
+  const { groups, reports, relayed, elsewhere } = evidenceGroups(evidence, head);
   const lines = [
     `These are the runs Atelier recorded for this item at exact head ${head}. The required checks under "Checks" alone gate the change, and this section does not change that. A run marked Observed was run by Atelier or its CLI and its result recorded; use it to judge an acceptance criterion that names the command. Each command is shown once per place it ran and tree it ran on, with its latest result; an earlier run there with another result is listed as superseded.`,
   ];
@@ -753,5 +777,6 @@ function evidenceLines(evidence: ReviewEvidence | null, head: string): string[] 
     lines.push("", "### Reports", "", "Reported, not Observed: each is its sender's word, and Atelier ran nothing to record it. A report proves no criterion by itself.");
     for (const r of reports) lines.push("", `- Reported at ${provenance(r)}:`, block(r.claim));
   }
+  if (relayed.length) lines.push(...relayedLines(relayed));
   return lines;
 }

@@ -3,6 +3,7 @@ import { env, server } from "./support/workers.ts";
 import { liveOffersFor } from "./helpers/live-offers.ts";
 import { expect, it } from "./support/vitest.ts";
 import worker from "../src/index.ts";
+import { parseRuleError } from "../src/rules.ts";
 import type { Assignment, AssignmentView } from "../src/models/assignments.ts";
 import { familyOf, type ModelEntry } from "../src/models/pool.ts";
 import { signIn } from "./signin.ts";
@@ -90,6 +91,64 @@ it("the developer records an assignment with checked evidence; the project's sel
   const listed = await (await call("GET", "/model-roles")).json() as { assignments: AssignmentView[]; fallback: Record<string, string> };
   expect(listed.assignments.find((v) => v.id === a.id)).toMatchObject({ status: "withdrawn", evidence: ["roles-alpha/t1"], acting: "claude-code/opus-5.5", withdrawal: { note: "Astra is reserved this week." } });
   expect(listed.fallback.review).toMatch(/previous round's reviewer/);
+});
+
+it("a criteria-review assignment is recorded and listed, a role outside the list is refused, and a criteria review naming no reviewer lists its choice first, else the review assignment's", async () => {
+  const L = ledger("roles-criteria");
+  const record = { name: "roles-criteria", repo: "roles-criteria", policy: { checks: ["npm test"], protected: [] }, createdAt: AT };
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  for (const m of POOL) await index().putModel(m);
+  // The stored request's reviewer after an unnamed ask, or null when it is refused.
+  const asked = async () => {
+    const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+    try {
+      const r = await L.requestCriteriaReview(id, "owner", null, POOL);
+      const stored = (await L.criteriaReviewsFor(id)).find((q) => q.id === r.request);
+      return { requested: r.requested, reviewer: stored?.reviewer ?? null, state: stored?.state };
+    } catch (e) { return { refused: parseRuleError(e as Error)?.code ?? null, reviewer: null }; }
+  };
+
+  // Without an assignment: the server picks none, as on main.
+  expect(await asked()).toMatchObject({ refused: "reviewer_needed", reviewer: null });
+  // The review assignment applies when no criteria-review one is recorded.
+  expect((await call("POST", "/model-roles", body({ scope: "roles-criteria", evidence: ["roles-criteria/t1"], role: "review", choices: ["codex/gpt-6-astra"] }))).status).toBe(201);
+  const viaReview = await asked();
+  expect(viaReview).toMatchObject({ requested: true, reviewer: "codex/gpt-6-astra", state: "open" });
+
+  expect((await call("POST", "/model-roles", body({ scope: "roles-criteria", role: "tier" }))).status).toBe(400);
+  const made = await call("POST", "/model-roles", body({ scope: "roles-criteria", evidence: ["roles-criteria/t1"], role: "criteria-review", choices: ["zcode/glm-5.3", "claude-code/opus-5.5"] }));
+  expect(made.status).toBe(201);
+  const a = await made.json() as Assignment;
+  expect(a).toMatchObject({ role: "criteria-review", choices: [{ actor: "zcode/glm-5.3" }, { actor: "claude-code/opus-5.5" }] });
+  const listed = await (await call("GET", "/model-roles")).json() as { assignments: AssignmentView[]; fallback: Record<string, string> };
+  expect(listed.assignments.find((v) => v.id === a.id)).toMatchObject({ role: "criteria-review", status: "current" });
+  expect(listed.fallback["criteria-review"]).toBeTruthy();
+  // The criteria-review assignment outranks the review one.
+  expect(await asked()).toMatchObject({ requested: true, reviewer: "zcode/glm-5.3" });
+
+  // Withdrawn, the review assignment applies again.
+  expect((await call("POST", `/model-roles/${a.id}/withdraw`, { note: "Glm is reserved this week." })).status).toBe(200);
+  expect(await asked()).toMatchObject({ requested: true, reviewer: "codex/gpt-6-astra" });
+});
+
+it("an assignment naming one model still asks it again once its rejection's findings are settled", async () => {
+  const L = ledger("roles-rereview");
+  const record = { name: "roles-rereview", repo: "roles-rereview", policy: { checks: ["npm test"], protected: [] }, createdAt: AT };
+  await L.setProject(record, "owner");
+  await index().registerProject(record);
+  for (const m of POOL) await index().putModel(m);
+  const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search is fast"] });
+  expect((await call("POST", "/model-roles", body({ scope: "roles-rereview", evidence: [`roles-rereview/${id}`], role: "criteria-review", choices: ["zcode/glm-5.3"] }))).status).toBe(201);
+  const first = await L.requestCriteriaReview(id, "owner", null, POOL);
+  expect(first.reviewer).toBe("zcode/glm-5.3");
+  const runner = { runner: "home:studio", kind: "home" } as const;
+  const claim = await L.claimCriteriaReview(id, "zcode/glm-5.3", runner) as unknown as { rev: number; criteria: string; request: number };
+  await L.addCriteriaReview({ itemId: id, by: "zcode/glm-5.3", rev: claim.rev, criteria: claim.criteria, request: claim.request, approve: false, summary: "Vague.", findings: [{ file: "criterion-1", line: null, severity: "blocking", text: "Fast is not a measurement." }] }, true);
+  await L.resolveCriteriaFinding(id, "owner", claim.request, 1, "refuted", "200 ms is the measurement the brief names");
+  // The only model the assignment names is the previous reviewer, and it is available.
+  const again = await L.requestCriteriaReview(id, "owner", null, POOL);
+  expect(again).toMatchObject({ requested: true, reviewer: "zcode/glm-5.3" });
 });
 
 it("a second assignment supersedes only by naming the standing one; a retry is answered once; another project's is not sent here", async () => {

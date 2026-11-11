@@ -20,3 +20,14 @@ export function holdsCore(item: Pick<Item, "state"> & { everClaimed?: boolean })
 
 // When the hold lifts, in words.
 export const holdEnds = (id: string): string => `${id} merges or is abandoned`;
+
+// A fix round: the task has a pushed head and its latest review at that head
+// rejected it (t677). Finishing it is how a held task gets out, so the
+// core-file hold never holds its build dispatch. The Ledger sets rejectedAt
+// only for the current head, so a rejection of an older head, an approval and
+// no review all leave it unset. The task may arrive without the fact (a claim
+// reads it by id), so the list it sits in is read too.
+export function isFixRound(item: Pick<Item, "id" | "head" | "rejectedAt">, items: readonly Pick<Item, "id" | "rejectedAt">[]): boolean {
+  const rejected = item.rejectedAt ?? items.find((i) => i.id === item.id)?.rejectedAt;
+  return !!item.head && rejected === item.head;
+}

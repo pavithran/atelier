@@ -97,7 +97,7 @@ it("a fix task and a revert filed without a priority read 2", async () => {
   expect(revert.priority).toBe(2);
 });
 
-it("repeated calls: the same edit twice logs two edits; the same POST twice files two tasks", async () => {
+it("repeated calls: the same edit twice logs two edits; the same POST twice files two tasks when it says duplicateOk", async () => {
   const { base, file, events, count } = await setup("prio-repeat");
   const made = (await (await file({})).json()) as Task;
   for (let n = 0; n < 2; n++) {
@@ -107,8 +107,8 @@ it("repeated calls: the same edit twice logs two edits; the same POST twice file
   const edited = await events(made.id, "item.edited");
   expect(edited.map((e) => e.data.priorityWas)).toEqual([2, 3]);
   const before = await count();
-  const a = (await (await file({ priority: 1 })).json()) as Task;
-  const b = (await (await file({ priority: 1 })).json()) as Task;
+  const a = (await (await file({ priority: 1, duplicateOk: true })).json()) as Task;
+  const b = (await (await file({ priority: 1, duplicateOk: true })).json()) as Task;
   expect(a.id).not.toBe(b.id);
   expect([a.priority, b.priority]).toEqual([1, 1]);
   expect(await count()).toBe(before + 2);

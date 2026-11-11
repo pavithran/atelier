@@ -6,6 +6,20 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { acquireSlot, setSlotCapacity, releaseSlot, slotStatus, slotCapacity, poolSize, slotPriority, parseSlotProcesses, formatSlots, poolTransaction, orderedWaiters, slotInvocation, SLOT_WRAPPER, releaseSequence, SEQUENCE_GRACE_MS } from "../cli/load.mjs";
 import { checkEnv } from "../cli/check-env.mjs";
+import { hostLoad, overloaded, coreCount } from "../cli/load.mjs";
+
+test("overloaded is true at the ratio times the cores and above, false below", () => {
+  assert.equal(overloaded({ load: 8, cores: 8 }, 1), true);
+  assert.equal(overloaded({ load: 7.99, cores: 8 }, 1), false);
+  assert.equal(overloaded({ load: 41, cores: 36 }, 1), true);
+  assert.equal(overloaded({ load: 41, cores: 36 }, 1.5), false);
+});
+
+test("hostLoad reads this host's 1-minute load and core count", () => {
+  const { load, cores } = hostLoad();
+  assert.equal(typeof load, "number");
+  assert.equal(cores, coreCount());
+});
 
 function fixture(t, capacity = 1) {
   const dir = mkdtempSync(join(tmpdir(), "atelier-slots-"));

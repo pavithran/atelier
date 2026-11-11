@@ -47,6 +47,7 @@ import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
+import { RELAYED, relayedEntry, sameRelayed } from "./relayed-evidence.ts";
 import { INBOX_NOTICE, NOTICE_KINDS, STUCK_DIGEST_NOTICE, USAGE_ALERT } from "./notify.ts";
 import { ago } from "./floor.ts";
 
@@ -105,7 +106,7 @@ import { missingReviews, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM
 import { noneOffered, nextOffered, offersJudge, refusedUnoffered, skippedReason } from "./review/offered.ts";
 import { candidatesText, ranked, summarize, type Candidate, type ReviewerRecords, type SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
-import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
+import { aheadOfAssignments, FALLBACK, orderByAssignment, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
 import { buildPrecision, precisionLine, precisionOf, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import {
@@ -935,6 +936,8 @@ type ImportMark = {
 // the class's prototype runs through it (gateMethods, after the class), so
 // a restart asked for after a deploy waits until no call is in flight.
 const GATES = new WeakMap<object, RestartGate>();
+
+const TWIN_WINDOW_MS = 10 * 60_000;
 
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -2885,6 +2888,43 @@ export class Ledger extends DurableObject<Env> {
     return { areas: [], items, facts };
   }
 
+  // The create route's filing (t552): refused when a live task of this project
+  // filed in the last 10 minutes has the same title, brief and scope, unless
+  // `duplicateOk`. The check and the filing are one synchronous step.
+  fileItem(title: string, scope: string[], actor: string, fields: ItemFields, duplicateOk: boolean): ReturnType<Ledger["newItem"]> {
+    if (!duplicateOk) {
+      // A revert's title, brief and scope are derived from the original, so
+      // the check compares those, not the empty title the route supplies.
+      if (fields.revertOf !== undefined && fields.fixOf === undefined) {
+        const derived = this.revertFields(fields.revertOf);
+        title = derived.title; scope = derived.scope; fields = { ...fields, brief: derived.brief };
+      }
+      const text = itemText(title, fields.brief);
+      const key = (s: string[]) => JSON.stringify([...s].sort());
+      const since = new Date(Date.now() - TWIN_WINDOW_MS).toISOString();
+      const twin = this.sql.exec(`SELECT id, scope FROM items WHERE title = ? AND COALESCE(brief, '') = ? AND state NOT IN ('merged', 'abandoned') AND created_at >= ? ORDER BY created_at DESC`, text.title, text.brief ?? "", since)
+        .toArray().find((r) => key(JSON.parse(r.scope as string)) === key(scope));
+      if (twin) throw new RuleError("duplicate", `already filed as ${twin.id}: a live task with this title, brief and scope was filed in the last 10 minutes, so nothing was filed`, 409, "work on that task, or file again with duplicateOk (atelier new --duplicate-ok) if a second is meant");
+    }
+    return this.newItem(title, scope, actor, fields);
+  }
+
+  // What a revert of a merged task files: its title, brief and scope.
+  private revertFields(revertOf: string) {
+    const original = this.item(revertOf);
+    if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409, `run atelier show ${original.id}`);
+    // A plan part's event names the whole plan's merge; reverting that
+    // would silently undo its siblings too. Ask for the plan explicitly.
+    if (original.kind === "part") throw new RuleError("revert_part", "revert the merged plan, not one of its parts");
+    const mergeCommit = this.events(original.id).find((e) => e.kind === "item.merged")?.data.mergeCommit;
+    if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`, 409, `run atelier show ${original.id}`);
+    return {
+      original, mergeCommit, scope: original.scope,
+      title: shortTitle(`Revert ${original.id}: ${original.title}`),
+      brief: `Undo ${original.id} by reverting its recorded merge commit ${mergeCommit} with git revert -m1. Resolve conflicts in this workspace, then run the normal checks and independent review.`,
+    };
+  }
+
   // `title` is what the creator sent as the title, and `fields.brief` the
   // long text if sent apart (itemText): a title too long with no brief, as
   // an older CLI sends, becomes the brief with a short title derived from
@@ -2903,18 +2943,10 @@ export class Ledger extends DurableObject<Env> {
       });
     }
     if (fields.revertOf !== undefined) {
-      const original = this.item(fields.revertOf);
-      if (original.state !== "merged") throw new RuleError("not_merged", `${original.id} is not merged`, 409, `run atelier show ${original.id}`);
-      // A plan part's event names the whole plan's merge; reverting that
-      // would silently undo its siblings too. Ask for the plan explicitly.
-      if (original.kind === "part") throw new RuleError("revert_part", "revert the merged plan, not one of its parts");
-      const mergeCommit = this.events(original.id).find((e) => e.kind === "item.merged")?.data.mergeCommit;
-      if (typeof mergeCommit !== "string" || !/^[a-f0-9]{40,64}$/.test(mergeCommit)) throw new RuleError("no_merge_commit", `${original.id} has no recorded merge commit`, 409, `run atelier show ${original.id}`);
+      const { original, mergeCommit, title: revertTitle, brief, scope: revertScope } = this.revertFields(fields.revertOf);
       return this.ctx.storage.transactionSync(() => {
         const revert = { itemId: original.id, mergeCommit };
-        const item = this.newItem(shortTitle(`Revert ${original.id}: ${original.title}`), original.scope, actor, {
-          brief: `Undo ${original.id} by reverting its recorded merge commit ${mergeCommit} with git revert -m1. Resolve conflicts in this workspace, then run the normal checks and independent review.`,
-        });
+        const item = this.newItem(revertTitle, revertScope, actor, { brief });
         this.log(item.id, actor, "item.reverts", revert, item.createdAt);
         this.log(original.id, actor, "item.revert_requested", { itemId: item.id, mergeCommit }, item.createdAt);
         return { ...item, revert };
@@ -3234,7 +3266,14 @@ export class Ledger extends DurableObject<Env> {
     return out;
   }
 
+  // The head each task's latest standing review rejected, for the tasks whose
+  // current head that is (isFixRound).
+  private rejectedHeads(): Map<string, string> {
+    return new Map(this.sql.exec(`SELECT i.id, i.head FROM items i WHERE i.head IS NOT NULL AND i.state NOT IN ('merged', 'abandoned') AND (SELECT r.approve FROM reviews r WHERE r.item_id = i.id AND r.head = i.head AND json_extract(r.json, '$.withdrawn') IS NULL ORDER BY r.id DESC LIMIT 1) = 0`).toArray().map((r) => [r.id as string, r.head as string]));
+  }
+
   items(): Item[] {
+    const rejectedAt = this.rejectedHeads();
     const asked = new Map(this.sql.exec(`SELECT DISTINCT r.item, r.head FROM review_requests r JOIN items i ON i.id = r.item AND i.head = r.head WHERE r.tier IS NULL AND r.superseded IS NULL AND r.state IN ('open', 'claimed', 'answered')`).toArray().map(r => [r.item as string, r.head as string]));
     const actors = this.itemActors();
     // A blocking finding on a file a live item's scope lacks (t270) rides on
@@ -3252,7 +3291,7 @@ export class Ledger extends DurableObject<Env> {
       .map((row) => {
         const item = toItem(row);
         const gap = item.state === "merged" || item.state === "abandoned" ? null : reviewScopeGap(item, rejections.get(item.id) ?? []);
-        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
+        return { ...item, reviewAskedHead: asked.get(item.id) ?? null, pushActors: actors.get(item.id) ?? [], everClaimed: claimed.has(item.id), ...(rejectedAt.has(item.id) ? { rejectedAt: rejectedAt.get(item.id) } : {}),...(gap ? { scopeGap: scopeGapText(item, gap) } : {}) };
       });
   }
 
@@ -4198,7 +4237,8 @@ export class Ledger extends DurableObject<Env> {
     // A task claimed before (a fix round) comes ahead of one never built,
     // oldest dispatch first within each group (t539).
     const built = rows.length ? new Set(this.sql.exec(`SELECT DISTINCT item_id FROM events WHERE kind = 'item.claimed'`).toArray().map((r) => r.item_id as string)) : new Set<string>();
-    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id) })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
+    const rejected = rows.length ? this.rejectedHeads() : new Map<string, string>();
+    const open = this.withUnblockedAt(this.withCriteriaReviews(rows.length ? (pushHistory ? this.withPushActors(rows) : rows.map(toItem)).map((i) => ({ ...i, everClaimed: built.has(i.id), ...(rejected.has(i.id) ? { rejectedAt: rejected.get(i.id) } : {}) })).sort((a, b) => Number(b.everClaimed) - Number(a.everClaimed) || a.dispatch!.at.localeCompare(b.dispatch!.at)) : []));
     const project = this.project(), policy = project.policy, projectName = project.name, lease = this.projectLanding(), now = Date.now(), runners = this.runnerPolls();
     const live = open.length && (policy.coreFiles?.length || open.some((i) => i.design)) ? this.coreHolders(lease?.item ?? "") : [];
     const all = policy.refuseOverlap || [...open, ...live].some((i) => i.deps?.length) ? this.withEverClaimed(this.withChangedFiles(this.sql.exec(`SELECT * FROM items ORDER BY CAST(SUBSTR(id, 2) AS INTEGER)`).toArray().map(toItem))) : [...open, ...live];
@@ -4929,6 +4969,27 @@ export class Ledger extends DurableObject<Env> {
     // on to need its review again: a request the move withdrew is carried.
     this.reaskReview(e.itemId, new Date().toISOString());
     this.afterPlanChange(e.itemId);
+  }
+
+  // Text the orchestrator records at the task's head for the developer (t497,
+  // src/relayed-evidence.ts). The entry and its event are written in this one
+  // synchronous call, so a crash leaves both or neither; calls to one Ledger
+  // run one after the other, so the second of two identical calls finds the
+  // first and records nothing. The gate and the stage never read it.
+  addRelayedEvidence(id: string, body: Record<string, unknown>, by: string, acting: string | null): { alreadyRecorded: boolean } {
+    const item = this.item(id);
+    assertNotTerminal(item);
+    if (!item.head) throw new RuleError("no_head", `${id} has no recorded head yet, so there is nothing to record evidence at`, 409, "wait for the builder's push, then run atelier evidence again");
+    const at = new Date().toISOString();
+    const e = relayedEntry(id, body, by, acting, at);
+    if (e.head !== item.head) {
+      throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8) || "no head"} but ${id} is at ${item.head.slice(0, 8)}; record it at the current head`, 409, `run atelier evidence ${id} --head ${item.head} --note TEXT`);
+    }
+    const rows = this.sql.exec(`SELECT json FROM evidence WHERE item_id = ?`, id).toArray().map((r) => JSON.parse(r.json as string) as Evidence);
+    if (rows.some((r) => sameRelayed(r, e))) return { alreadyRecorded: true };
+    this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, id, JSON.stringify(e));
+    this.log(id, by, `evidence.${RELAYED}`, { claim: e.claim, head: e.head, ...(e.quote ? { quote: e.quote } : {}), ...(e.acting ? { acting: e.acting } : {}), ...(e.outputTail ? { outputLength: e.outputLength } : {}) }, at);
+    return { alreadyRecorded: false };
   }
 
   private reviewItem(id: string): Item {
@@ -10679,14 +10740,36 @@ export class Ledger extends DurableObject<Env> {
       reasons = ["Named by the developer"];
     } else {
       // No reviewer named (G17): the server picks none. The candidates, each
-      // with what refuses it, and a refusal; the model names one.
-      const candidates = criteriaReviewerCandidates({
+      // with what refuses it, and a refusal; the model names one. The
+      // criteria-review assignment's eligible choices come first, else the
+      // review assignment's; a re-review's previous reviewer stays ahead.
+      const listed = criteriaReviewerCandidates({
         authors, pool: withStanding(pool, standing), policy, owner: this.owner, allowPaid, previous: status.previousReviewer, offers,
         avoid: status.lapsed.map((actor) => ({ actor, reason: "its claim on a review of these criteria lapsed" })),
       });
+      const previous = status.previousReviewer ? listed.filter((c) => sameActor(c.actor, status.previousReviewer!)) : [];
+      // The previous reviewer is set aside only when the assignment has
+      // another available model; an assignment naming only it asks it again.
+      const assigned = applicableAssignments(this.heldAssignments(), null, ["criteria-review", "review"]);
+      const rest = (list: typeof listed) => orderByAssignment(list, (c) => c.actor, assigned, (c) => c.refusal, FALLBACK.review);
+      let placed = rest(listed.filter((c) => !previous.includes(c)));
+      let kept = previous;
+      if (previous.length && placed.outcome.applied === null) {
+        const whole = rest(listed);
+        if (whole.outcome.applied !== null) { placed = whole; kept = []; }
+      }
+      const candidates = [...kept, ...placed.order];
       const first = candidates.find((c) => !c.refusal);
+      // A standing assignment that applies is the developer's choice of
+      // reviewer: its first available model is asked, as a request its runner
+      // claims. With none applying the server still picks none.
+      if (first && placed.outcome.applied !== null && (kept.includes(first) || placed.promoted(first))) {
+        chosen = first.actor;
+        reasons = kept.includes(first) ? [`The previous reviewer of these criteria`] : placed.reasons(first);
+      } else {
       const none = !first && offersJudge(offers) && candidates.some((c) => c.refusal?.includes("no live runner offers")) ? `; no live runner offers an eligible reviewer, so none can be asked` : "";
       throw new RuleError("reviewer_needed", candidatesText(`${item.id}'s criteria review names no reviewer${none}`, candidates), 409, first ? `name one: atelier criteria-review ${item.id} --reviewer ${first.actor}, or another of the eligible` : `add a model with atelier models add, then atelier criteria-review ${item.id} --reviewer H/M`);
+      }
     }
     const slash = chosen.indexOf("/");
     // Made by the standing check, as every dispatch is: a named reviewer the

@@ -41,6 +41,7 @@ globalThis.fetch = async (url, options = {}) => {
   let data = {}, status = 200;
   if (path === "/api/config") data = { ownerActor: "owner", ownerName: "Pavi" };
   else if (path === "/api/projects/demo" && method === "GET") data = { project: { name: "demo", title: "Demo", repo: "demo", policy: { checks: [], protected: [], eligible: [], refuseOverlap: false } }, items: ITEMS, events: [] };
+  else if (path === "/api/projects/demo/items" && method === "POST" && body.title === "Twin filed" && !body.duplicateOk) { status = 409; data = { error: "duplicate", detail: "already filed as t7: a live task with this title, brief and scope was filed in the last 10 minutes, so nothing was filed" }; }
   else if (path === "/api/projects/demo/items" && method === "POST") data = { id: "t9", title: body.title, scope: body.scope };
   else { status = 404; data = { error: "no_project", detail: "project not initialised; run atelier init" }; }
   return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
@@ -143,14 +144,14 @@ test("--duplicate-ok files the task it names, the title still the words given", 
   const r = f.run(["new", "Fix the parser", "--duplicate-ok", "--scope", "src/parser/**", "--project", "demo"]);
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, "t9  Fix the parser  [src/parser/**]\n\nReview path for demo: atelier guide --role orchestrate --project demo prints how to run, review and land work here, including atelier land --reviewer.\n");
-  assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body]), [["POST", "/api/projects/demo/items", { title: "Fix the parser", scope: ["src/parser/**"] }]]);
+  assert.deepEqual(f.requests().map((q) => [q.method, q.path, q.body]), [["POST", "/api/projects/demo/items", { title: "Fix the parser", scope: ["src/parser/**"], duplicateOk: true }]]);
 });
 
 test("new --fix-of sends the repair target to the server", (t) => {
   const f = fixture(t);
   const r = f.run(["new", "Repair the lexer", "--fix-of", "t14", "--duplicate-ok", "--project", "demo"]);
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Repair the lexer", scope: [], fixOf: "t14" }]);
+  assert.deepEqual(f.requests().filter((q) => q.method === "POST").map((q) => q.body), [{ title: "Repair the lexer", scope: [], fixOf: "t14", duplicateOk: true }]);
 });
 
 test("new --fix-of refuses malformed task IDs without filing", (t) => {
@@ -172,4 +173,19 @@ test("a title over 80 characters with --brief reports bad_title without a stack 
     assert.equal(r.stderr, "atelier: bad_title: a title is at most 80 characters and this one is 81; put the rest in the brief\n");
   }
   assert.deepEqual(f.requests(), []);
+});
+
+test("a filing the server refuses as a twin prints 'already filed as tN' and exits non-zero (t552)", (t) => {
+  const f = fixture(t);
+  const r = f.run(["new", "Twin filed", "--scope", "src/new/**", "--project", "demo"]);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /already filed as t7/);
+  assert.doesNotMatch(r.stdout, /^t9 /m);
+});
+
+test("--duplicate-ok sends duplicateOk, and the server then files it (t552)", (t) => {
+  const f = fixture(t);
+  const r = f.run(["new", "Twin filed", "--scope", "src/new/**", "--duplicate-ok", "--project", "demo"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(f.requests().find((q) => q.method === "POST").body.duplicateOk, true);
 });

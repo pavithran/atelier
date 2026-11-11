@@ -96,7 +96,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   // criteria reviewer's claim, verdict and failure (t438); asking for one
   // and resolving its findings stay the owner's.
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews", "runner-log"].includes(verb) || parts.length === 6 && ["logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock", "evidence-note"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,
@@ -260,7 +260,7 @@ export const RUNNER_CALLS: readonly RunnerCall[] = [
   // A lander's read grant for the project's branch (t682): the remote and a
   // read credential its checkout fetches with, to catch up to server main.
   { name: "baseline-grant", method: "POST", path: "/projects/{project}/git-token", credential: "runner", body: ["kind"], via: "runner", jobs: [] },
-  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "facts"], via: "runner", jobs: ["build", "plan", "review"] },
+  { name: "runs", method: "POST", path: "/runs", credential: "runner", body: ["actor", "role", "outcome", "project", "item", "load", "facts"], via: "runner", jobs: ["build", "plan", "review"] },
   { name: "review-skip", method: "POST", path: `${ITEM}/review-skip`, credential: "runner", body: ["head", "request", "facts"], via: "runner", jobs: REVIEW },
   // The runner's word that it gives up a build or plan job under its
   // dispatch (t420), after failed runs or infrastructure failures in a row:
