@@ -99,7 +99,7 @@ test("a plain git push to t/N is recorded by the post-receive hook as the holder
 
 test("the pre-receive scan report becomes the head's scan record at post-receive time: nothing is left pending", async () => {
   const { id, dir, branch } = await claimed("Scanned by the hook");
-  const head = await commit(dir, "blob.bin", "PK\0\u0001\0binary\0");
+  const head = await commit(dir, "blob.bin", "PK\0\u0001\0binary\0".padEnd(8 * 1024 * 1024 + 1, "\0"));
   const pushed = await tryGit(dir, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
   assert.equal(pushed.code, 0, pushed.stderr);
   const item = await L().item(id);

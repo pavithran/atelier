@@ -57,8 +57,8 @@ const rows: Row[] = [
   { name: "text→text, no key pattern", base: { "a.ts": { bytes: CLEAN } }, head: { "a.ts": { bytes: text("export const a = 2;\n") } }, expect: { clean: true }, ready: true },
   { name: "binary→text holding a key", base: { "a.ts": { bytes: BINARY } }, head: { "a.ts": { bytes: KEYED } }, expect: { hit: { file: "a.ts", line: 2 } }, ready: false },
   { name: "submodule→text holding a key", base: { "a.ts": { submodule: true } }, head: { "a.ts": { bytes: KEYED } }, expect: { hit: { file: "a.ts", line: 2 } }, ready: false },
-  { name: "text→binary", base: { "a.ts": { bytes: CLEAN } }, head: { "a.ts": { bytes: BINARY } }, expect: { unscanned: { file: "a.ts", reason: /binary content/ } }, ready: false },
-  { name: "absent→binary", base: {}, head: { "blob.bin": { bytes: BINARY } }, expect: { unscanned: { file: "blob.bin", reason: /binary content/ } }, ready: false },
+  { name: "text→binary", base: { "a.ts": { bytes: CLEAN } }, head: { "a.ts": { bytes: BINARY } }, expect: { clean: true }, ready: true },
+  { name: "absent→binary", base: {}, head: { "blob.bin": { bytes: BINARY } }, expect: { clean: true }, ready: true },
   // t518: media is never flagged as unscanned, even when its bytes are not a known signature.
   { name: "absent→media by name", base: {}, head: { "logo.png": { bytes: BINARY } }, expect: { clean: true }, ready: true },
   { name: "text→media by name", base: { "a.ts": { bytes: CLEAN } }, head: { "a.mp4": { bytes: BINARY } }, expect: { clean: true }, ready: true },
@@ -201,7 +201,7 @@ for (const [i, row] of rows.entries()) {
 
 // t178/G18: a model clearing on the developer token carries the developer's words (quote).
 it("an unscanned flag is cleared by the owner with a reason, and a changed object at the path blocks again", async () => {
-  const row = rows.find((r) => r.name === "text→binary")!;
+  const row = rows.find((r) => r.name === "oversized text")!;
   const { d, call, name } = await pushed(row, rows.length);
   expect(d.gate.ready).toBe(false);
   const clear = await call("POST", `/projects/${name}/items/t1/clear-secret`, "owner", { reason: "a PNG icon, checked by hand", quote: "yes, that icon is fine" });

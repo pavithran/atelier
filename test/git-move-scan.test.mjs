@@ -84,7 +84,7 @@ for (const state of ["refused", "refused-later", "ahead", "diverged", "created"]
   git(source, "commit", "-q", "--allow-empty", "-m", "main");
   git(root, "init", "-q", "--bare", "-b", "main", into);
   git(source, "checkout", "-q", "--orphan", "notes-source");
-  writeFileSync(join(source, "unread.bin"), Buffer.from([0, 1, 2]));
+  writeFileSync(join(source, "unread.bin"), Buffer.alloc(8 * 1024 * 1024 + 1));
   if (state === "refused") writeFileSync(join(source, "key.env"), `OPENAI_API_KEY=${["sk", "proj", "TESTONLY", "f".repeat(28)].join("-")}\n`);
   git(source, "add", ".");
   git(source, "commit", "-q", "-m", "notes");
