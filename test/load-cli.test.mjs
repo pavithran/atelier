@@ -80,3 +80,18 @@ test("a refused ps runs the command without accounting and preserves its exit st
     assert.match(result.stderr, /running without process-tree accounting/);
   }
 });
+
+test("a slot wait notice goes to stderr and nothing from it reaches stdout", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-slots-wait-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = join(root, "wait.mjs");
+  writeFileSync(script, `import { acquireSlot } from ${JSON.stringify(new URL("../cli/load.mjs", import.meta.url).href)};
+    const processes = [{ pid: 100, lease: "held", birth: "a" }, { pid: 101, lease: "mine", birth: "b" }];
+    let at = 0; const stop = new AbortController();
+    const options = { path: ${JSON.stringify(join(root, "pool.sqlite"))}, env: { ATELIER_TEST_SLOTS: "1" }, processes: () => processes, now: () => at };
+    await acquireSlot({ ...processes[0], project: "xray", task: "t9" }, options);
+    await acquireSlot(processes[1], { ...options, signal: stop.signal, wait: async () => { at += 1000; if (at >= 6000) stop.abort(); } }).catch(() => {});`);
+  const result = spawnSync(process.execPath, [script], { encoding: "utf8", timeout: 20000 });
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /waiting 5s for a slot \(capacity 1\); running: xray\/t9; place 1 of 1/);
+});
