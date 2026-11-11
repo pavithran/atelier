@@ -45,5 +45,3 @@ src/stage-tick.ts:findStageOverrun exported and tested, no production caller on 
 src/time.ts:zoneName exported and tested, no production caller on 2026-11-08; wire it in or delete it
 src/token-expiry.ts:warns exported and tested, no production caller on 2026-11-08; wire it in or delete it
 src/tokens.ts:callParts exported and tested, no production caller on 2026-11-08; wire it in or delete it
-src/models/usage-readings.ts:availabilityOf no production caller by design in t597; the slate builder (task C), the consumers (task E) and t561 call it
-src/models/usage-readings.ts:readingsFor read only by availabilityOf callers; same tasks as availabilityOf
