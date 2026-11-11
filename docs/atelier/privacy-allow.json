@@ -281,6 +281,312 @@
       "file": "test/usage.test.ts",
       "sha256": "0fee9b2fd255dd3d375070be2f8d2ec9acf2140f8888cd4c5b870a3b4db47f08",
       "reason": "PAVI 2026-10-30: \"yes\" to allowing the 37 tip-scan lines as not secrets; a made-up key in a test"
+    },
+    {
+      "commit": "ea4511222448",
+      "file": "scripts/studio/setup-backup.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "ea4511222448",
+      "file": "scripts/studio/setup-backup.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "ea4511222448",
+      "file": "scripts/studio/setup-restore.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "ea4511222448",
+      "file": "scripts/studio/setup-restore.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "4b6220eaca59",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "4b6220eaca59",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "885b7c50cfd3501aa42849fab2c2ca2b59dfa81d193c0b17753a6a62191ee56a",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "4b6220eaca59",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "4b6220eaca59",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "4b6220eaca59",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "4b6220eaca59",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "ce53eec6fbb503684b4a7d88150fbbe2b3d64666cd25aae1b8898737173fac2c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "4b6220eaca59",
+      "file": "test/fixtures/studio/setup-tunnel-2026-10-28.sh",
+      "sha256": "17848a559b3ee29a81e5e46fac6fad0a55865416a3d879ef7d9748fd3edd4ff7",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "d5d2d93e51f0",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "d5d2d93e51f0",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "885b7c50cfd3501aa42849fab2c2ca2b59dfa81d193c0b17753a6a62191ee56a",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "d5d2d93e51f0",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "d5d2d93e51f0",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "d5d2d93e51f0",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "d5d2d93e51f0",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "ce53eec6fbb503684b4a7d88150fbbe2b3d64666cd25aae1b8898737173fac2c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "d5d2d93e51f0",
+      "file": "test/fixtures/studio/setup-tunnel-2026-10-28.sh",
+      "sha256": "17848a559b3ee29a81e5e46fac6fad0a55865416a3d879ef7d9748fd3edd4ff7",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "15b71ec1bdf1",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "885b7c50cfd3501aa42849fab2c2ca2b59dfa81d193c0b17753a6a62191ee56a",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "15b71ec1bdf1",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "15b71ec1bdf1",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "15b71ec1bdf1",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "c6786fca06ef",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "c6786fca06ef",
+      "file": "scripts/studio/install-server.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "c6786fca06ef",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "e5ff52d6af665cccd20a1d0955be812333ffb1f50f9dc79f37a7fde7956bf4ca",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "c6786fca06ef",
+      "file": "scripts/studio/setup-server.sh",
+      "sha256": "f7ea404a844aa65b6ab158931d8eb611cee7b19be3da399487ffcd44017acc8c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a path through CommandLineTools, not a key"
+    },
+    {
+      "commit": "a872d994fa45",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "ce53eec6fbb503684b4a7d88150fbbe2b3d64666cd25aae1b8898737173fac2c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "a872d994fa45",
+      "file": "test/fixtures/studio/setup-tunnel-2026-10-28.sh",
+      "sha256": "17848a559b3ee29a81e5e46fac6fad0a55865416a3d879ef7d9748fd3edd4ff7",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "13271988875d",
+      "file": "test/reviews-together.test.mjs",
+      "sha256": "92a27d926a0887ac2e141d4a1f34afb85a2c71fb1fb2dceed0149ca4bd312f31",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "acdcf121adc0",
+      "file": "test/progress.test.mjs",
+      "sha256": "0e6bd7e0e70eff89c186233f9837439c96272003efed421204210dea026492f1",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "acdcf121adc0",
+      "file": "test/reliability.test.ts",
+      "sha256": "a36fbdf986dbec56efeb7494174fb942c1169955941ba738a125d0ee1088c68e",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "acdcf121adc0",
+      "file": "test/reliability.test.ts",
+      "sha256": "265d24622ebb6f2591b52be9cf76db3ca4f12151cd4587119eeb95a6f9e000fe",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "acdcf121adc0",
+      "file": "test/reviews-together.test.mjs",
+      "sha256": "92a27d926a0887ac2e141d4a1f34afb85a2c71fb1fb2dceed0149ca4bd312f31",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "49f0299dbb32",
+      "file": "test/progress.test.mjs",
+      "sha256": "0e6bd7e0e70eff89c186233f9837439c96272003efed421204210dea026492f1",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "49f0299dbb32",
+      "file": "test/reliability.test.ts",
+      "sha256": "a36fbdf986dbec56efeb7494174fb942c1169955941ba738a125d0ee1088c68e",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "49f0299dbb32",
+      "file": "test/reliability.test.ts",
+      "sha256": "265d24622ebb6f2591b52be9cf76db3ca4f12151cd4587119eeb95a6f9e000fe",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "88d8a70dd9bf",
+      "file": "test/progress.test.mjs",
+      "sha256": "0e6bd7e0e70eff89c186233f9837439c96272003efed421204210dea026492f1",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "88d8a70dd9bf",
+      "file": "test/reliability.test.ts",
+      "sha256": "a36fbdf986dbec56efeb7494174fb942c1169955941ba738a125d0ee1088c68e",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "88d8a70dd9bf",
+      "file": "test/reliability.test.ts",
+      "sha256": "265d24622ebb6f2591b52be9cf76db3ca4f12151cd4587119eeb95a6f9e000fe",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "ca54e34bd77e",
+      "file": "test/reviews-together.test.mjs",
+      "sha256": "92a27d926a0887ac2e141d4a1f34afb85a2c71fb1fb2dceed0149ca4bd312f31",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "0b56db0ce9f4",
+      "file": "test/land-node-2.test.mjs",
+      "sha256": "2765cddec54e7e0e7859b2f94268cd169aa4e545418f26fe9b99eb36818a9d48",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "30b958bc6b11",
+      "file": "test/land-node-2.test.mjs",
+      "sha256": "2765cddec54e7e0e7859b2f94268cd169aa4e545418f26fe9b99eb36818a9d48",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "313d7ed21af3",
+      "file": "test/land-node-2.test.mjs",
+      "sha256": "2765cddec54e7e0e7859b2f94268cd169aa4e545418f26fe9b99eb36818a9d48",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "03e36b0c9a85",
+      "file": "test/land-node-2.test.mjs",
+      "sha256": "9acb466d2aa304b2e6edd8f620803b24dde7652918e25db0b9756b4dadfbf61c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "ecdd43e25987",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "17848a559b3ee29a81e5e46fac6fad0a55865416a3d879ef7d9748fd3edd4ff7",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "ecdd43e25987",
+      "file": "test/land-node-2.test.mjs",
+      "sha256": "9acb466d2aa304b2e6edd8f620803b24dde7652918e25db0b9756b4dadfbf61c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "fc0c9dc8ffda",
+      "file": "test/land-node-2.test.mjs",
+      "sha256": "9acb466d2aa304b2e6edd8f620803b24dde7652918e25db0b9756b4dadfbf61c",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a made-up token in a test"
+    },
+    {
+      "commit": "320c16cda82a",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "17848a559b3ee29a81e5e46fac6fad0a55865416a3d879ef7d9748fd3edd4ff7",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "c8649a9a3d86",
+      "file": "scripts/studio/setup-tunnel.sh",
+      "sha256": "17848a559b3ee29a81e5e46fac6fad0a55865416a3d879ef7d9748fd3edd4ff7",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a Cloudflare Access application AUD tag, an identifier every Access token carries, not a credential"
+    },
+    {
+      "commit": "99a14f3cc73a",
+      "file": "test/workers-skipped.txt",
+      "sha256": "d55da7e481ba43abd304e988fe496b223e177621c4370091dd2b1ce2ad3ced8b",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a test file name"
+    },
+    {
+      "commit": "553d0b32093a",
+      "file": "test/workers-skipped.txt",
+      "sha256": "d55da7e481ba43abd304e988fe496b223e177621c4370091dd2b1ce2ad3ced8b",
+      "reason": "PAVI 2026-11-11 (\"Yes, allow and push\"): a test file name"
     }
   ]
 }
