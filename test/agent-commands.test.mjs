@@ -369,3 +369,39 @@ test("done directs ordinary tasks to land and preserves the developer gate", () 
     assert.match(report.summary.join("\n"), nextGate ? /atelier accept t1/ : /atelier land t1/);
   }
 });
+
+test("accept --head takes the short head that show prints, and refuses a stale or malformed one (t697)", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "atelier-accept-test-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const preload = join(root, "server.mjs"), origin = "https://fake.invalid", full = "abcdef0123".repeat(4);
+  writeFileSync(preload, `
+    globalThis.fetch = async (url, options) => {
+      const path = new URL(url).pathname;
+      if (options.method === "GET") return Response.json({ item: { id: "t1", head: ${JSON.stringify(full)} }, events: [], reviews: [] });
+      if (path.endsWith("/accept")) return Response.json({ acceptedHead: JSON.parse(options.body).head });
+      throw new Error("unexpected route: " + path);
+    };
+  `);
+  const run = (head) => {
+    try {
+      const out = execFileSync(process.execPath, ["--import", preload, cli, "accept", "t1", "--head", head, "--project", "proj", "--as", actor], {
+        cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, ATELIER_ACTOR: actor, ATELIER_CONFIG_DIR: root, ATELIER_CACHE: root, ATELIER_TOKEN: "fake", ATELIER_SERVER: origin },
+      });
+      return { status: 0, output: out };
+    } catch (e) { return { status: e.status, output: `${e.stdout}${e.stderr}` }; }
+  };
+  for (const n of [7, 8, 39]) {
+    const r = run(full.slice(0, n));
+    assert.equal(r.status, 0, r.output);
+    assert.ok(r.output.includes(`accepted at ${full.slice(0, 8)}`), r.output);
+  }
+  const stale = run("abcdef9");
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.output, new RegExp(`stale_head.*${full.slice(0, 8)}`));
+  for (const bad of ["abcdef", "abcdefg"]) {
+    const r = run(bad);
+    assert.notEqual(r.status, 0);
+    assert.match(r.output, /--head needs/);
+  }
+});
