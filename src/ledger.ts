@@ -69,7 +69,7 @@ import type { RunReport } from "./models/reliability.ts";
 import { addDays, sameSnapshot, SNAPSHOT_SCHEMA, type ComputedSnapshot, type SnapshotRow, type SnapshotTake, type StoredSnapshot } from "./models/snapshot.ts";
 import { matchServed, SERVED, SERVED_LIMIT, servedActor, type ServedMatch, type ServedSelection } from "./models/served.ts";
 import type { SecretHit, UnscannedFile } from "./secret-scan.ts";
-import { privatePath } from "./rules.ts";
+import { PRIORITY_DEFAULT, privatePath } from "./rules.ts";
 import { parsePlan, planHash, type Plan, type PlanPart } from "./plans/schema.ts";
 import { validatePlan } from "./plans/validate.ts";
 import { routeParts, standingRoute, type Choice, type PartRoute } from "./plans/route.ts";
@@ -1171,6 +1171,7 @@ export class Ledger extends DurableObject<Env> {
     if (!columns.includes("stop_when")) this.sql.exec(`ALTER TABLE items ADD COLUMN stop_when TEXT`);
     if (!columns.includes("next_gate")) this.sql.exec(`ALTER TABLE items ADD COLUMN next_gate TEXT`);
     if (!columns.includes("design")) this.sql.exec(`ALTER TABLE items ADD COLUMN design TEXT`);
+    if (!columns.includes("priority")) this.sql.exec(`ALTER TABLE items ADD COLUMN priority INTEGER NOT NULL DEFAULT ${PRIORITY_DEFAULT}`);
     if (!columns.includes("blocked")) this.sql.exec(`ALTER TABLE items ADD COLUMN blocked TEXT`);
     // Plans (docs/orchestrator.md, section 1): an item's kind (null for an
     // ordinary task, plan or part), a part's plan item, its key in the
@@ -2988,7 +2989,7 @@ export class Ledger extends DurableObject<Env> {
       if (item.kind === "part") throw new RuleError("part_scope", `${id} is a part of a plan, whose scope the plan sets; nothing was changed`, 409, "edit the plan's scope instead");
       set.scope = JSON.stringify(scope);
     }
-    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate, --design or --context", 400, "give at least one field to change");
+    if (!Object.keys(set).length && context === undefined) throw new RuleError("nothing_to_edit", "nothing to change: give --title, --brief, --scope, --accept, --non-goal, --stop-when, --next-gate, --design, --priority or --context", 400, "give at least one field to change");
     if (context !== undefined) assertLength(context, NOTE_MAX, "the task's context");
     const changing = fields.accept !== undefined && !sameCriteria(fields.accept, item.accept);
     if (changing) this.assertCriteriaEditable(item);
@@ -3004,6 +3005,7 @@ export class Ledger extends DurableObject<Env> {
       ...fields,
       ...(changing ? { acceptWas: item.accept ?? [] } : {}),
       ...(rebriefing ? { briefWas: item.brief ?? null } : {}),
+      ...(fields.priority !== undefined ? { priorityWas: item.priority } : {}),
       ...(addBrief ? { addBrief } : {}),
       ...appended,
       ...(rescoping ? { scope, scopeWas: item.scope } : {}),
@@ -12055,7 +12057,7 @@ export class Ledger extends DurableObject<Env> {
   // One Ledger change takes one timestamp, `at`, and passes it to update and
   // log alike, so an item's updatedAt and the event that changed it never
   // differ, and a reader comparing the two sees one moment.
-  private update(id: string, fields: Record<string, string | null>, at: string): void {
+  private update(id: string, fields: Record<string, string | number | null>, at: string): void {
     if (("owner" in fields && fields.owner !== null || "claim_gen" in fields) && !this.#ownerAssignment) {
       throw new RuleError("owner_assignment", "owner assignment and claim reservation require assignOwner", 409);
     }
@@ -12068,7 +12070,7 @@ export class Ledger extends DurableObject<Env> {
       this.ctx.storage.transactionSync(() => {
         const state = fields.state!;
         // The inner update has no state field, avoiding recursive closure.
-        const rest: Record<string, string | null> = { ...fields, dispatch: null };
+        const rest: Record<string, string | number | null> = { ...fields, dispatch: null };
         delete rest.state;
         this.update(id, rest, at);
         this.sql.exec(`UPDATE items SET state = ? WHERE id = ?`, state, id);
@@ -12112,7 +12114,7 @@ export class Ledger extends DurableObject<Env> {
     const from = "head" in fields ? (this.sql.exec(`SELECT head FROM items WHERE id = ?`, id).toArray()[0]?.head as string | null | undefined) ?? null : null;
     this.sql.exec(`UPDATE items SET ${set}, updated_at = ? WHERE id = ?`, ...keys.map((k) => fields[k]), at, id);
     if ("head" in fields && fields.head && fields.head !== from) {
-      this.withdrawStaleRequests(id, fields.head, at);
+      this.withdrawStaleRequests(id, String(fields.head), at);
       // A new head starts every same-exit run of the task afresh (noteExit).
       this.sql.exec(`DELETE FROM same_exits WHERE item = ?`, id);
     }
@@ -12696,6 +12698,7 @@ function toItem(r: Row): Item {
     stopWhen: r.stop_when ? (JSON.parse(r.stop_when as string) as string[]) : [],
     nextGate: (r.next_gate as string | null) ?? null,
     design: (r.design as string | null) ?? null,
+    priority: (r.priority as number | null) ?? PRIORITY_DEFAULT,
     brief: (r.brief as string | null) ?? null,
     accept: r.accept ? (JSON.parse(r.accept as string) as string[]) : [],
     // Only a blocked item carries the record; unblocking and abandoning clear it.
@@ -12721,12 +12724,13 @@ function toItem(r: Row): Item {
 
 // The columns an ItemFields sets: a field given becomes its column, an
 // empty list or null gate becomes NULL, and a field left out sets nothing.
-function fieldColumns(fields: ItemFields): Record<string, string | null> {
-  const set: Record<string, string | null> = {};
+function fieldColumns(fields: ItemFields): Record<string, string | number | null> {
+  const set: Record<string, string | number | null> = {};
   if (fields.nonGoals !== undefined) set.non_goals = fields.nonGoals.length ? JSON.stringify(fields.nonGoals) : null;
   if (fields.stopWhen !== undefined) set.stop_when = fields.stopWhen.length ? JSON.stringify(fields.stopWhen) : null;
   if (fields.nextGate !== undefined) set.next_gate = fields.nextGate;
   if (fields.design !== undefined) set.design = fields.design;
+  if (fields.priority !== undefined) set.priority = fields.priority;
   if (fields.accept !== undefined) set.accept = fields.accept.length ? JSON.stringify(fields.accept) : null;
   if (fields.brief !== undefined) set.brief = fields.brief;
   return set;
