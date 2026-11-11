@@ -184,3 +184,22 @@ test("slate.ts imports no ledger, fetch or clock", () => {
   const source = readFileSync(new URL("../src/models/slate.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /from "\.\.\/ledger|\bfetch\(|Date\.now\(|new Date\(\)/);
 });
+
+test("buildSlate judges each model by the job's role: a review-only model serves review jobs, a build-only one does not", () => {
+  const reviewOnly = { ...ASTRA, roles: ["review"] } as ModelEntry;
+  const buildOnly = { ...GLM, roles: ["build"] } as ModelEntry;
+  const order = Object.fromEntries(SLATE_JOBS.map((j) => [j, [actor(ASTRA), actor(GLM)]])) as Record<SlateJob, string[]>;
+  const slate = buildSlate(input({ pool: [reviewOnly, buildOnly], approved: { order } }));
+  for (const job of ["review-claude", "criteria-review"] as const) {
+    assert.equal(slate[job].recommended, actor(ASTRA), job);
+    assert.deepEqual(slate[job].alternates, [], job);
+    assert.equal(slate[job].dropped.find((d) => d.actor === actor(GLM))?.reason.startsWith("not a reviewer"), true, job);
+  }
+  for (const job of ["build", "small-build", "hard-round"] as const) {
+    assert.equal(slate[job].recommended, actor(GLM), job);
+    assert.equal(slate[job].dropped.find((d) => d.actor === actor(ASTRA))?.reason.startsWith("not a builder"), true, job);
+  }
+  // a review-only model outside the order is still a proposal for a review job
+  const proposed = buildSlate(input({ pool: [reviewOnly, buildOnly], approved: { order: { ...order, "review-claude": [actor(GLM)] } } }));
+  assert.deepEqual(proposed["review-claude"].proposals.map((p) => p.actor), [actor(ASTRA)]);
+});

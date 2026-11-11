@@ -17,7 +17,7 @@ import type { ProviderPause } from "../runners/memory.ts";
 import { isStaleProbe, type Readiness } from "../runners/readiness.ts";
 import type { UsageReport, UsageWindow } from "../usage/report.ts";
 import type { ProjectPolicy } from "../rules.ts";
-import type { ModelEntry } from "./pool.ts";
+import type { ModelEntry, ModelRole } from "./pool.ts";
 import { eligibilityRefusal } from "./suggest.ts";
 
 // A reading older than this says nothing about the tool now, unless it holds
@@ -125,7 +125,9 @@ export type ReadinessByRunner = Readonly<Record<string, Readiness | null | undef
 // reset; weekly at most 80%; 5-hour not at its limit.
 export function availabilityOf(
   entry: ModelEntry,
-  ask: { project: string; job?: Dispatch["job"] | "build"; policy: ProjectPolicy; owner?: string },
+  // `project` null is no project: every runner counts, whatever projects it serves.
+  // `role` is the role to judge the model for; build when not named.
+  ask: { project: string | null; job?: Dispatch["job"] | "build"; policy: ProjectPolicy; owner?: string; role?: ModelRole },
   readings: Readings,
   offers: readonly SeenOffer[] | null,
   readiness: ReadinessByRunner,
@@ -138,13 +140,13 @@ export function availabilityOf(
   const flags = have && have.size ? [] : [UNKNOWN_USAGE];
   const no = (reason: string, until: string | null = null): Availability => ({ available: false, reason, until, flags });
 
-  const refused = eligibilityRefusal(entry, ask, undefined, new Date(t));
+  const refused = eligibilityRefusal(entry, ask, undefined, new Date(t), ask.role);
   if (refused) return no(refused);
 
   // Offered: the runners that would be handed this dispatch. With no live
   // runner nothing is restricted, as in builderCandidates.
   const job = ask.job && ask.job !== "build" ? ask.job : undefined;
-  const runners = offers ? claimants({ to: entry.where, job, agent: entry.harness, model: entry.id }, offersFor(offers, ask.project), new Date(t)) : null;
+  const runners = offers ? claimants({ to: entry.where, job, agent: entry.harness, model: entry.id }, ask.project === null ? offers : offersFor(offers, ask.project), new Date(t)) : null;
   if (runners && !runners.length) return no("not-offered");
 
   // Ready: one runner that is ready is enough. When all are unready, the

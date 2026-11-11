@@ -243,3 +243,19 @@ it("criterion 5: a project whose vendor limits list anthropic, openai, google sh
     expect(ledger.slateRecords()).toHaveLength(1);
   });
 });
+
+it("global pick: a runner scoped to one project still serves the global slate, and pausing its harness writes the held record in the same call", async () => {
+  await ledgerOf("global-scoped", (ledger) => {
+    approve(ledger, "request-0001", null, everyJob([ASTRA]));
+    put(ledger, reportOf("codex", T0));
+    const now = Date.now();
+    const scoped = { ...offerOf("home:a", "codex", "gpt-6-astra"), projects: ["atelier"] };
+    const memory = (pauses: unknown[]) => ({ refused: [], gaveUp: [], failures: [], infrastructure: [], skipHeads: [], reasons: [], backoff: [], pauses });
+    ledger.askQueue({ ...scoped, memory: memory([]) } as never, iso(now));
+    expect(ledger.slatePicks().build.pick).toBe(ASTRA);
+    const pause = [{ harness: "codex", reason: "limit", resetAt: iso(now + HOUR), since: iso(now), fallback: false }];
+    ledger.askQueue({ ...scoped, memory: memory(pause) } as never, iso(now + 1000));
+    expect(ledger.slatePicks().build.pick).toBeNull();
+    expect(heldBuild(ledger)).toHaveLength(1);
+  });
+});

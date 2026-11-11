@@ -152,19 +152,19 @@ export interface SlateWorld {
 
 export type Picks = Record<SlateJob, { pick: string | null; next: string | null }>;
 
-// The slate for a project (or for no project: "*", no limits) from the order
+// The slate for a project (or for no project, null: any runner serves it, no limits) from the order
 // in force, at `now`. With no approved record there is no slate: null.
 export function slateAt(store: SlateStore, world: SlateWorld, now: number, opts: { project?: string; limits?: SlateLimits; authors?: readonly string[] } = {}): { standing: OrderRecord; slate: Slate } | null {
   const standing = standingRecord(store.records());
   if (!standing) return null;
   const live = liveOffers(world.offers, new Date(now));
-  const project = opts.project ?? "*";
+  const project = opts.project ?? null;
   const slate = buildSlate({
     approved: { order: standing.order }, pool: world.pool, project, policy: {} as ProjectPolicy,
     readings: readingsFor(world.reports, now), offers: live.length ? live : null,
     readiness: Object.fromEntries(live.map((o) => [o.runner, (o as { readiness?: Readiness }).readiness ?? null])),
     pauses: world.pauses.filter((p) => Date.parse(p.resetAt) > now),
-    limits: opts.limits?.[project] ?? null, authors: opts.authors ?? [], now,
+    limits: (project === null ? null : opts.limits?.[project]) ?? null, authors: opts.authors ?? [], now,
   });
   return { standing, slate };
 }

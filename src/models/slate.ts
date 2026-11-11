@@ -48,7 +48,7 @@ export type Slate = Record<SlateJob, JobSlate>;
 export interface SlateInput {
   approved: { order: SlateOrder };
   pool: readonly ModelEntry[];
-  project: string;
+  project: string | null;                       // null: no project, the global slate
   policy: ProjectPolicy;
   owner?: string;
   readings: Readings;
@@ -73,7 +73,7 @@ const isArgon = (e: ModelEntry) => e.harness === "antigravity";
 export function buildSlate(input: SlateInput): Slate {
   const byActor = new Map(input.pool.map((e) => [actorOf(e), e]));
   const authorFamilies = new Set(input.authors.map((a) => actorFamily(a) as string));
-  const ask = (job: SlateJob) => ({ project: input.project, job: dispatchJob(job), policy: input.policy, owner: input.owner });
+  const ask = (job: SlateJob) => ({ project: input.project, job: dispatchJob(job), policy: input.policy, owner: input.owner, role: roleOf(job) });
 
   // Why a job may not use a model whatever its availability, or null.
   const excluded = (job: SlateJob, e: ModelEntry): string | null => {
