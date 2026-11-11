@@ -100,6 +100,14 @@ it("refuses, recording nothing: an agent's own token, a head that is not the rec
   await L.newItem("No head yet", [], "owner", { accept: ["Works"] });
   await L.newItem("Closed", [], "owner", { accept: ["Works"] });
   await L.abandon("t3", "owner", "not needed");
+  await L.newItem("Merged", [], "owner", { accept: ["Works"] });
+  const { generation } = await L.claim("t4", OPUS);
+  await L.recordToken("t4", OPUS, generation, null, "tok-4");
+  await L.setWorkspace("t4", "t4--fork", "0".repeat(40), OPUS);
+  await L.recordPush("t4", OPUS, H1, H1);
+  await L.recordMerge("t4", "owner", { mergeCommit: "d".repeat(40), commit: H1, reviews: [{ by: GPT, verdict: "approve", head: H1 }] }, { parents: ["a".repeat(40), H1], holds: true, tip: "d".repeat(40) }, await L.workspaceOf("t4"));
+  expect(await L.item("t4")).toMatchObject({ state: "merged" });
+  const before = (await L.events("t4", 100) as unknown as LedgerEvent[]).length;
 
   const agent = await agentToken(name);
   const own = await note(name, { head: H1, note: "mine" }, {}, agent, GPT);
@@ -120,7 +128,12 @@ it("refuses, recording nothing: an agent's own token, a head that is not the rec
   expect(closed.status).toBe(409);
   expect(await closed.json()).toMatchObject({ error: "closed" });
 
-  for (const id of ["t1", "t2", "t3"]) expect((await L.evidenceFor(id)).filter((e) => e.grade === "relayed")).toEqual([]);
+  const done = await note(name, { head: H1, note: "merged" }, undefined, TOKEN, "owner", "t4");
+  expect(done.status).toBe(409);
+  expect(await done.json()).toMatchObject({ error: "closed" });
+  expect((await L.events("t4", 100) as unknown as LedgerEvent[]).length).toBe(before);
+
+  for (const id of ["t1", "t2", "t3", "t4"]) expect((await L.evidenceFor(id)).filter((e) => e.grade === "relayed")).toEqual([]);
   expect(await events(L)).toEqual([]);
 });
 

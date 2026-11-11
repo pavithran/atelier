@@ -124,6 +124,31 @@ test("the brief names the merged tree, its relevant tests and commands, the resu
   assert.match(text, /not the gate's review/);
 });
 
+test("relayed evidence reads as its own kind in the brief: who ran it, where, its stated outcome, never a failed own-tree run", () => {
+  const head = SHA("a"), other = SHA("e");
+  const relayed = (claim, extra = {}, at = head) => ({ itemId: "t2", claim, grade: "relayed", head: at, passed: null, by: "owner", acting: "claude-code/opus-5.5", at: iso(now), ...extra });
+  const text = prereviewBrief({
+    item: { id: "t2", title: "Queue", brief: "", accept: ["Waiters keep their place"] },
+    project: "demo", request: prereviewRequest(4), reviewer: "codex/gpt-6-astra", contributors: ["claude-code/opus-5.5"], bar: null,
+    binding: { head, criteria: SHA("b"), contributors: [], generation: 2, main: SHA("c"), tree: SHA("d") },
+    checks: ["npm test"], changed: ["src/queue.ts"], tests: [],
+    evidence: { runs: [
+      relayed("Journey suite on the Mac: 226 passed"),
+      relayed("Captures beside the mockup", { quote: "that matches the mockup" }),
+      relayed("Run at another head", {}, other),
+    ], required: ["npm test"] },
+    preparation: [], diffFile: ".scratch/atelier-review.diff", diffOmitted: null, slotNote: "", replyFormat: replyFormat(2),
+  });
+  assert.match(text, /- Journey suite on the Mac: 226 passed: relayed by owner \(acting claude-code\/opus-5\.5\) at aaaaaaaa, run outside this checkout/);
+  assert.match(text, /Captures beside the mockup: relayed by owner[^\n]*the developer's words/i);
+  assert.doesNotMatch(text, /Journey suite[^\n]*failed/);
+  assert.doesNotMatch(text, /Captures beside[^\n]*failed/);
+  assert.doesNotMatch(text, /Journey suite[^\n]*on the task's own tree/);
+  assert.doesNotMatch(text, /Run at another head/);
+  // Relayed text is not an observed check: the required check stays missing.
+  assert.match(text, /- npm test: no observed result at aaaaaaaa/);
+});
+
 test("a runner that takes reviews advertises pre-review, and takes gate reviews before pre-reviews and both before builds", () => {
   const reviewer = { agent: "codex", models: ["gpt-6-astra"], command: ["codex", "--model", "{model}", "{brief_file}", "{verdict_file}"] };
   assert.deepEqual(offerFrom({ agents: [reviewer], jobs: ["review"] }, "home:a").jobs, ["review", "prereview"]);

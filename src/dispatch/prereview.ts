@@ -338,7 +338,12 @@ export function prereviewBrief(input: PrereviewBriefInput): string {
   const required = input.checks;
   const runs = input.evidence?.runs ?? [];
   const atHead = runs.filter((r) => r.head === binding.head);
-  const results = atHead.map((r) => `- ${line1(r.claim)}: ${r.passed ? "passed" : "failed"} (${r.grade}${r.where ? `, ${r.where}` : ""}) at ${r.head.slice(0, 8)}, on the task's own tree`);
+  // Relayed evidence (src/relayed-evidence.ts) carries no pass or fail: it is
+  // text the developer's token vouched for, run elsewhere, so it says who
+  // relayed it and on whose words, never "failed" and never the own tree.
+  const results = atHead.map((r) => r.grade === "relayed"
+    ? `- ${line1(r.claim)}: relayed by ${line1(r.by)}${r.acting ? ` (acting ${line1(r.acting)})` : ""} at ${r.head.slice(0, 8)}, run outside this checkout${r.quote ? `; the developer's words: "${line1(r.quote)}"` : ""}${r.outputTail ? "; its output is in atelier show" : ""}`
+    : `- ${line1(r.claim)}: ${r.passed ? "passed" : "failed"} (${r.grade}${r.where ? `, ${r.where}` : ""}) at ${r.head.slice(0, 8)}, on the task's own tree`);
   const prose = proseStandardLine(input.proseStandard);
   const missing = required.filter((c) => !atHead.some((r) => r.claim === c && r.grade === "observed"));
   const omitted = [
