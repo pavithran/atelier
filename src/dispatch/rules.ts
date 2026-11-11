@@ -7,7 +7,7 @@ import { landingLeaseLapsed, type LandingLease } from "../landing-lease.ts";
 
 import { assertSingleFamily, DEFAULT_OWNER, harnessRefusal, overlappingLive, overlappingRefusal, roleRefusal, RuleError, samePlan, scopesOverlapWithin, validActor, type Item, type ItemState, type ProjectPolicy } from "../rules.ts";
 import type { RunnerMemory } from "../runners/memory.ts";
-import { holdsCore, holdEnds } from "./core-hold.ts";
+import { holdsCore, holdEnds, isFixRound } from "./core-hold.ts";
 import { assertLength, DISPATCH_NOTE_MAX } from "../text.ts";
 
 export type RunnerKind = "cloud" | "home";
@@ -350,6 +350,8 @@ function coreOverlaps(item: Item, items: readonly Item[], coreFiles: readonly st
   // A merge-main job runs on a task already claimed, which holds its core
   // files itself; the landing lease serializes its landing (t634).
   if (d.job !== undefined) return [];
+  // A fix round finishes the task that holds; it is never held (t677).
+  if (isFixRound(item, items)) return [];
   return items.flatMap((o) => {
     if (o.id === item.id || samePlan(item, o)) return [];
     const landing = lease?.item === o.id && !landingLeaseLapsed(lease, now) && o.state !== "merged" && o.state !== "abandoned";
