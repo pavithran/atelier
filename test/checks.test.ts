@@ -17,17 +17,22 @@ const refusedWith = (fn: () => unknown) => {
 };
 
 // claude plugin test and validate run a mod's tests locally and call no model.
-test("a required check may run claude plugin test and claude plugin validate", () => {
-  for (const command of ["claude plugin test", "claude plugin validate", "claude plugin test --verbose", "claude plugin validate ./loom"]) {
+for (const [name, command] of [
+  ["claude plugin test", "claude plugin test"],
+  ["claude plugin test with arguments", "claude plugin test --verbose"],
+  ["claude plugin validate", "claude plugin validate"],
+  ["claude plugin validate with arguments", "claude plugin validate ./loom"],
+]) {
+  test(`a required check may run ${name}`, () => {
     assert.equal(refusalOf(command), null, command);
-  }
-});
+  });
+}
 
-test("every other claude form is still refused as running a paid model", () => {
-  for (const command of ["claude", "claude -p x", "claude plugin install x", "claude plugin", "claude test plugin"]) {
+for (const command of ["claude", "claude -p x", "claude plugin install x", "claude plugin", "claude test plugin"]) {
+  test(`${command} is still refused as running a paid model`, () => {
     assert.match(refusalOf(command) ?? "", /paid model/, command);
-  }
-});
+  });
+}
 
 test("a command line reads as the simple commands it runs, past quotes, substitutions and redirections", () => {
   assert.deepEqual(simpleCommands("npm ci --no-fund && npm test"), [["npm", "ci", "--no-fund"], ["npm", "test"]]);

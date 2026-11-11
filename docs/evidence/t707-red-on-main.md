@@ -1,26 +1,37 @@
 # t707: claude plugin test and validate as required checks
 
-Command: `node test/checks.test.ts` via `node --test test/checks.test.ts`, in the host test slot.
+Command: `node --test test/checks.test.ts`, run through the host test slot.
+"Main" here is src/checks.ts as it was before the fix (`git show HEAD~1:src/checks.ts`, the parent of 4b1f04f4), with the new tests in place.
+Each accepted form is its own test, so each fails on its own.
 
-## On main's src/checks.ts (the new tests, fix removed)
+## On main's src/checks.ts
 
 ```
-✖ a required check may run claude plugin test and claude plugin validate
-  AssertionError: claude plugin test
-  + actual: 'runs a paid model (claude plugin test)'
-  - expected: null
-✔ every other claude form is still refused as running a paid model
-ℹ tests 9  ℹ pass 8  ℹ fail 1
+✖ a required check may run claude plugin test
+✖ a required check may run claude plugin test with arguments
+✖ a required check may run claude plugin validate
+✖ a required check may run claude plugin validate with arguments
+✔ claude is still refused as running a paid model
+✔ claude -p x is still refused as running a paid model
+✔ claude plugin install x is still refused as running a paid model
+✔ claude plugin is still refused as running a paid model
+✔ claude test plugin is still refused as running a paid model
+ℹ tests 16  ℹ pass 12  ℹ fail 4
 ```
 
-The refusal test passes on main because it pins behaviour that must not change.
+The five refusal tests pass on main because they pin behaviour that must not change.
 
 ## At the head
 
 ```
-✔ a required check may run claude plugin test and claude plugin validate
-✔ every other claude form is still refused as running a paid model
-ℹ tests 9  ℹ pass 9  ℹ fail 0
+✔ a required check may run claude plugin test
+✔ a required check may run claude plugin test with arguments
+✔ a required check may run claude plugin validate
+✔ a required check may run claude plugin validate with arguments
+✔ claude is still refused as running a paid model
+✔ claude -p x is still refused as running a paid model
+✔ claude plugin install x is still refused as running a paid model
+✔ claude plugin is still refused as running a paid model
+✔ claude test plugin is still refused as running a paid model
+ℹ tests 16  ℹ pass 16  ℹ fail 0
 ```
-
-`npm run typecheck` (`tsc -p . && tsc -p test`) passes.
