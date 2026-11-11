@@ -23,7 +23,20 @@ a606360f. `GET /api/version` now reports `version`.
 - Tasks carry a priority of 1 to 3: `new` and `edit` take `--priority`, and
   `show`, `ls` and `queue` print it (t653, t654).
 - Tasks can name a design note, and tasks naming one note wait for each
-  other (t538).
+  other (t538). A design note records how many tasks it plans, and `atelier
+  status` lists the planned tasks not yet filed (t601).
+- A dispatch on criteria names the reviewer PAVI chose, a claimed task's
+  criteria review is offered to its reviewer, and a submit that names a
+  reviewer asks that review or records why not. Anyone can ask a submitted
+  task's review without the orchestrator (t587, t565, t566, t513).
+- A dispatch is not held by a task that is itself blocked by it (t583).
+  A rework round that adds no commit is not resubmitted at the rejected
+  head, and a review that says "too long" is not read as a size refusal
+  (t548, t554).
+- A criteria review asks how a task behaves on crash, retry, repeat and
+  timeout (t535).
+- The stuck-stage events, the extra tier review and the media secret flag
+  are gone (t518).
 
 ### Landing, deploy and ship
 
@@ -36,6 +49,11 @@ a606360f. `GET /api/version` now reports `version`.
   t592, t584, t468, t472, t475, t481).
 - A ship waiting at the deploy password records it, so a pulse wakes the
   session (t593).
+- A project can require its full visual suite as a landing check, and a
+  seconds-long landing check runs the tests that scan the source (t517,
+  t512).
+- A ship's wrap step fails when the deploy passes but the wrap does not
+  (t515).
 - A merge-main job is never held by a core-file hold, and a core-file hold
   lasts until the holding task merges (t634, t537).
 
@@ -52,6 +70,10 @@ a606360f. `GET /api/version` now reports `version`.
 - The test slot pool works across users and survives a reboot (t480). The
   full suite runs once per submission, by the runner, not the builder
   (t336, t479).
+- A builder is not started when the fork already holds the committed result
+  (t335). The Tapestries build runner can run a project's browser tests
+  (t605). `atelier runner --usage` accepts `--claude-capture` from the real
+  CLI (t573).
 - A project's direct commits carry onto 2.0 in one command (t418).
 
 ### Models and usage
@@ -70,6 +92,9 @@ a606360f. `GET /api/version` now reports `version`.
   stage track and evidence (t562, t585, t586).
 - A Process tab maps the task flow with time per phase (t558). A Rigs page
   shows each machine as a signal box with its tracks (t608).
+- Today's Running rows show the machine, model and how each run is going;
+  the Now view lists every live task, who it waits on and since when (t578,
+  t525).
 - Answer, Override, and Land act from Today and the task page as PAVI
   (t596, t594).
 - ntfy is removed; notices stay in the ledger and reach PAVI in chat
@@ -88,6 +113,7 @@ a606360f. `GET /api/version` now reports `version`.
 
 ### Smaller changes
 
+- `atelier report`'s help states its length limit (t553).
 - Refusals name their next step (t511). `atelier show`, `log`, `flow`,
   `stuck` and `init` say more about the work they report (t482, t460,
   t457, t467, t448, t531, t489).
