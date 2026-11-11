@@ -47,6 +47,7 @@ import { settleAffectedTests } from "./affected-tests.ts";
 import { checkLimits, STOP_WORDS, TIMEOUT_FACT, type CheckLimits, type CheckSilence } from "./check-limit.ts";
 import { settleCommitIdentity, type CommitIdentityInit } from "./commit-identity.ts";
 import { assertLength, NOTE_MAX, TEXT_CONTROLS } from "./text.ts";
+import { RELAYED, relayedEntry, sameRelayed } from "./relayed-evidence.ts";
 import { INBOX_NOTICE, NOTICE_KINDS, STUCK_DIGEST_NOTICE, USAGE_ALERT } from "./notify.ts";
 import { ago } from "./floor.ts";
 
@@ -4937,6 +4938,27 @@ export class Ledger extends DurableObject<Env> {
     // on to need its review again: a request the move withdrew is carried.
     this.reaskReview(e.itemId, new Date().toISOString());
     this.afterPlanChange(e.itemId);
+  }
+
+  // Text the orchestrator records at the task's head for the developer (t497,
+  // src/relayed-evidence.ts). The entry and its event are written in this one
+  // synchronous call, so a crash leaves both or neither; calls to one Ledger
+  // run one after the other, so the second of two identical calls finds the
+  // first and records nothing. The gate and the stage never read it.
+  addRelayedEvidence(id: string, body: Record<string, unknown>, by: string, acting: string | null): { alreadyRecorded: boolean } {
+    const item = this.item(id);
+    assertNotTerminal(item);
+    if (!item.head) throw new RuleError("no_head", `${id} has no recorded head yet, so there is nothing to record evidence at`, 409, "wait for the builder's push, then run atelier evidence again");
+    const at = new Date().toISOString();
+    const e = relayedEntry(id, body, by, acting, at);
+    if (e.head !== item.head) {
+      throw new RuleError("stale_head", `evidence is for ${e.head.slice(0, 8) || "no head"} but ${id} is at ${item.head.slice(0, 8)}; record it at the current head`, 409, `run atelier evidence ${id} --head ${item.head} --note TEXT`);
+    }
+    const rows = this.sql.exec(`SELECT json FROM evidence WHERE item_id = ?`, id).toArray().map((r) => JSON.parse(r.json as string) as Evidence);
+    if (rows.some((r) => sameRelayed(r, e))) return { alreadyRecorded: true };
+    this.sql.exec(`INSERT INTO evidence (item_id, json) VALUES (?, ?)`, id, JSON.stringify(e));
+    this.log(id, by, `evidence.${RELAYED}`, { claim: e.claim, head: e.head, ...(e.quote ? { quote: e.quote } : {}), ...(e.acting ? { acting: e.acting } : {}), ...(e.outputTail ? { outputLength: e.outputLength } : {}) }, at);
+    return { alreadyRecorded: false };
   }
 
   private reviewItem(id: string): Item {

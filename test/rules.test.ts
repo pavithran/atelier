@@ -141,6 +141,22 @@ test("a report never satisfies a check", () => {
   assert.match(g.blockers.join(), /not yet observed/);
 });
 
+test("evidence the orchestrator relayed (t497) changes no gate result: a pending check stays pending, a failed one stays failed", () => {
+  const relayed: Evidence = { itemId: "t1", claim: "npm test passed on the Mac: 226 of 226", grade: "relayed", head: H1, passed: null, by: "owner", at: T, acting: "claude-code/opus-5.5" };
+  const namesCommand: Evidence = { ...relayed, claim: "npm test" };
+  for (const e of [relayed, namesCommand]) {
+    assert.deepEqual(evidenceAt(policy, [e], H1).checks, [{ claim: "npm test", grade: "pending", passed: null }]);
+    const pending = gate(item(), policy, [e], []);
+    assert.equal(pending.ready, false);
+    assert.match(pending.blockers.join(), /not yet observed/);
+    assert.deepEqual(gate(item(), policy, [e], []), gate(item(), policy, [], []));
+    const failed = gate(item(), policy, [pass({ passed: false }), e], []);
+    assert.deepEqual(failed, gate(item(), policy, [pass({ passed: false })], []));
+    assert.match(failed.blockers.join(), /failed when observed/);
+    assert.deepEqual(gate(item(), policy, [pass(), e], []), { ready: true, blockers: [], needsAssessor: false, outOfScope: [] });
+  }
+});
+
 test("observed pass at head with ordinary paths is ready", () => {
   const g = gate(item(), policy, [pass()], []);
   assert.deepEqual(g, { ready: true, blockers: [], needsAssessor: false, outOfScope: [] });

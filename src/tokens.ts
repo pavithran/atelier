@@ -96,7 +96,7 @@ export function agentRoute(method: string, parts: string[], body: Record<string,
   // criteria reviewer's claim, verdict and failure (t438); asking for one
   // and resolving its findings stay the owner's.
   if (method === "GET") return parts.length === 4 || parts.length === 5 && ["brief", "diff", "job-brief", "criteria-reviews", "runner-log"].includes(verb) || parts.length === 6 && ["logs", "diffs"].includes(verb);
-  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock"].includes(verb);
+  return method === "POST" && parts.length === 5 && ["claim", "fast-take", "fast-ready", "push", "evidence", "review", "review-claim", "review-renew", "review-release", "review-unparsable", "criteria-review-claim", "criteria-review", "criteria-review-failed", "submit", "handoff", "release", "plan", "integrated", "integration-failed", "refreshed", "refresh-failed", "refresh-lease", "refresh-pushing", "refresh-checked", "block", "unblock", "evidence-note"].includes(verb);
 }
 
 // A separate allowlist: runner credentials never inherit an agent's review,

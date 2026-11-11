@@ -2829,6 +2829,17 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       await L.addEvidence(e, c.url.origin, !!c.token);
       return json(await L.detail(id));
     }
+    // Text the orchestrator records at the task's head for the developer
+    // (t497). The developer token alone: an agent's own token, or any actor
+    // but the developer's, is refused before the body is read. The actor is
+    // the developer's and the acting model the door required, neither from
+    // the body; the Ledger checks the head and the task's state.
+    case "evidence-note": {
+      if (c.token) throw new RuleError("not_project_owner", "only the developer's token records evidence for the orchestrator; an agent's own token cannot", 403, "only the developer can: atelier evidence ID --head SHA --note TEXT");
+      requireOwner(env, actor);
+      const { alreadyRecorded } = await L.addRelayedEvidence(id, body, actor, c.acting ?? null);
+      return json({ ...(await L.detail(id)), alreadyRecorded });
+    }
     case "dispatch": {
       const dispatchRoute = async (): Promise<Response> => {
         assertNotTerminal(await L.item(id));

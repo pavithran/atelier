@@ -8,6 +8,7 @@ import { queueReasons } from "../status.mjs";
 import { fenceText, PREREVIEW_JOB, prereviewLines } from "../../src/dispatch/prereview.ts";
 import { deployText } from "../../src/checkout-lease.ts";
 import { progressView } from "../../src/situation.ts";
+import { cutText, isRelayed, relayedWords } from "../../src/relayed-evidence.ts";
 import { lastRunText, progressText } from "../situation.mjs";
 
 export default async function showCommand() {
@@ -83,7 +84,9 @@ export default async function showCommand() {
   // model acts on by command, since the server files and re-points nothing.
   const notes = d.notes ?? [], unclaimed = d.openRequests ?? [], lapsed = d.lapsedRequests ?? [];
   const reviewState = d.item ? reviewStateOf(d) : null;
-  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(stage ? { stage } : {}), ...(d.item ? { reviewState } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
+  // Text the orchestrator recorded for the developer (t497), apart from checks and reports.
+  const relayed = (d.evidence ?? []).filter(isRelayed);
+  if (args.json) return console.log(JSON.stringify({ ...(d.item ? taskJson(d, queued, why) : {}), ...(lapsed.length ? { lapsedRequests: lapsed } : {}), ...(notes.length ? { notes } : {}), ...(unclaimed.length ? { openRequests: unclaimed } : {}), ...brief, ...(acted.length ? { acted } : {}), ...(relayed.length ? { relayedEvidence: relayed } : {}), ...(stage ? { stage } : {}), ...(d.item ? { reviewState } : {}), ...(limit ? { checkLimit: { ...limit, checkSilence: d.policy.checkSilence ?? [] } } : {}), ...(filed ? { brief: filed } : {}), reviews: newestReviews(d?.reviews ?? []), unparsable: newestReviews(d?.unparsable ?? []), ...(d?.reviewClaims?.length ? { reviewClaims: d.reviewClaims } : {}), failedChecks: failures.map(failureJson), ...(d?.criteriaReview ? { criteriaReview: d.criteriaReview } : {}), ...(why.length ? { why } : {}), ...(prereview ? { prereview } : {}), ...(fence ? { prereviewFence: fence } : {}), ...(deploy ? { lastDeploy: deploy } : {}), ...(d.landing ? { landing: d.landing } : {}), ...(progress ? { progress } : {}), ...(d.lastRun ? { lastRun: d.lastRun } : {}) }, null, 2));
   const blocks = [formatBrief(name, id, brief, server())];
   if (reviewState) blocks.push(reviewStateText(reviewState));
   blocks.push(...repairLines(d.repairs));
@@ -109,6 +112,7 @@ export default async function showCommand() {
   if (lapsed.length) blocks.push(lapsed.map((r) => endedLine(id, r)).join("\n"));
   if (unclaimed.length) blocks.push(unclaimed.map((r) => unclaimedLine(id, r)).join("\n"));
   if (notes.length) blocks.push(["Notes (atelier file-fix " + id + " --from-note N files one):", ...notes.map(noteLine)].join("\n"));
+  if (relayed.length) blocks.push(["Evidence recorded by the orchestrator for the developer (no check, no report):", ...relayed.map(relayedLine)].join("\n"));
   if (acted.length) blocks.push(["Acts on the developer token:", ...acted.map(actedLine)].join("\n"));
   if (args.reviews) blocks.push(formatReviews(d?.reviews ?? [], d?.ownerActor, d?.unparsable ?? [], d?.reviewClaims ?? []));
   if (args.reviews && d?.criteriaReview) blocks.push(formatCriteriaReviews(d.criteriaReview));
@@ -160,6 +164,11 @@ export function actedThroughOwner(events, id) {
     .filter((e) => e.itemId === id && typeof e.data?.acting === "string" && e.data.acting)
     .map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, actor: e.actor, acting: e.data.acting, ...(typeof e.data.quote === "string" && e.data.quote ? { quote: e.data.quote } : {}) }))
     .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+}
+
+export function relayedLine(e) {
+  const cut = cutText(e);
+  return `  ${String(e.at ?? "").slice(0, 16).replace("T", " ")} at ${String(e.head).slice(0, 8)} by ${flat(e.by)}, acting ${flat(e.acting ?? "no model named")}${flat(relayedWords(e))}: ${flat(e.claim)}${e.outputTail ? ` [file: ${e.outputLength ?? e.outputTail.length} characters${cut ? `, ${cut}` : ""}]` : ""}`;
 }
 
 export function actedLine(a) {
