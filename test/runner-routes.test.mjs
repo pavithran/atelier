@@ -654,8 +654,8 @@ async function claimed(p, token, id, offer = OFFER) {
 // A task built and submitted under the token, with a measured passing check
 // at H1, and a review of it asked of REVIEWER: the review job as the queue
 // offers it, with its request number.
-async function reviewJob(p, token) {
-  const id = await task(p, "Review me");
+async function reviewJob(p, token, title = "Review me") {
+  const id = await task(p, title);
   await dispatch(p, id);
   await claimed(p, token, id);
   const api = under(token);
@@ -952,7 +952,7 @@ test("the task refresh's lease calls are the integrator's agent token's: a runne
   const p = await project();
   const token = await issue(p);
   const api = under(token);
-  const { id } = await reviewJob(p, token), other = await reviewJob(p, token);
+  const { id } = await reviewJob(p, token), other = await reviewJob(p, token, "Review me too");
   await p.L.noteMainHead("a".repeat(40));
   const integrator = await expect(call("POST", "/tokens", { body: { actor: "atelier/integrator", projects: [p.name] } }), 201, "integrator's agent token");
   const as = (verb, body) => call("POST", `${p.base(id)}/${verb}`, { token: integrator.token, actor: "atelier/integrator", runner: RUNNER, body });

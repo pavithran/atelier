@@ -2611,7 +2611,7 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
   if (parts.length === 3 && m === "POST") {
     const fields = itemFields(body);
     assertCriteriaAllowed((await L.project().catch(() => null))?.policy ?? {}, fields.accept);
-    return json(await L.newItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields), 201);
+    return json(await L.fileItem(String(body.title ?? ""), asStrings(body.scope, "scope"), actor, fields, body.duplicateOk === true), 201);
   }
   if (parts.length === 3 && m === "GET") return json(await L.items());
 

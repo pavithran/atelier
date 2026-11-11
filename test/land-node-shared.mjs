@@ -123,7 +123,7 @@ export async function landingWorld(t) {
   // its head checked (every required check passing, observed at the head)
   // and, unless approve is false, approved by a model of another family.
   const task = async ({ files, title = "a task", approve = true, submit = true }) => {
-    const r = await api("POST", "/projects/demo/items", { title });
+    const r = await api("POST", "/projects/demo/items", { title, duplicateOk: true });
     assert.equal(r.status, 201, r.text);
     const id = (r.json.item ?? r.json).id;
     const claimed = await cli(["claim", id, "--as", BUILDER], { token: agentToken, cwd: root });

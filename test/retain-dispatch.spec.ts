@@ -43,7 +43,7 @@ it("--overlap-ok on a held dispatch keeps its builder and place, is idempotent, 
   await L.claim(live.id, A);
   await L.setWorkspace(live.id, `${name}--${live.id}`, H0, A);
 
-  const make = async () => ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
+  const make = async () => ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"], duplicateOk: true })).json()) as { id: string }).id;
   const dispatchOf = async (id: string, body: unknown) => {
     const res = await call("POST", `/projects/${name}/items/${id}/dispatch`, body);
     return { status: res.status, body: (await res.json()) as { dispatch?: Record<string, unknown>; suggestion?: unknown } };
@@ -117,7 +117,7 @@ it("--overlap-ok with a builder the owner holds from building is refused and cha
   await index.putModel(entry("qwen3-coder-next", { state: "paused", stateAt: "2026-10-06T12:00:00.000Z", note: "AI Studio down" }));
   await index.putModel(entry("kimi-k3", { roles: ["review"] }));
   acting = "opencode/glm-5.3-flash";
-  const id = ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"] })).json()) as { id: string }).id;
+  const id = ((await (await call("POST", `/projects/${name}/items`, { title: "Core edit", scope: ["src/ledger.ts"], duplicateOk: true })).json()) as { id: string }).id;
   const first = await call("POST", `/projects/${name}/items/${id}/dispatch`, { to: "home", agent: "opencode", model: "glm-5.3-flash", note: "keep" });
   const { dispatch } = (await first.json()) as { dispatch: Record<string, unknown> };
   for (const [model, why] of [["qwen3-coder-next", /paused since 2026-10-06 \(the developer's standing\): AI Studio down/], ["kimi-k3", /not a builder; its roles are review/]] as const) {
