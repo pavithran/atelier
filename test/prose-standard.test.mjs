@@ -244,3 +244,37 @@ test("a workspace that is not a repository still gets the copy", () => {
   assert.ok(staged.includes("`.scratch/prose-standard.md`"), staged);
   assert.equal(readFileSync(join(plain, ".scratch", "prose-standard.md"), "utf8"), STANDARD);
 });
+
+// t671: PRODUCT.md and DESIGN.md named Home and Decisions as the main pages and
+// said Cloudflare Artifacts stored code, after Atelier 2.0 and the Today
+// redesign. The names are compared with the navigation list in src/ui.ts.
+const rootText = (name) => readFileSync(new URL(`../${name}`, import.meta.url), "utf8");
+const navLabels = [...rootText("src/ui.ts").match(/const NAV: [^=]*= \[([\s\S]*?)\n\];/)[1].matchAll(/\["([^"]+)",/g)].map((m) => m[1]);
+// Names DESIGN.md gives to pages that the bar does not list: the tabs inside a
+// project's area and the account menu's page.
+const NOT_IN_BAR = new Set(["A project's area", "Code", "Log", "Usage"]);
+
+test("the navigation list is read from src/ui.ts", () => {
+  assert.deepEqual(navLabels, ["Today", "Projects", "History", "Process", "Models", "Rigs"]);
+});
+
+test("DESIGN.md names every page the navigation renders, and no other bar page", () => {
+  const section = rootText("DESIGN.md").split("## What the pages are for")[1].split("\n## ")[0];
+  const named = [...section.matchAll(/^- \*\*([^*]+)\*\*/gm)].map((m) => m[1]);
+  for (const label of navLabels) assert.ok(named.includes(label), `DESIGN.md does not name ${label}`);
+  for (const name of named) assert.ok(navLabels.includes(name) || NOT_IN_BAR.has(name), `DESIGN.md names ${name}, which the navigation does not render`);
+});
+
+test("PRODUCT.md names only pages the navigation renders as current pages", () => {
+  const product = rootText("PRODUCT.md");
+  for (const gone of ["Home", "Decisions", "Studio", "Now"]) assert.ok(!new RegExp(`\\b${gone} (is|puts)\\b`).test(product), `PRODUCT.md names ${gone} as a page`);
+  assert.match(product, /\bToday\b/);
+});
+
+test("PRODUCT.md and DESIGN.md do not put Atelier or its code on Cloudflare Workers, Durable Objects or Artifacts", () => {
+  for (const file of ["PRODUCT.md", "DESIGN.md"]) {
+    const text = rootText(file);
+    assert.ok(!/Durable Object|Cloudflare Workers?|Artifacts/i.test(text), `${file} names a Cloudflare runtime or store`);
+  }
+  assert.match(rootText("PRODUCT.md"), /bare Git repository/i);
+});

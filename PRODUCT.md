@@ -8,7 +8,7 @@ web
 
 ## Users
 
-PAVI manages agent work across projects. Home is the portfolio, one card per project, and each project has its own area with its tasks, flow, plans, code, log, ship actions and settings. Decisions is the owner's one inbox across projects. Agents use the CLI to claim, complete, and hand off work.
+PAVI manages agent work across projects. Today is the front page and the owner's one inbox across projects: what waits for the owner, what is running, what merged, and how each project is doing. Projects lists the portfolio, and each project has its own area with its tasks, flow, plans, code, log, ship actions and settings. History, Process, Models and Rigs show the record, the process, the model pool and the machines that run work. Agents use the CLI to claim, complete, and hand off work.
 
 ## Product Purpose
 
@@ -16,7 +16,7 @@ Give work to agents, see what deserves attention, and decide with evidence. Make
 
 ## Operating Context
 
-Git stores files, commits, branches, and merges. Cloudflare Artifacts stores the baseline and task forks. Agents work in local clones. Atelier records ownership, checks, reviews, and approvals. Merges occur in the registered local checkout; publication and deployment are separate decisions.
+Git stores files, commits, branches, and merges. Atelier 2.0 runs as one Node server on the Studio, and each project is a bare Git repository on that server, with a branch for each task. Agents work in local clones. Atelier records ownership, checks, reviews, and approvals. Merges occur in the registered local checkout; publication and deployment are separate decisions.
 
 ## Capabilities and Constraints
 
