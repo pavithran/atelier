@@ -8,7 +8,7 @@
 // Each test drives the real Node server and its hook (test/land-node-shared.mjs).
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { eventsOf, landingWorld, waitFor } from "./land-node-shared.mjs";
+import { REVIEWER, eventsOf, landingWorld, waitFor } from "./land-node-shared.mjs";
 
 const offer = { runner: "home:studio", jobs: ["land"], checkouts: ["demo"] };
 const offered = async (w) => (await w.L().landJobs(offer, ["demo"])).map((i) => i.id);
@@ -69,6 +69,9 @@ test("a failed landing is not offered again until it is queued again or its head
   assert.deepEqual(await offered(w), []);
   await w.L().recordPush(id, "codex/gpt-6", "c".repeat(40), "c".repeat(40), false, { holdsRecorded: true, rebasedFrom: null }, []);
   assert.equal((await w.detail(id)).item.head, "c".repeat(40));
+  // The earlier approval is for the old head (t632): the job waits for one at the new head.
+  assert.deepEqual(await offered(w), []);
+  await w.L().addReview({ itemId: id, by: REVIEWER, head: "c".repeat(40), approve: true, criteria: (await w.detail(id)).criteria, note: "Fine", at: new Date().toISOString() }, undefined, true);
   assert.deepEqual(await offered(w), [id]);
 });
 

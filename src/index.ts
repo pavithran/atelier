@@ -1896,8 +1896,10 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
         // A landing queued for a runner that holds this project's registered
         // checkout (t226) goes to that runner alone.
         const landings = offer && (offer.jobs ?? []).includes("land") ? await L.landJobs(offer, namesOf(p)) : [];
+        // The owner's listing names a landing withheld for want of an approval (t632); a runner's poll never carries it.
+        const withheld = offer ? [] : await L.withheldLandings();
         for (const b of projectBusy) busy.set(b.runner.toLowerCase(), `${p.name}/${b.id}`);
-        return [...held, ...waiting, ...reviews, ...refreshes, ...landings].map((item) => ({ project: p.name, item }));
+        return [...held, ...waiting, ...reviews, ...refreshes, ...landings, ...withheld].map((item) => ({ project: p.name, item }));
       }
       catch { unreadable.push(p.name); return []; }
     }));

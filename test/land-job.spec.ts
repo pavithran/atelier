@@ -20,6 +20,14 @@ async function setup(name: string) {
   await L.setProject(record, OWNER);
   return L;
 }
+// A pushed head with an approval a landing counts (t632): the queue offers a landing no sooner.
+const HEAD = "a".repeat(40);
+async function approvedAt(L: Awaited<ReturnType<typeof setup>>, id: string, claimed = false) {
+  if (!claimed) await L.claim(id, "codex/gpt-6-astra");
+  await L.setWorkspace(id, `land-job--${id}`, "0".repeat(40), "codex/gpt-6-astra");
+  await L.recordPush(id, "codex/gpt-6-astra", HEAD, HEAD);
+  await L.addReview({ itemId: id, by: "claude-code/opus-5.5", head: HEAD, criteria: await L.criteria(id), approve: true, note: "Works", at: new Date().toISOString() }, undefined, true);
+}
 const offer = (over: Partial<RunnerOffer> = {}): RunnerOffer => ({ runner: "home:studio", kind: "home", agents: [], jobs: ["land"], checkouts: ["land-job"], ...over });
 
 it("a queued landing is offered to a runner that lists the job and holds the checkout, and to no other", async () => {
@@ -29,6 +37,9 @@ it("a queued landing is offered to a runner that lists the job and holds the che
   expect((await L.requestLand(id, OWNER)).queued).toBe(true);
   // Asked twice, it keeps its place.
   expect((await L.requestLand(id, OWNER)).queued).toBe(false);
+  // Queued but not offered until an approval stands at its head (t632).
+  expect(await L.landJobs(offer(), ["land-job"])).toEqual([]);
+  await approvedAt(L, id);
   const jobs = await L.landJobs(offer(), ["land-job"]);
   expect(jobs.map((j) => [j.id, j.dispatch?.job])).toEqual([[id, "land"]]);
   // No checkout of this project, no checkouts at all, or the job unlisted.
@@ -59,6 +70,7 @@ it("a queued landing of a claimed task is in the runner's queue answer, as ordin
   await env.LEDGER.get(env.LEDGER.idFromName("__index")).registerProject({ name, repo: `${name}--baseline`, policy: { checks: ["npm test"], protected: [] }, createdAt: new Date().toISOString() });
   const { id } = await L.newItem("Held", ["src/**"], OWNER);
   await L.claim(id, "codex/gpt-6-astra");
+  await approvedAt(L, id, true);
   await L.requestLand(id, OWNER);
   const res = await queue({ runner: "home:studio", kind: "home", agents: [], jobs: ["land"], checkouts: [name] });
   expect(res.status).toBe(200);

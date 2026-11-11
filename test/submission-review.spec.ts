@@ -92,6 +92,9 @@ test("dispatch uses the project's named reviewer mapping when --land omits --rev
   assert.equal((await L.item(id)).reviewAskedHead, head);
   assert.equal((await L.ownerRead(new Date().toISOString())).items[0].reviewAskedHead, head);
   const offer = { ...runner, agents: [], jobs: ["land"], checkouts: [name] };
+  // The queued landing waits for an approval at its head (t632).
+  assert.deepEqual(await L.landJobs(offer, [name]), []);
+  await L.addReview({ itemId: id, by: reviewer, head, criteria: await L.criteria(id), approve: true, note: "Works", at: new Date().toISOString() }, undefined, true);
   assert.equal((await L.landJobs(offer, [name]))[0]?.id, id);
   assert.doesNotMatch(formatStatus([{ name, items, inbox: await L.inbox(new Date().toISOString()) }]), /Waiting on the orchestrator/);
 });
