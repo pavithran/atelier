@@ -318,7 +318,12 @@ and the round is asked again.
   asked for by `atelier land` either, and says why. The developer decides
   whether the approach should change, unblocks the task, and asks another
   round with `atelier land ID --reviewer H/M`; a named reviewer is the
-  developer's request and passes the cap. A plan's part is held by its plan,
+  developer's request and passes the cap. The unblock needs the developer's
+  words, except once per task (t623): when the criteria were revised after
+  the rejection that reached the cap and another family than every
+  contributor approved that revision's criteria review, `atelier unblock`
+  lifts it with no words and records the revision and review. A second cap
+  on the task needs the developer's words. A plan's part is held by its plan,
   which blocks it when the builder's attempts run out.
 - **A re-review reads the diff since the last reviewed head.** From the second
   round the reviewer is given the diff from the last head a review judged to

@@ -2937,8 +2937,18 @@ async function api(c: Ctx, parts: string[]): Promise<Response> {
       // A block that is a fact (G7: a run stopped at its limit) is lifted by
       // the model as a fact: no developer's words are asked for, though words
       // given are still checked and recorded.
-      const blocked = (c.body as Record<string, unknown>).quote === undefined ? (await L.item(id)).blocked : null;
-      return json(await L.unblock(id, actor, !!c.token, blocked?.fact ? null : itemDirection(c, "unblock", id, ref.name, env)));
+      // A round cap with no words is judged by the Ledger (t623), as the
+      // developer's call whichever actor the session names on the developer
+      // token: it lifts on an approved revision of the criteria, else it
+      // refuses naming both paths.
+      // With words given the route is as it always was: they are checked and recorded.
+      const noQuote = (c.body as Record<string, unknown>).quote === undefined;
+      const blocked = noQuote ? (await L.item(id)).blocked : null;
+      // With none, a task that is neither blocked nor fenced by a pre-review
+      // answers not_blocked before any direction check, as a repeat does.
+      if (noQuote && !blocked && !await L.hasPrereviewFence(id)) throw new RuleError("not_blocked", `${id} is not blocked`, 409);
+      const capped = noQuote && !!blocked && !c.token && await L.heldAtRoundCap(id);
+      return json(await L.unblock(id, capped ? ownerActor(env) : actor, !!c.token, blocked?.fact || capped ? null : itemDirection(c, "unblock", id, ref.name, env)));
     }
     case "clear-secret":
       requireOwner(env, actor);

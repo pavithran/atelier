@@ -253,6 +253,22 @@ they are refused (`direction_needed`), since a model is always acting.
 its model and, where given, the words; `show --json` carries them as
 `acted`.
 
+**A review round cap lifts once without the developer's words** (t623;
+PAVI, 9 November 2026: "make it rare that you need me involved"). A task held
+at the cap normally needs `atelier unblock ID --quote WORDS --as H/M`. When
+the block traces to a criterion, the fix is already decided, so the call needs
+no words if all three hold: (a) the task's criteria were revised after the
+rejection that reached the cap; (b) a criteria review of that revision is
+approved by a reviewer of another family than every contributor to the task;
+(c) the task has not been unblocked this way before. `atelier unblock ID --as
+H/M` then lifts the block, and the `item.unblocked` event names the criteria
+revision, the criteria review and the acting model, so `atelier show ID` lists
+it among the acts on the developer token. A refusal says which condition
+failed. A second round-cap block on the same task, and every other block that
+needs the developer's words today, still needs them. The rule is the pure
+function in `src/review/round-cap-unblock.ts`; the Ledger gathers the facts
+and calls it in the one call that writes the event.
+
 **Contributions.** Criteria stored on a model's word are that model's
 revision: the criteria review refuses the same model, under any harness, as
 their reviewer. A push recorded on a model's word counts that model as a
