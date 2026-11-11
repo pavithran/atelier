@@ -44,7 +44,7 @@ export default async function newCommand() {
     const twins = liveDuplicates(filedTitle, scope, items);
     if (twins.length) die(`a live task already covers this work, so nothing was filed:\n${twins.map((i) => `  ${i.id}  ${flat(i.title)}  (${i.state}, ${i.owner ?? "unclaimed"})`).join("\n")}\nPass --duplicate-ok to file it anyway.`);
   }
-  const item = await call("POST", `${P(name)}/items`, { title, scope, ...fields }, as);
+  const item = await call("POST", `${P(name)}/items`, { title, scope, ...fields, ...(args["duplicate-ok"] === true ? { duplicateOk: true } : {}) }, as);
   console.log([
     `${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`,
     ...(item.derived ? [`The text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit ${item.id} --title "TEXT".`] : []),

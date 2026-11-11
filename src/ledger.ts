@@ -937,6 +937,8 @@ type ImportMark = {
 // a restart asked for after a deploy waits until no call is in flight.
 const GATES = new WeakMap<object, RestartGate>();
 
+const TWIN_WINDOW_MS = 10 * 60_000;
+
 export class Ledger extends DurableObject<Env> {
   private sql: SqlStorage;
   #ownerAssignment = false;
@@ -2884,6 +2886,21 @@ export class Ledger extends DurableObject<Env> {
     }
     // `areas` stays, empty, for an older CLI whose board command reads it.
     return { areas: [], items, facts };
+  }
+
+  // The create route's filing (t552): refused when a live task of this project
+  // filed in the last 10 minutes has the same title, brief and scope, unless
+  // `duplicateOk`. The check and the filing are one synchronous step.
+  fileItem(title: string, scope: string[], actor: string, fields: ItemFields, duplicateOk: boolean): ReturnType<Ledger["newItem"]> {
+    if (!duplicateOk) {
+      const text = itemText(title, fields.brief);
+      const key = (s: string[]) => JSON.stringify([...s].sort());
+      const since = new Date(Date.now() - TWIN_WINDOW_MS).toISOString();
+      const twin = this.sql.exec(`SELECT id, scope FROM items WHERE title = ? AND COALESCE(brief, '') = ? AND state NOT IN ('merged', 'abandoned') AND created_at >= ? ORDER BY created_at DESC`, text.title, text.brief ?? "", since)
+        .toArray().find((r) => key(JSON.parse(r.scope as string)) === key(scope));
+      if (twin) throw new RuleError("duplicate", `already filed as ${twin.id}: a live task with this title, brief and scope was filed in the last 10 minutes, so nothing was filed`, 409, "work on that task, or file again with duplicateOk (atelier new --duplicate-ok) if a second is meant");
+    }
+    return this.newItem(title, scope, actor, fields);
   }
 
   // `title` is what the creator sent as the title, and `fields.brief` the
