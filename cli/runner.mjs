@@ -4649,7 +4649,7 @@ export async function machineReading({ os = { hostname, cpus, loadavg, freemem, 
   };
 }
 
-export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, machine = machineReading, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
+export async function runRunner(args, { credential, queue, workspacePath, jobBrief, postPlan, hasPreparation, taskIO = {}, wait = delay, executeChild = execute, reportRun, reportReviewSkip, reportRunSkip, baselineHead, baselineGrant, checkoutOf, checkouts = [], landJournal = () => false, version, tokenProjects, idleWhy, heartbeat, heartbeatMs = HEARTBEAT_MS, machine = machineReading, api, now = Date.now, limitFile, readServer, reload, harnessReady: readyCheck = harnessReady, oneShot, projectPolicy }) {
   runnerUsage(args);
   const preparationTimeoutMs = prepareTimeout();
   const integrating = args.integrate === true;
@@ -5139,9 +5139,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
   const runLandTask = async (task) => {
     const { project, item } = task, dir = checkouts.includes(project) ? checkoutOf?.(project) : null;
     if (!dir) return { phase: "failed", refused: true, reason: `this runner holds no registered checkout of ${project}` };
-    const git = async (argv) => {
-      const r = await executeChild(["git", ...argv], { cwd: dir, capture: true, captureError: true, timeoutMs: 30_000, signal: controller.signal }).catch(() => ({ code: null, output: "" }));
-      return { code: r.code, output: r.output ?? "" };
+    const git = async (argv, { env: extra } = {}) => {
+      const r = await executeChild(["git", ...argv], { cwd: dir, ...(extra ? { env: { ...process.env, ...extra } } : {}), capture: true, captureError: true, timeoutMs: 30_000, signal: controller.signal }).catch(() => ({ code: null, output: "" }));
+      return { code: r.code, output: r.output ?? "", stderr: r.stderr ?? "", timedOut: r.timedOut === true };
     };
     const env = { ...process.env }; delete env.ATELIER_RUNNER_NAME;
     // The task is read as the developer, as the landing itself is: the
@@ -5162,8 +5162,9 @@ export async function runRunner(args, { credential, queue, workspacePath, jobBri
         const reviews = shown.code === 0 ? (JSON.parse(shown.output).reviews ?? []).map((r) => `${r.by}@${r.at}`).join(",") : "";
         return { state: found.state, key: `${found.head}|${reviews}` };
       },
-      checkout: dir, git, hasJournal: () => landJournal(dir),
+      checkout: dir, git, project, hasJournal: () => landJournal(dir),
       baselineHead: async () => (baselineHead ? baselineHead(project, task.actor, controller.signal).catch(() => null) : null),
+      baselineGrant: async () => (baselineGrant ? baselineGrant(project, task.actor, controller.signal) : null),
       samePaired: async (here, base) => {
         const gitDir = await git(["rev-parse", "--absolute-git-dir"]);
         return gitDir.code === 0 && pairedProjectCommit(gitDir.output.trim(), base) === here;

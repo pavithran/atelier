@@ -233,6 +233,13 @@ export function failureReport(id, output, record = null) {
   return `landing ${id} failed at ${failedStep(output)}${tail ? `:\n${tail}` : "."}`;
 }
 
+// Git's configuration for one command, in its environment: the token is sent
+// as an Authorization header, after any configuration already passed.
+function bearerEnv(token, base = process.env) {
+  const n = Number.parseInt(base.GIT_CONFIG_COUNT ?? "", 10) || 0;
+  return { GIT_CONFIG_COUNT: String(n + 1), [`GIT_CONFIG_KEY_${n}`]: "http.extraHeader", [`GIT_CONFIG_VALUE_${n}`]: `Authorization: Bearer ${token}`, GIT_TERMINAL_PROMPT: "0" };
+}
+
 // A checkout that is clean and strictly behind the baseline's head is brought
 // to it with a fast-forward, the only write; the baseline's commit is fetched
 // first, which writes objects and no ref. A checkout that is ahead of the
@@ -244,8 +251,13 @@ async function catchUp(id, io, here, base) {
   const { checkout, git } = io;
   const pull = `atelier pull --project ${io.project ?? "NAME"}`;
   const at = `main in the checkout ${checkout} is at ${here.slice(0, 8)}, not at the baseline's ${base.slice(0, 8)}`;
-  const failed = (step, r) => ({ ok: false, refused: true, reason: `${at}; ${step} failed${r.timedOut ? " (stopped)" : ` (exit ${r.code})`}: ${String(r.output ?? "").split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ")}; run ${pull} there, and the landing of ${id} runs on the next poll` });
-  const fetched = await git(["fetch", "--quiet", "--no-tags", io.remote ?? "origin", base]);
+  const failed = (step, r) => ({ ok: false, refused: true, reason: `${at}; ${step} failed${r.timedOut ? " (stopped)" : ` (exit ${r.code})`}: ${[r.stderr, r.output].filter(Boolean).join("\n").split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" ")}; run ${pull} there, and the landing of ${id} runs on the next poll` });
+  // The baseline's remote and credential, as atelier pull reads them; the
+  // token reaches git through its environment, never its arguments.
+  let grant;
+  try { grant = await io.baselineGrant?.(); } catch (error) { grant = null; }
+  if (!grant?.remote || !grant?.token) return { ok: false, refused: true, reason: `${at}; the baseline's remote and credential could not be read; run ${pull} there, and the landing of ${id} runs on the next poll` };
+  const fetched = await git(["fetch", "--quiet", "--no-tags", grant.remote, grant.defaultBranch ?? "main"], { env: bearerEnv(grant.token) });
   if (fetched.code !== 0 || fetched.timedOut) return failed("git fetch", fetched);
   const behind = await git(["merge-base", "--is-ancestor", here, base]);
   if (behind.code !== 0) {
@@ -268,9 +280,11 @@ async function catchUp(id, io, here, base) {
 // runs. With a journal present the checkout holds the landing's own merge,
 // so it is the command that judges it. io:
 //   checkout     the registered checkout's folder
-//   git          async (args) => { code, output }, run in the checkout
+//   git          async (args, { env }) => { code, output, stderr, timedOut },
+//                run in the checkout
 //   project      the project's name, for the refusal's `atelier pull` line
-//   remote       where the baseline's commits are fetched from (default origin)
+//   baselineGrant async () => { remote, token, defaultBranch? }: where the
+//                baseline's commits are fetched from, and the credential
 //   baselineHead async () => the baseline's head commit, or null
 //   hasJournal   () => whether a landing journal exists for the checkout
 //   land         async () => { code, output, timedOut } of `atelier land ID`
