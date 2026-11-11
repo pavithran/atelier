@@ -2098,6 +2098,21 @@ test("a build that times out reports the host's load as it read when the harness
   assert.deepEqual(stored.load, { average: 3.5, cores: 8 });
 });
 
+test("the timeout load is read before cleanup, so a cleanup that moves the load does not change the report", async (t) => {
+  const args = loadRig(t);
+  const reports = [];
+  const { io } = fixture({ head: "before", timedOut: true });
+  let cleaned = false;
+  const removed = io.removeDataHome;
+  io.removeDataHome = async (home) => { cleaned = true; return removed(home); };
+  // The gate's reading is low; once cleanup has run the host reads 9.
+  const load = () => cleaned ? { load: 9, cores: 8 } : { load: 0.5, cores: 8 };
+  await runRunner(args, { workspacePath: io.workspacePath, taskIO: io, wait: async () => {}, load, queue: async () => [assignment], reportRun: async (body) => reports.push(body) });
+  assert.equal(cleaned, true, "cleanup ran");
+  assert.equal(reports[0].outcome, "timed-out");
+  assert.deepEqual(reports[0].load, { average: 0.5, cores: 8 });
+});
+
 test("the server refuses a malformed load on a run report", () => {
   const base = { actor: "codex/gpt-6-astra", role: "build", outcome: "timed-out", project: "a", item: "t1" };
   for (const load of [{ average: -1, cores: 8 }, { average: "3", cores: 8 }, { average: 1, cores: 0 }, { average: 1, cores: 1.5 }, 5, []]) {

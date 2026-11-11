@@ -2254,7 +2254,12 @@ export async function runTask(assignment, config, name, io) {
             rmSync(progressLog, { force: true });
             io.progress.begin({ project, task: item.id, actor, base: item.base ?? before, workspace, log: progressLog, harness: agent });
           }
-          try { result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, timeoutMs: harnessCeilingMs(), ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) }); }
+          try {
+            result = await io.harness(commandFor(entry, { model, briefFile: brief.file, workspace }), workspace, progressLog ? { ...runEnv, ATELIER_PROGRESS_LOG: progressLog } : runEnv, { capture: true, stream: true, timeoutMs: harnessCeilingMs(), ...(progressLog ? { onSpawn: (pid) => io.progress.spawned(pid) } : {}) });
+            // The host's load as the harness timed out, read before progress
+            // ends and cleanup runs, which let it move (t662).
+            if (result?.timedOut) { try { const r = io.load?.(); if (r) timeoutLoad = { average: r.load, cores: r.cores }; } catch { /* no reading */ } }
+          }
           finally { io.progress?.end(); commandTrail = io.progress?.trail() ?? null; }
         } finally {
           if (dataHome) {
@@ -2268,9 +2273,6 @@ export async function runTask(assignment, config, name, io) {
     // The obligation is recorded the moment the run fails, before HEAD is read
     // or a reason made, and how the run ended is kept as a structured fact.
     if (result && (result.timedOut || result.code !== 0) && !limit) {
-      // The host's load as the harness timed out, before cleanup and
-      // reporting let it move (t662).
-      if (result.timedOut) { try { const r = io.load?.(); if (r) timeoutLoad = { average: r.load, cores: r.cores }; } catch { /* no reading */ } }
       harnessExit = harnessExitOf(result);
       harnessTail = harnessTailOf(result);
       await markFailure();
