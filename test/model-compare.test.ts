@@ -167,7 +167,7 @@ test("projection: an empty history gives every role, no share, no median, and sa
   const v = project([]);
   assert.equal(v.model, "gpt-6-astra");
   assert.deepEqual(v.entries, ["codex/gpt-6-astra"]);
-  assert.deepEqual(v.roles.map((r) => r.role), ["build", "review", "security-review", "claims-review", "plan", "acting"]);
+  assert.deepEqual(v.roles.map((r) => r.role), ["build", "review", "security-review", "claims-review", "criteria-review", "plan", "acting"]);
   for (const r of v.roles) for (const f of r.figures) {
     assert.equal(f.state === "none" || f.kind === "count", true, `${f.measure} ${f.state}`);
     if (f.kind !== "count") assert.equal(f.value, null, f.measure);

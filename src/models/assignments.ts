@@ -13,7 +13,8 @@
 //
 //   scope      every project ("*"), or one project by its stable key, so a
 //              rename never detaches it
-//   role       build, review, security-review, claims-review or plan
+//   role       build, review, security-review, claims-review, criteria-review
+//              or plan
 //   choices    an ordered list of harness/model, each a pool entry, each
 //              kept with its canonical model (canonicalModel): a model
 //              under two harnesses is one model, the harness its condition
@@ -82,7 +83,7 @@ import { canonicalModel } from "./judgement.ts";
 import { namedCandidates } from "./identity.ts";
 import { entryRuns, standingRefusal, type ModelEntry, type ModelRole } from "./pool.ts";
 
-export const ASSIGNMENT_ROLES = ["build", "review", "security-review", "claims-review", "plan"] as const;
+export const ASSIGNMENT_ROLES = ["build", "review", "security-review", "claims-review", "criteria-review", "plan"] as const;
 export type AssignmentRole = (typeof ASSIGNMENT_ROLES)[number];
 export const ALL_PROJECTS = "*";
 export const ASSIGNMENT_ID = /^a[1-9]\d{0,8}$/;
@@ -92,7 +93,7 @@ const REQUEST_ID = /^[A-Za-z0-9_-]{8,64}$/;
 
 // The pool role a model needs to take an assignment role.
 export const POOL_ROLE: Record<AssignmentRole, ModelRole> = {
-  build: "build", review: "review", "security-review": "review", "claims-review": "review", plan: "plan",
+  build: "build", review: "review", "security-review": "review", "claims-review": "review", "criteria-review": "review", plan: "plan",
 };
 
 // What a reader does when no assignment applies: the documented fallback a
@@ -102,6 +103,7 @@ export const FALLBACK: Record<AssignmentRole, string> = {
   review: "the reviewer selector asks the previous round's reviewer, the plan's routing, then the pool by review precision, outcome record and model id",
   "security-review": "the review assignment applies, and without one the review fallback",
   "claims-review": "the review assignment applies, and without one the review fallback",
+  "criteria-review": "the review assignment applies, and without one the pool's order",
   plan: "the planner is the first eligible pool model in routing order for research work",
 };
 

@@ -105,7 +105,7 @@ import { missingReviews, reviewerOf, reviewNeeded, surplusRequests, REVIEW_CLAIM
 import { noneOffered, nextOffered, offersJudge, refusedUnoffered, skippedReason } from "./review/offered.ts";
 import { candidatesText, ranked, summarize, type Candidate, type ReviewerRecords, type SuggestionRecords } from "./models/suggest.ts";
 import { pickReviewer } from "./review/reviewer.ts";
-import { aheadOfAssignments, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
+import { aheadOfAssignments, FALLBACK, orderByAssignment, type AssignmentRole, type ReviewRole, ALL_PROJECTS, applicableAssignments, reviewRolesFor, assignmentHistory, assignmentSnapshot, currentAssignments, docsOnly, recordAssignment, reviewRoles, snapshotApplies, withdrawAssignment, type Assignment, type AssignmentRecord, type AssignmentSnapshot, type AssignmentStore, type AssignmentView, type AssignmentWithdrawal, type ActingDeclaration, type ResolvedAssignment } from "./models/assignments.ts";
 import { buildPrecision, precisionLine, precisionOf, precisionWindow, type PrecisionRecord } from "./models/precision.ts";
 import { independenceRefusal } from "./review/independence.ts";
 import {
@@ -10679,11 +10679,16 @@ export class Ledger extends DurableObject<Env> {
       reasons = ["Named by the developer"];
     } else {
       // No reviewer named (G17): the server picks none. The candidates, each
-      // with what refuses it, and a refusal; the model names one.
-      const candidates = criteriaReviewerCandidates({
+      // with what refuses it, and a refusal; the model names one. The
+      // criteria-review assignment's eligible choices come first, else the
+      // review assignment's; a re-review's previous reviewer stays ahead.
+      const listed = criteriaReviewerCandidates({
         authors, pool: withStanding(pool, standing), policy, owner: this.owner, allowPaid, previous: status.previousReviewer, offers,
         avoid: status.lapsed.map((actor) => ({ actor, reason: "its claim on a review of these criteria lapsed" })),
       });
+      const previous = status.previousReviewer ? listed.filter((c) => sameActor(c.actor, status.previousReviewer!)) : [];
+      const ordered = orderByAssignment(listed.filter((c) => !previous.includes(c)), (c) => c.actor, applicableAssignments(this.heldAssignments(), null, ["criteria-review", "review"]), (c) => c.refusal, FALLBACK.review).order;
+      const candidates = [...previous, ...ordered];
       const first = candidates.find((c) => !c.refusal);
       const none = !first && offersJudge(offers) && candidates.some((c) => c.refusal?.includes("no live runner offers")) ? `; no live runner offers an eligible reviewer, so none can be asked` : "";
       throw new RuleError("reviewer_needed", candidatesText(`${item.id}'s criteria review names no reviewer${none}`, candidates), 409, first ? `name one: atelier criteria-review ${item.id} --reviewer ${first.actor}, or another of the eligible` : `add a model with atelier models add, then atelier criteria-review ${item.id} --reviewer H/M`);
