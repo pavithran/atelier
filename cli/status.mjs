@@ -113,6 +113,7 @@ export function taskLink(server, project, id) {
 export function itemJson(i) {
   return { id: i.id, title: i.title, state: i.state, owner: i.owner, head: i.head,
     createdAt: i.createdAt, updatedAt: i.updatedAt, lastPushAt: i.lastPushAt,
+    ...(i.priority !== undefined ? { priority: i.priority } : {}),
     ...(i.reviewAskedHead !== undefined ? { reviewAskedHead: i.reviewAskedHead } : {}) };
 }
 

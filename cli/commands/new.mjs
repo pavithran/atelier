@@ -49,6 +49,7 @@ export default async function newCommand() {
     `${item.id}  ${item.title}${item.scope.length ? `  [${item.scope.join(" ")}]` : ""}`,
     ...(item.derived ? [`The text is longer than a title, so it is kept as the brief and the title is its first clause; change it with atelier edit ${item.id} --title "TEXT".`] : []),
     ...formatFields(item),
+    ...(item.priority !== undefined ? [`Priority: ${item.priority}`] : []),
   ].join("\n"));
   if (!fields.accept?.length) console.error(`Warning: ${item.id} has no acceptance criteria, so a review of it will have none to judge the change against. Give them with atelier edit ${item.id} --accept "TEXT", once per criterion.`);
   if (fields.accept?.length > 5) console.error(`Warning: ${item.id} has ${fields.accept.length} acceptance criteria, more than five; consider a split into smaller tasks.`);

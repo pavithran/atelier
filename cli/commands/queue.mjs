@@ -15,7 +15,7 @@ export default async function queueCommand() {
   if (!queued.length) return console.log("Nothing is waiting for a runner.");
   for (const { project, item } of queued) {
     const d = item.dispatch;
-    console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}  ${item.title}`);
+    console.log(`${project}/${item.id}  for ${d.to}${d.agent ? ` ${d.agent}` : ""}${d.model ? `/${d.model}` : ""}${d.job === "merge-main" ? "  merge-main" : ""}${item.priority !== undefined ? `  p${item.priority}` : ""}  ${item.title}`);
     const preview = notePreview(d.note);
     if (preview) console.log(`  note: ${flat(preview)}`);
     // A claim whose runner stopped polling holds nothing (t537): said in

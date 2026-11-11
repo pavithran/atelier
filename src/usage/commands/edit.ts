@@ -8,7 +8,7 @@ const spec: CommandSpec = {
   forms: [
     {
       group: "Items", line: 1, slot: 20,
-      form: "edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--design NAME] [--context TEXT] [--add-accept TEXT]... [--add-brief TEXT] [--restore EVENT] [--blocked-by tA,tB]",
+      form: "edit ID [--title TEXT] [--brief TEXT] [--scope GLOB]... [--accept TEXT]... [--non-goal TEXT]... [--stop-when TEXT]... [--next-gate TEXT] [--design NAME] [--context TEXT] [--add-accept TEXT]... [--add-brief TEXT] [--restore EVENT] [--blocked-by tA,tB] [--priority N]",
       about: "The developer changes a task's title, brief, scope, acceptance criteria, non-goals, stop conditions next gate or context for the reviewers (the decisions a reviewer must not overrule, which every review brief carries). A flag given replaces that field, one left out keeps it, and an empty value clears it; the title cannot be cleared. A new scope is recorded in the task's history and counts at once for a project that refuses overlapping claims, which refuses a claim whose scope overlaps a claimed, submitted or accepted task's alike (a cancelled merge leaves a task accepted); an unscoped task overlaps every one. Changing the acceptance criteria (their text, order or entries) withdraws every review and open or claimed review request of the old ones, an acceptance (the task goes back to claimed) and an override of the review, and says so: a fresh review of the new criteria is needed. The same list again changes nothing. `--add-accept` appends criteria after the stored ones and `--add-brief` appends text to the brief, leaving what is there untouched; an added criterion asks for a criteria review of the added ones only where the project requires criteria reviews. A replacement of the criteria, the brief or the scope prints what it dropped and the number of the edit event that keeps the old values; `--restore EVENT` puts them back. The criteria of an integrated part, or of a task being landed, cannot change. `--blocked-by tA,tB` replaces the tasks it waits on (\"\" clears them): no runner is offered it, no claim takes it and no landing accepts it until every one is merged; an abandoned blocker keeps it waiting and listed, and a cycle is refused.",
     },
   ],
@@ -25,6 +25,7 @@ const spec: CommandSpec = {
     "add-brief": '--add-brief needs text: atelier edit ID --add-brief "TEXT", appended to the stored brief',
     restore: "--restore needs the number of an edit event: atelier edit ID --restore EVENT, as the edit that replaced the values printed it",
     context: '--context needs text: atelier edit ID --context "TEXT", at most 2000 characters, or --context "" to clear',
+    priority: "--priority needs 1, 2 or 3: atelier edit ID --priority N",
     "blocked-by": '--blocked-by needs task ids: atelier edit ID --blocked-by t3,t4, or --blocked-by "" to clear',
   },
   help: {
@@ -41,6 +42,7 @@ const spec: CommandSpec = {
       "--next-gate TEXT": 'replaces the gate the task goes to next; --next-gate "" clears it',
       "--design NAME": 'replaces the design note name; tasks naming one design wait for each other until the first claimed merges or is abandoned. --design "" clears it and lifts the hold on the next poll',
       "--context TEXT": 'replaces the context every reviewer\'s brief carries, at most 2000 characters; --context "" clears it',
+      "--priority N": "sets the task's priority: 1 removes waiting or the developer's involvement, 2 is useful, 3 is long-term; left out keeps it",
       "--blocked-by tA,tB": 'replaces the tasks this one waits on, comma-separated; --blocked-by "" clears them. The task is not offered, claimed or accepted until each is merged',
     },
     example: 'ATELIER_ACTING=claude-code/opus-5.5 atelier edit t3 --stop-when "The schema needs to change" --project demo',
