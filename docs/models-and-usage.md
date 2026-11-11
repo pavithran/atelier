@@ -111,7 +111,7 @@ measurement Atelier made: nothing that routes or suggests a model reads it.
 
 The developer's judgement of which model is best at a job is kept as a role
 assignment, a dated record on the index beside the pool (t622). Each names a
-role (build, review, security-review, claims-review or plan), its scope
+role (build, review, criteria-review, security-review, claims-review or plan), its scope
 (every project, or one with `--scope`), the models in order as harness/model,
 the reason, the developer's own words and the evidence it rests on, each a
 task or one of its events as `PROJECT/tN` or `PROJECT/tN#SEQ`. A bare `tN` is

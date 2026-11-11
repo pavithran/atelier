@@ -99,17 +99,22 @@ it("a criteria-review assignment is recorded and listed, a role outside the list
   await L.setProject(record, "owner");
   await index().registerProject(record);
   for (const m of POOL) await index().putModel(m);
-  const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
-  const next = async () => {
-    const err = await L.requestCriteriaReview(id, "owner", null, POOL).then(() => new Error("expected reviewer_needed"), (e: unknown) => e as Error);
-    return parseRuleError(err)?.next;
+  // The stored request's reviewer after an unnamed ask, or null when it is refused.
+  const asked = async () => {
+    const { id } = await L.newItem("Faster search", ["src/**"], "owner", { accept: ["Search answers within 200 ms"] });
+    try {
+      const r = await L.requestCriteriaReview(id, "owner", null, POOL);
+      const stored = (await L.criteriaReviewsFor(id)).find((q) => q.id === r.request);
+      return { requested: r.requested, reviewer: stored?.reviewer ?? null, state: stored?.state };
+    } catch (e) { return { refused: parseRuleError(e as Error)?.code ?? null, reviewer: null }; }
   };
 
-  // Without an assignment: the pool's order, as on main.
-  expect(await next()).toMatch(/--reviewer antigravity\/gemini-4-argon,/);
+  // Without an assignment: the server picks none, as on main.
+  expect(await asked()).toMatchObject({ refused: "reviewer_needed", reviewer: null });
   // The review assignment applies when no criteria-review one is recorded.
   expect((await call("POST", "/model-roles", body({ scope: "roles-criteria", evidence: ["roles-criteria/t1"], role: "review", choices: ["codex/gpt-6-astra"] }))).status).toBe(201);
-  expect(await next()).toMatch(/--reviewer codex\/gpt-6-astra,/);
+  const viaReview = await asked();
+  expect(viaReview).toMatchObject({ requested: true, reviewer: "codex/gpt-6-astra", state: "open" });
 
   expect((await call("POST", "/model-roles", body({ scope: "roles-criteria", role: "tier" }))).status).toBe(400);
   const made = await call("POST", "/model-roles", body({ scope: "roles-criteria", evidence: ["roles-criteria/t1"], role: "criteria-review", choices: ["zcode/glm-5.3", "claude-code/opus-5.5"] }));
@@ -120,11 +125,11 @@ it("a criteria-review assignment is recorded and listed, a role outside the list
   expect(listed.assignments.find((v) => v.id === a.id)).toMatchObject({ role: "criteria-review", status: "current" });
   expect(listed.fallback["criteria-review"]).toBeTruthy();
   // The criteria-review assignment outranks the review one.
-  expect(await next()).toMatch(/--reviewer zcode\/glm-5\.3,/);
+  expect(await asked()).toMatchObject({ requested: true, reviewer: "zcode/glm-5.3" });
 
   // Withdrawn, the review assignment applies again.
   expect((await call("POST", `/model-roles/${a.id}/withdraw`, { note: "Glm is reserved this week." })).status).toBe(200);
-  expect(await next()).toMatch(/--reviewer codex\/gpt-6-astra,/);
+  expect(await asked()).toMatchObject({ requested: true, reviewer: "codex/gpt-6-astra" });
 });
 
 it("a second assignment supersedes only by naming the standing one; a retry is answered once; another project's is not sent here", async () => {
