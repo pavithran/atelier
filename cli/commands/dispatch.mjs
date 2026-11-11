@@ -17,6 +17,7 @@ export default async function dispatchCommand() {
   const name = project(), id = itemArg();
   if (args.job !== undefined && args.job !== "merge-main") die(`--job names the job the runner runs; only merge-main is dispatched by hand: atelier dispatch ${id} --job merge-main`);
   if (args.head !== undefined && args.job === undefined) die(`--head names the main head a merge-main job merges; give it with --job merge-main: atelier dispatch ${id} --job merge-main --head FULL_HASH`);
+  builderFlag(id);
   const note = noteFromFile(id) ?? args.note;
   const body = { ...(args.reviewer !== undefined ? { reviewer: args.reviewer } : {}), ...(args.land === true ? { land: true } : {}), to: args.to, agent: args.agent, model: args.model, note, ...(args.job !== undefined ? { job: args.job, ...(args.head !== undefined ? { head: args.head } : {}) } : {}), ...(args["overlap-ok"] === true ? { overlapOk: true } : {}), ...(args.release === true ? { release: true } : {}) };
   // With no --agent the server picks no builder (G17): it refuses, printing
@@ -60,6 +61,16 @@ export default async function dispatchCommand() {
   // G13: an overlap the project refuses holds the dispatch instead of refusing it.
   const o = item.overlapHeld;
   if (o) console.log(`${id} is held: its claim would overlap ${o.id} (${o.state}${o.owner ? ` by ${o.owner}` : ""}), and this project refuses overlapping claims. It stays queued and is offered to a runner once ${o.id} merges or is abandoned, as atelier queue shows.`);
+}
+
+// --builder H/M is --agent H --model M in one flag (t699). It is refused before
+// any request when it lacks exactly one slash or is given with --agent or --model.
+function builderFlag(id) {
+  if (args.builder === undefined) return;
+  if (args.agent !== undefined || args.model !== undefined) die(`give the builder with --builder H/M or with --agent and --model, not both: atelier dispatch ${id} --builder H/M`);
+  const parts = typeof args.builder === "string" ? args.builder.split("/") : [];
+  if (parts.length !== 2 || !parts[0] || !parts[1]) die(`--builder takes H/M, one harness and one model with a single slash: atelier dispatch ${id} --builder claude-code/sonnet-5.5`);
+  [args.agent, args.model] = parts;
 }
 
 // --note-file PATH: the note is the file's text, read as UTF-8 relative to the
